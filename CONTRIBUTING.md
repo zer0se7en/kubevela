@@ -22,6 +22,7 @@ You can contribute to KubeVela in several ways. Here are some examples:
 
 For more ways to contribute, check out the [Open Source Guides](https://opensource.guide/how-to-contribute/).
 
+
 ### Report bugs
 
 Before submitting a new issue, try to make sure someone hasn't already reported the problem.

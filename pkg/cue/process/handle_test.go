@@ -63,15 +63,44 @@ image: "myserver"
 		Ins:  svcIns,
 		Name: "service",
 	}
-	targetRequiredSecrets := []RequiredSecrets{{
-		ContextName: "conn1",
-		Data:        map[string]interface{}{"password": "123"},
-	}}
+
+	targetParams := map[string]interface{}{
+		"parameter1": "string",
+		"parameter2": map[string]string{
+			"key1": "value1",
+			"key2": "value2",
+		},
+		"parameter3": []string{"item1", "item2"},
+	}
+	targetData := map[string]interface{}{
+		"int":    10,
+		"string": "mytxt",
+		"bool":   false,
+		"map": map[string]interface{}{
+			"key": "value",
+		},
+		"slice": []string{
+			"str1", "str2", "str3",
+		},
+	}
+	targetArbitraryData := map[string]interface{}{
+		"int":    10,
+		"string": "mytxt",
+		"bool":   false,
+		"map": map[string]interface{}{
+			"key": "value",
+		},
+		"slice": []string{
+			"str1", "str2", "str3",
+		},
+	}
 
 	ctx := NewContext("myns", "mycomp", "myapp", "myapp-v1")
-	ctx.InsertSecrets("db-conn", targetRequiredSecrets)
 	ctx.SetBase(base)
 	ctx.AppendAuxiliaries(svcAux)
+	ctx.SetParameters(targetParams)
+	ctx.PushData(model.ContextDataArtifacts, targetData)
+	ctx.PushData("arbitraryData", targetArbitraryData)
 
 	ctxInst, err := r.Compile("-", ctx.ExtendedContextFile())
 	if err != nil {
@@ -79,35 +108,43 @@ image: "myserver"
 		return
 	}
 
-	gName, err := ctxInst.Lookup("context", ContextName).String()
+	gName, err := ctxInst.Lookup("context", model.ContextName).String()
 	assert.Equal(t, nil, err)
 	assert.Equal(t, "mycomp", gName)
 
-	myAppName, err := ctxInst.Lookup("context", ContextAppName).String()
+	myAppName, err := ctxInst.Lookup("context", model.ContextAppName).String()
 	assert.Equal(t, nil, err)
 	assert.Equal(t, "myapp", myAppName)
 
-	myAppRevision, err := ctxInst.Lookup("context", ContextAppRevision).String()
+	myAppRevision, err := ctxInst.Lookup("context", model.ContextAppRevision).String()
 	assert.Equal(t, nil, err)
 	assert.Equal(t, "myapp-v1", myAppRevision)
 
-	myAppRevisionNum, err := ctxInst.Lookup("context", ContextAppRevisionNum).Int64()
+	myAppRevisionNum, err := ctxInst.Lookup("context", model.ContextAppRevisionNum).Int64()
 	assert.Equal(t, nil, err)
 	assert.Equal(t, int64(1), myAppRevisionNum)
 
-	inputJs, err := ctxInst.Lookup("context", OutputFieldName).MarshalJSON()
+	inputJs, err := ctxInst.Lookup("context", model.OutputFieldName).MarshalJSON()
 	assert.Equal(t, nil, err)
 	assert.Equal(t, `{"image":"myserver"}`, string(inputJs))
 
-	outputsJs, err := ctxInst.Lookup("context", OutputsFieldName, "service").MarshalJSON()
+	outputsJs, err := ctxInst.Lookup("context", model.OutputsFieldName, "service").MarshalJSON()
 	assert.Equal(t, nil, err)
 	assert.Equal(t, "{\"apiVersion\":\"v1\",\"kind\":\"ConfigMap\"}", string(outputsJs))
 
-	ns, err := ctxInst.Lookup("context", ContextNamespace).String()
+	ns, err := ctxInst.Lookup("context", model.ContextNamespace).String()
 	assert.Equal(t, nil, err)
 	assert.Equal(t, "myns", ns)
 
-	requiredSecrets, err := ctxInst.Lookup("context", "conn1").MarshalJSON()
+	params, err := ctxInst.Lookup("context", model.ParameterFieldName).MarshalJSON()
 	assert.Equal(t, nil, err)
-	assert.Equal(t, "{\"password\":\"123\"}", string(requiredSecrets))
+	assert.Equal(t, "{\"parameter1\":\"string\",\"parameter2\":{\"key1\":\"value1\",\"key2\":\"value2\"},\"parameter3\":[\"item1\",\"item2\"]}", string(params))
+
+	artifacts, err := ctxInst.Lookup("context", model.ContextDataArtifacts).MarshalJSON()
+	assert.Equal(t, nil, err)
+	assert.Equal(t, "{\"bool\":false,\"string\":\"mytxt\",\"int\":10,\"map\":{\"key\":\"value\"},\"slice\":[\"str1\",\"str2\",\"str3\"]}", string(artifacts))
+
+	arbitraryData, err := ctxInst.Lookup("context", "arbitraryData").MarshalJSON()
+	assert.Equal(t, nil, err)
+	assert.Equal(t, "{\"bool\":false,\"string\":\"mytxt\",\"int\":10,\"map\":{\"key\":\"value\"},\"slice\":[\"str1\",\"str2\",\"str3\"]}", string(arbitraryData))
 }

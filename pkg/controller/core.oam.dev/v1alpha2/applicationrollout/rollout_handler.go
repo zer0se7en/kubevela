@@ -21,8 +21,6 @@ import (
 	"fmt"
 	"reflect"
 
-	"k8s.io/utils/pointer"
-
 	"github.com/crossplane/crossplane-runtime/pkg/event"
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,10 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
+	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
+	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/application/assemble"
 	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/application/dispatch"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
@@ -43,6 +43,7 @@ import (
 type rolloutHandler struct {
 	*Reconciler
 	appRollout *v1beta1.AppRollout
+	parser     *appfile.Parser
 
 	// source/targetRevName represent this round reconcile using source and target revision
 	// in most cases they are equal to appRollout.spec.target/sourceRevName but if roll forward or revert in middle of rollout
@@ -61,15 +62,14 @@ type rolloutHandler struct {
 	// targetManifests used by dispatch(template targetRevision) and handleSucceed(GC) phase
 	targetManifests []*unstructured.Unstructured
 
-	// sourceManifests used by dispatch(template targetRevision) and handleSucceed(GC) phase
-	sourceManifests []*unstructured.Unstructured
-
 	// needRollComponent is find common component between source and target revision
 	needRollComponent string
 }
 
-// prepareRollout  call assemble func to prepare info needed in whole reconcile loop
-func (h *rolloutHandler) prepareRollout(ctx context.Context) error {
+// prepareWorkloads call assemble func to prepare workload of every component
+// please be aware that this func isn't generated final resources emitted to k8s.
+// it just help for the phase determiningCommonComponent
+func (h *rolloutHandler) prepareWorkloads(ctx context.Context) error {
 	var err error
 	h.targetAppRevision = new(v1beta1.ApplicationRevision)
 	if err := h.Get(ctx, types.NamespacedName{Namespace: h.appRollout.Namespace, Name: h.targetRevName}, h.targetAppRevision); err != nil {
@@ -77,18 +77,10 @@ func (h *rolloutHandler) prepareRollout(ctx context.Context) error {
 	}
 
 	// construct a assemble manifest for targetAppRevision
-	targetAssemble := assemble.NewAppManifests(h.targetAppRevision).
-		WithWorkloadOption(rolloutWorkloadName(h.needRollComponent)).
+	targetAssemble := assemble.NewAppManifests(h.targetAppRevision, h.parser).
+		WithWorkloadOption(RolloutWorkloadName(h.needRollComponent)).
 		WithWorkloadOption(assemble.PrepareWorkloadForRollout(h.needRollComponent))
 
-	// in template phase, we should use targetManifests including target workloads/traits to
-	h.targetManifests, err = targetAssemble.AssembledManifests()
-	if err != nil {
-		klog.Error("appRollout targetAppRevision failed to assemble manifest", "appRollout", klog.KRef(h.appRollout.Namespace, h.appRollout.Name))
-		return err
-	}
-
-	// we only use workloads group by component name to find common workloads in source and target revision
 	h.targetWorkloads, _, _, err = targetAssemble.GroupAssembledManifests()
 	if err != nil {
 		klog.Error("appRollout targetAppRevision failed to assemble target workload", "appRollout", klog.KRef(h.appRollout.Namespace, h.appRollout.Name))
@@ -101,17 +93,12 @@ func (h *rolloutHandler) prepareRollout(ctx context.Context) error {
 			return err
 		}
 		// construct a assemble manifest for sourceAppRevision
-		sourceAssemble := assemble.NewAppManifests(h.sourceAppRevision).
+		sourceAssemble := assemble.NewAppManifests(h.sourceAppRevision, h.parser).
 			WithWorkloadOption(assemble.PrepareWorkloadForRollout(h.needRollComponent)).
-			WithWorkloadOption(rolloutWorkloadName(h.needRollComponent))
+			WithWorkloadOption(RolloutWorkloadName(h.needRollComponent))
 		h.sourceWorkloads, _, _, err = sourceAssemble.GroupAssembledManifests()
 		if err != nil {
 			klog.Error("appRollout sourceAppRevision failed to assemble workloads", "appRollout", klog.KRef(h.appRollout.Namespace, h.appRollout.Name))
-			return err
-		}
-		h.sourceManifests, err = sourceAssemble.AssembledManifests()
-		if err != nil {
-			klog.Error("appRollout sourceAppRevision failed to assemble manifest", "appRollout", klog.KRef(h.appRollout.Namespace, h.appRollout.Name))
 			return err
 		}
 	}
@@ -195,7 +182,7 @@ func (h *rolloutHandler) handleRolloutModified() {
 	h.appRollout.Status.StateTransition(v1alpha1.RollingModifiedEvent)
 }
 
-// templateTargetManifest call dispatch to template target app revision's manifests to cluster
+// templateTargetManifest call dispatch to template target app revision's manifests to k8s
 func (h *rolloutHandler) templateTargetManifest(ctx context.Context) error {
 	var rt *v1beta1.ResourceTracker
 	// if sourceAppRevision is not nil, we should upgrade existing resources which are also needed by target app
@@ -211,7 +198,7 @@ func (h *rolloutHandler) templateTargetManifest(ctx context.Context) error {
 	}
 
 	// use source resourceTracker to handle same resource owner transfer
-	dispatcher := dispatch.NewAppManifestsDispatcher(h, h.targetAppRevision).StartAndSkipGC(rt)
+	dispatcher := dispatch.NewAppManifestsDispatcher(h.Client, h.targetAppRevision).StartAndSkipGC(rt)
 	_, err := dispatcher.Dispatch(ctx, h.targetManifests)
 	if err != nil {
 		klog.Errorf("dispatch targetRevision error %s:%v", h.appRollout.Spec.TargetAppRevisionName, err)
@@ -322,5 +309,29 @@ func (h *rolloutHandler) handleSourceWorkload(ctx context.Context) error {
 	if err = h.Client.Patch(ctx, workload, wlPatch, client.FieldOwner(h.appRollout.UID)); err != nil {
 		return err
 	}
+	return nil
+}
+
+// assembleManifest generate target manifest(workloads/traits)
+// please notice that we shouldn't modify the replicas of workload if the workload already exist in k8s.
+// so we use HandleReplicas as assemble option
+// And this phase must call after determine component phase.
+func (h *rolloutHandler) assembleManifest(ctx context.Context) error {
+	if h.appRollout.Status.RollingState != v1alpha1.LocatingTargetAppState {
+		return nil
+	}
+	var err error
+	// construct a assemble manifest for targetAppRevision
+	targetAssemble := assemble.NewAppManifests(h.targetAppRevision, h.parser).
+		WithWorkloadOption(RolloutWorkloadName(h.needRollComponent)).
+		WithWorkloadOption(assemble.PrepareWorkloadForRollout(h.needRollComponent)).WithWorkloadOption(HandleReplicas(ctx, h.needRollComponent, h.Client))
+
+	// in template phase, we should use targetManifests including target workloads/traits to
+	h.targetManifests, err = targetAssemble.AssembledManifests()
+	if err != nil {
+		klog.Error("appRollout targetAppRevision failed to assemble manifest", "appRollout", klog.KRef(h.appRollout.Namespace, h.appRollout.Name))
+		return err
+	}
+	// we never need generate source manifest, cause we needn't template source ever.
 	return nil
 }

@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/oam-dev/kubevela/pkg/oam/testutil"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -167,7 +169,7 @@ spec:
 			// API server will convert blank namespace to `default`
 			def.Namespace = namespace
 			Expect(k8sClient.Create(ctx, &def)).Should(Succeed())
-			reconcileRetry(&r, req)
+			testutil.ReconcileRetry(&r, req)
 
 			By("Check whether ConfigMap is created")
 			var cm corev1.ConfigMap
@@ -258,7 +260,7 @@ spec:
 			var def v1beta1.ComponentDefinition
 			Expect(yaml.Unmarshal([]byte(validComponentDefinition), &def)).Should(BeNil())
 			Expect(k8sClient.Create(ctx, &def)).Should(Succeed())
-			reconcileRetry(&r, req)
+			testutil.ReconcileRetry(&r, req)
 
 			By("Check whether ConfigMap is created")
 			var cm corev1.ConfigMap
@@ -275,6 +277,42 @@ spec:
 				_ = k8sClient.Get(ctx, client.ObjectKey{Namespace: def.Namespace, Name: def.Name}, &def)
 				return def.Status.ConfigMapRef
 			}, 10*time.Second, time.Second).Should(Equal(name))
+
+			By("Delete the componentDefinition")
+			Expect(k8sClient.Delete(ctx, &def)).Should(Succeed())
+			testutil.ReconcileRetry(&r, req)
+		})
+
+		It("Applying ComponentDefinition with autodetect workload type", func() {
+			componentDefYaml := `
+apiVersion: core.oam.dev/v1beta1
+kind: ComponentDefinition
+metadata:
+  annotations:
+    definition.oam.dev/description: "raw allow users to specify raw K8s object in properties"
+  name: test-autodetects
+  namespace: ns-def
+spec:
+  workload:
+    type: autodetects.core.oam.dev
+  schematic:
+    cue:
+      template: |
+        output: parameter
+        parameter: {}
+`
+			var cd v1beta1.ComponentDefinition
+			Expect(yaml.Unmarshal([]byte(componentDefYaml), &cd)).Should(BeNil())
+			cd.SetNamespace(namespace)
+			Expect(k8sClient.Create(ctx, &cd)).Should(Succeed())
+			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: cd.Name, Namespace: cd.Namespace}}
+			var cm corev1.ConfigMap
+			name := fmt.Sprintf("%s%s", types.CapabilityConfigMapNamePrefix, cd.Name)
+			Eventually(func() bool {
+				testutil.ReconcileRetry(&r, req)
+				err := k8sClient.Get(ctx, client.ObjectKey{Namespace: cd.Namespace, Name: name}, &cm)
+				return err == nil
+			}, 30*time.Second, time.Second).Should(BeTrue())
 		})
 	})
 
@@ -305,7 +343,7 @@ spec:
 			}
 			By("Create ComponentDefinition")
 			Expect(k8sClient.Create(ctx, &cd)).Should(Succeed())
-			reconcileRetry(&r, req)
+			testutil.ReconcileRetry(&r, req)
 
 			By("Check whether ConfigMap is created")
 			var cm corev1.ConfigMap
@@ -350,7 +388,7 @@ spec:
 			}
 			By("Create ComponentDefinition")
 			Expect(k8sClient.Create(ctx, &cd)).Should(Succeed())
-			reconcileRetry(&r, req)
+			testutil.ReconcileRetry(&r, req)
 
 			By("Check whether ConfigMap is created")
 			var cm corev1.ConfigMap
@@ -459,7 +497,7 @@ spec:
 			Expect(yaml.Unmarshal([]byte(validComponentDefinition), &def)).Should(BeNil())
 			def.Namespace = namespace
 			Expect(k8sClient.Create(ctx, &def)).Should(Succeed())
-			reconcileRetry(&r, req)
+			testutil.ReconcileRetry(&r, req)
 
 			By("Check whether ConfigMap is created")
 			var cm corev1.ConfigMap
@@ -538,7 +576,7 @@ spec:
 			Expect(yaml.Unmarshal([]byte(invalidComponentDefinition), &invalidDef)).Should(BeNil())
 			Expect(k8sClient.Create(ctx, &invalidDef)).Should(Succeed())
 			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: invalidComponentDefinitionName, Namespace: namespace}}
-			reconcileRetry(&r, req)
+			testutil.ReconcileRetry(&r, req)
 			gotComponentDefinition := &v1beta1.ComponentDefinition{}
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Name: invalidComponentDefinitionName, Namespace: namespace}, gotComponentDefinition)).Should(BeNil())
 		})
@@ -601,7 +639,7 @@ spec:
 			Expect(k8sClient.Create(ctx, &invalidDef)).Should(Succeed())
 			By("Check whether WorkloadDefinition is created")
 			req := reconcile.Request{NamespacedName: client.ObjectKey{Name: invalidComponentDefinitionName, Namespace: namespace}}
-			reconcileRetry(&r, req)
+			testutil.ReconcileRetry(&r, req)
 			var wd v1beta1.WorkloadDefinition
 			var wdName = invalidComponentDefinitionName
 			Expect(k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: wdName}, &wd)).Should(Not(Succeed()))
@@ -689,14 +727,13 @@ spec:
 			var cm corev1.ConfigMap
 			name := fmt.Sprintf("%s%s", types.CapabilityConfigMapNamePrefix, componentDefinitionName)
 			Eventually(func() bool {
-				reconcileRetry(&r, req)
+				testutil.ReconcileRetry(&r, req)
 				err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &cm)
 				return err == nil
 			}, 30*time.Second, time.Second).Should(BeTrue())
 			Expect(cm.Data[types.OpenapiV3JSONSchema]).Should(Not(Equal("")))
 			Expect(cm.Labels["definition.oam.dev/name"]).Should(Equal(componentDefinitionName))
 		})
-
 	})
 })
 

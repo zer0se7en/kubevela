@@ -18,6 +18,7 @@ package applicationrollout
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/crossplane/crossplane-runtime/pkg/event"
@@ -33,10 +34,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
+	"github.com/oam-dev/kubevela/pkg/appfile"
+	common2 "github.com/oam-dev/kubevela/pkg/controller/common"
 	"github.com/oam-dev/kubevela/pkg/controller/common/rollout"
 	oamctrl "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
+	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
 )
@@ -45,13 +50,12 @@ const (
 	errUpdateAppRollout = "failed to update the app rollout"
 
 	appRolloutFinalizer = "finalizers.approllout.oam.dev"
-
-	reconcileTimeOut = 60 * time.Second
 )
 
 // Reconciler reconciles an AppRollout object
 type Reconciler struct {
 	client.Client
+	pd                   *packages.PackageDiscover
 	dm                   discoverymapper.DiscoveryMapper
 	record               event.Recorder
 	Scheme               *runtime.Scheme
@@ -65,11 +69,12 @@ type Reconciler struct {
 
 // Reconcile is the main logic of appRollout controller
 // nolint:gocyclo
-func (r *Reconciler) Reconcile(req ctrl.Request) (res reconcile.Result, retErr error) {
-	var appRollout v1beta1.AppRollout
-	ctx, cancel := context.WithTimeout(context.TODO(), reconcileTimeOut)
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (res reconcile.Result, retErr error) {
+	ctx, cancel := common2.NewReconcileContext(ctx)
 	defer cancel()
+
 	ctx = oamutil.SetNamespaceInCtx(ctx, req.Namespace)
+	var appRollout v1beta1.AppRollout
 
 	startTime := time.Now()
 	defer func() {
@@ -101,7 +106,10 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (res reconcile.Result, retErr e
 
 	reconRes, err := r.DoReconcile(ctx, &appRollout)
 	if err != nil {
-		return reconcile.Result{}, err
+		if updateErr := r.Status().Patch(ctx, &appRollout, client.Merge); updateErr != nil {
+			return ctrl.Result{}, errors.WithMessage(updateErr, "cannot update appRollout status")
+		}
+		return reconcile.Result{}, fmt.Errorf("approllout namespace: %s, name : %s reconcile error %w", appRollout.Namespace, appRollout.Name, err)
 	}
 	return reconRes, r.updateStatus(ctx, &appRollout)
 }
@@ -126,7 +134,9 @@ func (r *Reconciler) DoReconcile(ctx context.Context, appRollout *v1beta1.AppRol
 		return reconcile.Result{}, nil
 	}
 
-	h := rolloutHandler{Reconciler: r, appRollout: appRollout}
+	klog.InfoS("handle AppRollout", "name", appRollout.Name, "namespace", appRollout.Namespace, "state", appRollout.Status.RollingState)
+	appParser := appfile.NewApplicationParser(r.Client, r.dm, r.pd)
+	h := rolloutHandler{Reconciler: r, appRollout: appRollout, parser: appParser}
 	// handle rollout target/source change (only if it's not deleting already)
 	if isRolloutModified(*appRollout) {
 		h.handleRolloutModified()
@@ -140,14 +150,17 @@ func (r *Reconciler) DoReconcile(ctx context.Context, appRollout *v1beta1.AppRol
 	if len(appRollout.Spec.ComponentList) == 1 {
 		h.needRollComponent = appRollout.Spec.ComponentList[0]
 	}
-
 	// call assemble func generate source and target manifest
-	if err = h.prepareRollout(ctx); err != nil {
+	if err = h.prepareWorkloads(ctx); err != nil {
 		return reconcile.Result{}, err
 	}
 
 	// we only support one workload rollout now, so here is determine witch component is need to rollout
 	if err = h.determineRolloutComponent(); err != nil {
+		return reconcile.Result{}, err
+	}
+
+	if err = h.assembleManifest(ctx); err != nil {
 		return reconcile.Result{}, err
 	}
 
@@ -174,10 +187,14 @@ func (r *Reconciler) DoReconcile(ctx context.Context, appRollout *v1beta1.AppRol
 		// target manifest haven't template yet, call dispatch template target manifest firstly
 		err = h.templateTargetManifest(ctx)
 		if err != nil {
+			h.appRollout.Status.SetConditions(condition.ErrorCondition("template", err))
 			return reconcile.Result{}, err
 		}
+		h.appRollout.Status.SetConditions(condition.ReadyCondition("template"))
 		// this ensures that we template workload only once
 		h.appRollout.Status.StateTransition(v1alpha1.AppLocatedEvent)
+		klog.InfoS("AppRollout have complete templateTarget", "name", h.appRollout.Name, "namespace",
+			h.appRollout.Namespace, "rollingState", h.appRollout.Status.RollingState)
 		return reconcile.Result{RequeueAfter: 3 * time.Second}, nil
 	default:
 		// in other cases there is no need do anything
@@ -194,7 +211,7 @@ func (r *Reconciler) DoReconcile(ctx context.Context, appRollout *v1beta1.AppRol
 	}
 
 	// reconcile the rollout part of the spec given the target and source workload
-	rolloutPlanController := rollout.NewRolloutPlanController(r, appRollout, r.record,
+	rolloutPlanController := rollout.NewRolloutPlanController(r.Client, appRollout, r.record,
 		&appRollout.Spec.RolloutPlan, &appRollout.Status.RolloutStatus, targetWorkload, sourceWorkload)
 	result, rolloutStatus := rolloutPlanController.Reconcile(ctx)
 	// make sure that the new status is copied back
@@ -264,12 +281,14 @@ func (r *Reconciler) updateStatus(ctx context.Context, appRollout *v1beta1.AppRo
 }
 
 // NewReconciler render a applicationRollout reconciler
-func NewReconciler(c client.Client, dm discoverymapper.DiscoveryMapper, record event.Recorder, scheme *runtime.Scheme) *Reconciler {
+func NewReconciler(c client.Client, dm discoverymapper.DiscoveryMapper, pd *packages.PackageDiscover, record event.Recorder, scheme *runtime.Scheme, concurrent int) *Reconciler {
 	return &Reconciler{
-		Client: c,
-		dm:     dm,
-		record: record,
-		Scheme: scheme,
+		Client:               c,
+		dm:                   dm,
+		pd:                   pd,
+		record:               record,
+		Scheme:               scheme,
+		concurrentReconciles: concurrent,
 	}
 }
 
@@ -289,6 +308,7 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 // Setup adds a controller that reconciles AppRollout.
 func Setup(mgr ctrl.Manager, args oamctrl.Args) error {
 	reconciler := Reconciler{
+		pd:                   args.PackageDiscover,
 		Client:               mgr.GetClient(),
 		dm:                   args.DiscoveryMapper,
 		Scheme:               mgr.GetScheme(),

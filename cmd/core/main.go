@@ -17,10 +17,13 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/pprof"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,20 +32,22 @@ import (
 
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	standardcontroller "github.com/oam-dev/kubevela/pkg/controller"
 	commonconfig "github.com/oam-dev/kubevela/pkg/controller/common"
 	oamcontroller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 	oamv1alpha2 "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/pkg/controller/utils"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
+	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
 	oamwebhook "github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev"
-	velawebhook "github.com/oam-dev/kubevela/pkg/webhook/standard.oam.dev"
 	"github.com/oam-dev/kubevela/version"
 )
 
@@ -69,6 +74,14 @@ func main() {
 	var storageDriver string
 	var syncPeriod time.Duration
 	var applyOnceOnly string
+	var qps float64
+	var burst int
+	var pprofAddr string
+	var leaderElectionResourceLock string
+	var leaseDuration time.Duration
+	var renewDeadline time.Duration
+	var retryPeriod time.Duration
+	var enableClusterGateway bool
 
 	flag.BoolVar(&useWebhook, "use-webhook", false, "Enable Admission Webhook")
 	flag.StringVar(&certDir, "webhook-cert-dir", "/k8s-webhook-server/serving-certs", "Admission webhook cert/key dir.")
@@ -99,15 +112,61 @@ func main() {
 		"controller shared informer lister full re-sync period")
 	flag.StringVar(&oam.SystemDefinitonNamespace, "system-definition-namespace", "vela-system", "define the namespace of the system-level definition")
 	flag.IntVar(&controllerArgs.ConcurrentReconciles, "concurrent-reconciles", 4, "concurrent-reconciles is the concurrent reconcile number of the controller. The default value is 4")
+	flag.Float64Var(&qps, "kube-api-qps", 50, "the qps for reconcile clients. Low qps may lead to low throughput. High qps may give stress to api-server. Raise this value if concurrent-reconciles is set to be high.")
+	flag.IntVar(&burst, "kube-api-burst", 100, "the burst for reconcile clients. Recommend setting it qps*2.")
 	flag.DurationVar(&controllerArgs.DependCheckWait, "depend-check-wait", 30*time.Second, "depend-check-wait is the time to wait for ApplicationConfiguration's dependent-resource ready."+
 		"The default value is 30s, which means if dependent resources were not prepared, the ApplicationConfiguration would be reconciled after 30s.")
 	flag.StringVar(&controllerArgs.OAMSpecVer, "oam-spec-ver", "v0.3", "oam-spec-ver is the oam spec version controller want to setup, available options: v0.2, v0.3, all")
+	flag.StringVar(&pprofAddr, "pprof-addr", "", "The address for pprof to use while exporting profiling results. The default value is empty which means do not expose it. Set it to address like :6666 to expose it.")
+	flag.BoolVar(&commonconfig.PerfEnabled, "perf-enabled", false, "Enable performance logging for controllers, disabled by default.")
+	flag.StringVar(&leaderElectionResourceLock, "leader-election-resource-lock", "configmapsleases", "The resource lock to use for leader election")
+	flag.DurationVar(&leaseDuration, "leader-election-lease-duration", 15*time.Second,
+		"The duration that non-leader candidates will wait to force acquire leadership")
+	flag.DurationVar(&renewDeadline, "leader-election-renew-deadline", 10*time.Second,
+		"The duration that the acting controlplane will retry refreshing leadership before giving up")
+	flag.DurationVar(&retryPeriod, "leader-election-retry-period", 2*time.Second,
+		"The duration the LeaderElector clients should wait between tries of actions")
+	flag.BoolVar(&enableClusterGateway, "enable-cluster-gateway", false, "Enable cluster-gateway to use multicluster, disabled by default.")
 
 	flag.Parse()
 	// setup logging
 	klog.InitFlags(nil)
 	if logDebug {
 		_ = flag.Set("v", strconv.Itoa(int(commonconfig.LogDebug)))
+	}
+
+	if pprofAddr != "" {
+		// Start pprof server if enabled
+		mux := http.NewServeMux()
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		pprofServer := http.Server{
+			Addr:    pprofAddr,
+			Handler: mux,
+		}
+		klog.InfoS("Starting debug HTTP server", "addr", pprofServer.Addr)
+
+		go func() {
+			go func() {
+				ctx := context.Background()
+				<-ctx.Done()
+
+				ctx, cancelFunc := context.WithTimeout(context.Background(), 60*time.Minute)
+				defer cancelFunc()
+
+				if err := pprofServer.Shutdown(ctx); err != nil {
+					klog.Error(err, "Failed to shutdown debug HTTP server")
+				}
+			}()
+
+			if err := pprofServer.ListenAndServe(); !errors.Is(http.ErrServerClosed, err) {
+				klog.Error(err, "Failed to start debug HTTP server")
+				panic(err)
+			}
+		}()
 	}
 
 	if logFilePath != "" {
@@ -122,17 +181,32 @@ func main() {
 
 	restConfig := ctrl.GetConfigOrDie()
 	restConfig.UserAgent = kubevelaName + "/" + version.GitRevision
+	restConfig.QPS = float32(qps)
+	restConfig.Burst = burst
+
+	// wrapper the round tripper by multi cluster rewriter
+	if enableClusterGateway {
+		if err := multicluster.Initialize(restConfig); err != nil {
+			klog.ErrorS(err, "failed to enable multicluster")
+			os.Exit(1)
+		}
+	}
 
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
-		Scheme:                  scheme,
-		MetricsBindAddress:      metricsAddr,
-		LeaderElection:          enableLeaderElection,
-		LeaderElectionNamespace: leaderElectionNamespace,
-		LeaderElectionID:        kubevelaName,
-		Port:                    webhookPort,
-		CertDir:                 certDir,
-		HealthProbeBindAddress:  healthAddr,
-		SyncPeriod:              &syncPeriod,
+		Scheme:                     scheme,
+		MetricsBindAddress:         metricsAddr,
+		LeaderElection:             enableLeaderElection,
+		LeaderElectionNamespace:    leaderElectionNamespace,
+		LeaderElectionID:           kubevelaName,
+		Port:                       webhookPort,
+		CertDir:                    certDir,
+		HealthProbeBindAddress:     healthAddr,
+		SyncPeriod:                 &syncPeriod,
+		LeaderElectionResourceLock: leaderElectionResourceLock,
+		LeaseDuration:              &leaseDuration,
+		RenewDeadline:              &renewDeadline,
+		RetryPeriod:                &retryPeriod,
+		ClientDisableCacheFor:      []client.Object{&v1beta1.ResourceTracker{}},
 	})
 	if err != nil {
 		klog.ErrorS(err, "Unable to create a controller manager")
@@ -184,7 +258,6 @@ func main() {
 	if useWebhook {
 		klog.InfoS("Enable webhook", "server port", strconv.Itoa(webhookPort))
 		oamwebhook.Register(mgr, controllerArgs)
-		velawebhook.Register(mgr, disableCaps)
 		if err := waitWebhookSecretVolume(certDir, waitSecretTimeout, waitSecretInterval); err != nil {
 			klog.ErrorS(err, "Unable to get webhook secret")
 			os.Exit(1)

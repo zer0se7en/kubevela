@@ -3,7 +3,7 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     cert-manager.io/inject-ca-from: vela-system/kubevela-vela-core-root-cert
-    controller-gen.kubebuilder.io/version: v0.2.4
+    controller-gen.kubebuilder.io/version: v0.6.2
   name: applications.core.oam.dev
 spec:
   conversion:
@@ -139,21 +139,26 @@ spec:
                           description: TemplateRef references a metric template object
                           properties:
                             apiVersion:
-                              description: APIVersion of the referenced object.
+                              description: API version of the referent.
+                              type: string
+                            fieldPath:
+                              description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
                               type: string
                             kind:
-                              description: Kind of the referenced object.
+                              description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
                               type: string
                             name:
-                              description: Name of the referenced object.
+                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                              type: string
+                            namespace:
+                              description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                              type: string
+                            resourceVersion:
+                              description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
                               type: string
                             uid:
-                              description: UID of the referenced object.
+                              description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                               type: string
-                          required:
-                          - apiVersion
-                          - kind
-                          - name
                           type: object
                       required:
                       - name
@@ -235,21 +240,26 @@ spec:
                                 description: TemplateRef references a metric template object
                                 properties:
                                   apiVersion:
-                                    description: APIVersion of the referenced object.
+                                    description: API version of the referent.
+                                    type: string
+                                  fieldPath:
+                                    description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
                                     type: string
                                   kind:
-                                    description: Kind of the referenced object.
+                                    description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
                                     type: string
                                   name:
-                                    description: Name of the referenced object.
+                                    description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                                    type: string
+                                  namespace:
+                                    description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                                    type: string
+                                  resourceVersion:
+                                    description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
                                     type: string
                                   uid:
-                                    description: UID of the referenced object.
+                                    description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                                     type: string
-                                required:
-                                - apiVersion
-                                - kind
-                                - name
                                 type: object
                             required:
                             - name
@@ -325,27 +335,65 @@ spec:
           status:
             description: AppStatus defines the observed state of Application
             properties:
+              appliedResources:
+                description: AppliedResources record the resources that the  workflow step apply.
+                items:
+                  description: ClusterObjectReference defines the object reference with cluster.
+                  properties:
+                    apiVersion:
+                      description: API version of the referent.
+                      type: string
+                    cluster:
+                      type: string
+                    creator:
+                      description: ResourceCreatorRole defines the resource creator.
+                      type: string
+                    fieldPath:
+                      description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
+                      type: string
+                    kind:
+                      description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+                      type: string
+                    name:
+                      description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                      type: string
+                    namespace:
+                      description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                      type: string
+                    resourceVersion:
+                      description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
+                      type: string
+                    uid:
+                      description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
+                      type: string
+                  type: object
+                type: array
               components:
                 description: Components record the related Components created by Application Controller
                 items:
-                  description: A TypedReference refers to an object by Name, Kind, and APIVersion. It is commonly used to reference cluster-scoped objects or objects where the namespace is already known.
+                  description: 'ObjectReference contains enough information to let you inspect or modify the referred object. --- New uses of this type are discouraged because of difficulty describing its usage when embedded in APIs.  1. Ignored fields.  It includes many fields which are not generally honored.  For instance, ResourceVersion and FieldPath are both very rarely valid in actual usage.  2. Invalid usage help.  It is impossible to add specific help for individual usage.  In most embedded usages, there are particular     restrictions like, "must refer only to types A and B" or "UID not honored" or "name must be restricted".     Those cannot be well described when embedded.  3. Inconsistent validation.  Because the usages are different, the validation rules are different by usage, which makes it hard for users to predict what will happen.  4. The fields are both imprecise and overly precise.  Kind is not a precise mapping to a URL. This can produce ambiguity     during interpretation and require a REST mapping.  In most cases, the dependency is on the group,resource tuple     and the version of the actual struct is irrelevant.  5. We cannot easily change it.  Because this type is embedded in many locations, updates to this type     will affect numerous schemas.  Don''t make new APIs embed an underspecified API type they do not control. Instead of using this type, create a locally provided and used type that is well-focused on your reference. For example, ServiceReferences for admission registration: https://github.com/kubernetes/api/blob/release-1.17/admissionregistration/v1/types.go#L533 .'
                   properties:
                     apiVersion:
-                      description: APIVersion of the referenced object.
+                      description: API version of the referent.
+                      type: string
+                    fieldPath:
+                      description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
                       type: string
                     kind:
-                      description: Kind of the referenced object.
+                      description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
                       type: string
                     name:
-                      description: Name of the referenced object.
+                      description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                      type: string
+                    namespace:
+                      description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                      type: string
+                    resourceVersion:
+                      description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
                       type: string
                     uid:
-                      description: UID of the referenced object.
+                      description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                       type: string
-                  required:
-                  - apiVersion
-                  - kind
-                  - name
                   type: object
                 type: array
               conditions:
@@ -391,25 +439,34 @@ spec:
                 - name
                 - revision
                 type: object
+              observedGeneration:
+                description: The generation observed by the application controller.
+                format: int64
+                type: integer
               resourceTracker:
                 description: ResourceTracker record the status of the ResourceTracker
                 properties:
                   apiVersion:
-                    description: APIVersion of the referenced object.
+                    description: API version of the referent.
+                    type: string
+                  fieldPath:
+                    description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
                     type: string
                   kind:
-                    description: Kind of the referenced object.
+                    description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
                     type: string
                   name:
-                    description: Name of the referenced object.
+                    description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                    type: string
+                  namespace:
+                    description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                    type: string
+                  resourceVersion:
+                    description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
                     type: string
                   uid:
-                    description: UID of the referenced object.
+                    description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                     type: string
-                required:
-                - apiVersion
-                - kind
-                - name
                 type: object
               rollout:
                 description: AppRolloutStatus defines the observed state of AppRollout
@@ -492,6 +549,8 @@ spec:
                 items:
                   description: ApplicationComponentStatus record the health status of App component
                   properties:
+                    env:
+                      type: string
                     healthy:
                       type: boolean
                     message:
@@ -500,24 +559,29 @@ spec:
                       type: string
                     scopes:
                       items:
-                        description: A TypedReference refers to an object by Name, Kind, and APIVersion. It is commonly used to reference cluster-scoped objects or objects where the namespace is already known.
+                        description: 'ObjectReference contains enough information to let you inspect or modify the referred object. --- New uses of this type are discouraged because of difficulty describing its usage when embedded in APIs.  1. Ignored fields.  It includes many fields which are not generally honored.  For instance, ResourceVersion and FieldPath are both very rarely valid in actual usage.  2. Invalid usage help.  It is impossible to add specific help for individual usage.  In most embedded usages, there are particular     restrictions like, "must refer only to types A and B" or "UID not honored" or "name must be restricted".     Those cannot be well described when embedded.  3. Inconsistent validation.  Because the usages are different, the validation rules are different by usage, which makes it hard for users to predict what will happen.  4. The fields are both imprecise and overly precise.  Kind is not a precise mapping to a URL. This can produce ambiguity     during interpretation and require a REST mapping.  In most cases, the dependency is on the group,resource tuple     and the version of the actual struct is irrelevant.  5. We cannot easily change it.  Because this type is embedded in many locations, updates to this type     will affect numerous schemas.  Don''t make new APIs embed an underspecified API type they do not control. Instead of using this type, create a locally provided and used type that is well-focused on your reference. For example, ServiceReferences for admission registration: https://github.com/kubernetes/api/blob/release-1.17/admissionregistration/v1/types.go#L533 .'
                         properties:
                           apiVersion:
-                            description: APIVersion of the referenced object.
+                            description: API version of the referent.
+                            type: string
+                          fieldPath:
+                            description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
                             type: string
                           kind:
-                            description: Kind of the referenced object.
+                            description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
                             type: string
                           name:
-                            description: Name of the referenced object.
+                            description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                            type: string
+                          namespace:
+                            description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                            type: string
+                          resourceVersion:
+                            description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
                             type: string
                           uid:
-                            description: UID of the referenced object.
+                            description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                             type: string
-                        required:
-                        - apiVersion
-                        - kind
-                        - name
                         type: object
                       type: array
                     traits:
@@ -555,41 +619,101 @@ spec:
                 description: ApplicationPhase is a label for the condition of a application at the current time
                 type: string
               workflow:
-                description: Workflow record the status of workflow steps
+                description: Workflow record the status of workflow
                 properties:
+                  appRevision:
+                    type: string
+                  contextBackend:
+                    description: 'ObjectReference contains enough information to let you inspect or modify the referred object. --- New uses of this type are discouraged because of difficulty describing its usage when embedded in APIs.  1. Ignored fields.  It includes many fields which are not generally honored.  For instance, ResourceVersion and FieldPath are both very rarely valid in actual usage.  2. Invalid usage help.  It is impossible to add specific help for individual usage.  In most embedded usages, there are particular     restrictions like, "must refer only to types A and B" or "UID not honored" or "name must be restricted".     Those cannot be well described when embedded.  3. Inconsistent validation.  Because the usages are different, the validation rules are different by usage, which makes it hard for users to predict what will happen.  4. The fields are both imprecise and overly precise.  Kind is not a precise mapping to a URL. This can produce ambiguity     during interpretation and require a REST mapping.  In most cases, the dependency is on the group,resource tuple     and the version of the actual struct is irrelevant.  5. We cannot easily change it.  Because this type is embedded in many locations, updates to this type     will affect numerous schemas.  Don''t make new APIs embed an underspecified API type they do not control. Instead of using this type, create a locally provided and used type that is well-focused on your reference. For example, ServiceReferences for admission registration: https://github.com/kubernetes/api/blob/release-1.17/admissionregistration/v1/types.go#L533 .'
+                    properties:
+                      apiVersion:
+                        description: API version of the referent.
+                        type: string
+                      fieldPath:
+                        description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
+                        type: string
+                      kind:
+                        description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+                        type: string
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                        type: string
+                      namespace:
+                        description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                        type: string
+                      resourceVersion:
+                        description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
+                        type: string
+                      uid:
+                        description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
+                        type: string
+                    type: object
+                  mode:
+                    description: WorkflowMode describes the mode of workflow
+                    type: string
                   steps:
                     items:
                       description: WorkflowStepStatus record the status of a workflow step
                       properties:
+                        id:
+                          type: string
+                        message:
+                          description: A human readable message indicating details about why the workflowStep is in this state.
+                          type: string
                         name:
                           type: string
                         phase:
                           description: WorkflowStepPhase describes the phase of a workflow step.
                           type: string
-                        resourceRef:
-                          description: A TypedReference refers to an object by Name, Kind, and APIVersion. It is commonly used to reference cluster-scoped objects or objects where the namespace is already known.
+                        reason:
+                          description: A brief CamelCase message indicating details about why the workflowStep is in this state.
+                          type: string
+                        subSteps:
+                          description: SubStepsStatus record the status of workflow steps.
                           properties:
-                            apiVersion:
-                              description: APIVersion of the referenced object.
+                            mode:
+                              description: WorkflowMode describes the mode of workflow
                               type: string
-                            kind:
-                              description: Kind of the referenced object.
-                              type: string
-                            name:
-                              description: Name of the referenced object.
-                              type: string
-                            uid:
-                              description: UID of the referenced object.
-                              type: string
-                          required:
-                          - apiVersion
-                          - kind
-                          - name
+                            stepIndex:
+                              type: integer
+                            steps:
+                              items:
+                                description: WorkflowSubStepStatus record the status of a workflow step
+                                properties:
+                                  id:
+                                    type: string
+                                  message:
+                                    description: A human readable message indicating details about why the workflowStep is in this state.
+                                    type: string
+                                  name:
+                                    type: string
+                                  phase:
+                                    description: WorkflowStepPhase describes the phase of a workflow step.
+                                    type: string
+                                  reason:
+                                    description: A brief CamelCase message indicating details about why the workflowStep is in this state.
+                                    type: string
+                                  type:
+                                    type: string
+                                required:
+                                - id
+                                type: object
+                              type: array
                           type: object
                         type:
                           type: string
+                      required:
+                      - id
                       type: object
                     type: array
+                  suspend:
+                    type: boolean
+                  terminated:
+                    type: boolean
+                required:
+                - mode
+                - suspend
+                - terminated
                 type: object
             type: object
         type: object
@@ -636,8 +760,37 @@ spec:
                 items:
                   description: ApplicationComponent describe the component of application
                   properties:
+                    externalRevision:
+                      description: ExternalRevision specified the component revisionName
+                      type: string
+                    inputs:
+                      description: StepInputs defines variable input of WorkflowStep
+                      items:
+                        properties:
+                          from:
+                            type: string
+                          parameterKey:
+                            type: string
+                        required:
+                        - from
+                        - parameterKey
+                        type: object
+                      type: array
                     name:
                       type: string
+                    outputs:
+                      description: StepOutputs defines output variable of WorkflowStep
+                      items:
+                        properties:
+                          name:
+                            type: string
+                          valueFrom:
+                            type: string
+                        required:
+                        - name
+                        - valueFrom
+                        type: object
+                      type: array
                     properties:
                       type: object
                       x-kubernetes-preserve-unknown-fields: true
@@ -724,21 +877,26 @@ spec:
                           description: TemplateRef references a metric template object
                           properties:
                             apiVersion:
-                              description: APIVersion of the referenced object.
+                              description: API version of the referent.
+                              type: string
+                            fieldPath:
+                              description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
                               type: string
                             kind:
-                              description: Kind of the referenced object.
+                              description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
                               type: string
                             name:
-                              description: Name of the referenced object.
+                              description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                              type: string
+                            namespace:
+                              description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                              type: string
+                            resourceVersion:
+                              description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
                               type: string
                             uid:
-                              description: UID of the referenced object.
+                              description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                               type: string
-                          required:
-                          - apiVersion
-                          - kind
-                          - name
                           type: object
                       required:
                       - name
@@ -820,21 +978,26 @@ spec:
                                 description: TemplateRef references a metric template object
                                 properties:
                                   apiVersion:
-                                    description: APIVersion of the referenced object.
+                                    description: API version of the referent.
+                                    type: string
+                                  fieldPath:
+                                    description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
                                     type: string
                                   kind:
-                                    description: Kind of the referenced object.
+                                    description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
                                     type: string
                                   name:
-                                    description: Name of the referenced object.
+                                    description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                                    type: string
+                                  namespace:
+                                    description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                                    type: string
+                                  resourceVersion:
+                                    description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
                                     type: string
                                   uid:
-                                    description: UID of the referenced object.
+                                    description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                                     type: string
-                                required:
-                                - apiVersion
-                                - kind
-                                - name
                                 type: object
                             required:
                             - name
@@ -911,9 +1074,35 @@ spec:
                     items:
                       description: WorkflowStep defines how to execute a workflow step.
                       properties:
+                        inputs:
+                          description: StepInputs defines variable input of WorkflowStep
+                          items:
+                            properties:
+                              from:
+                                type: string
+                              parameterKey:
+                                type: string
+                            required:
+                            - from
+                            - parameterKey
+                            type: object
+                          type: array
                         name:
                           description: Name is the unique name of the workflow step.
                           type: string
+                        outputs:
+                          description: StepOutputs defines output variable of WorkflowStep
+                          items:
+                            properties:
+                              name:
+                                type: string
+                              valueFrom:
+                                type: string
+                            required:
+                            - name
+                            - valueFrom
+                            type: object
+                          type: array
                         properties:
                           type: object
                           x-kubernetes-preserve-unknown-fields: true
@@ -931,27 +1120,65 @@ spec:
           status:
             description: AppStatus defines the observed state of Application
             properties:
+              appliedResources:
+                description: AppliedResources record the resources that the  workflow step apply.
+                items:
+                  description: ClusterObjectReference defines the object reference with cluster.
+                  properties:
+                    apiVersion:
+                      description: API version of the referent.
+                      type: string
+                    cluster:
+                      type: string
+                    creator:
+                      description: ResourceCreatorRole defines the resource creator.
+                      type: string
+                    fieldPath:
+                      description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
+                      type: string
+                    kind:
+                      description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+                      type: string
+                    name:
+                      description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                      type: string
+                    namespace:
+                      description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                      type: string
+                    resourceVersion:
+                      description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
+                      type: string
+                    uid:
+                      description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
+                      type: string
+                  type: object
+                type: array
               components:
                 description: Components record the related Components created by Application Controller
                 items:
-                  description: A TypedReference refers to an object by Name, Kind, and APIVersion. It is commonly used to reference cluster-scoped objects or objects where the namespace is already known.
+                  description: 'ObjectReference contains enough information to let you inspect or modify the referred object. --- New uses of this type are discouraged because of difficulty describing its usage when embedded in APIs.  1. Ignored fields.  It includes many fields which are not generally honored.  For instance, ResourceVersion and FieldPath are both very rarely valid in actual usage.  2. Invalid usage help.  It is impossible to add specific help for individual usage.  In most embedded usages, there are particular     restrictions like, "must refer only to types A and B" or "UID not honored" or "name must be restricted".     Those cannot be well described when embedded.  3. Inconsistent validation.  Because the usages are different, the validation rules are different by usage, which makes it hard for users to predict what will happen.  4. The fields are both imprecise and overly precise.  Kind is not a precise mapping to a URL. This can produce ambiguity     during interpretation and require a REST mapping.  In most cases, the dependency is on the group,resource tuple     and the version of the actual struct is irrelevant.  5. We cannot easily change it.  Because this type is embedded in many locations, updates to this type     will affect numerous schemas.  Don''t make new APIs embed an underspecified API type they do not control. Instead of using this type, create a locally provided and used type that is well-focused on your reference. For example, ServiceReferences for admission registration: https://github.com/kubernetes/api/blob/release-1.17/admissionregistration/v1/types.go#L533 .'
                   properties:
                     apiVersion:
-                      description: APIVersion of the referenced object.
+                      description: API version of the referent.
+                      type: string
+                    fieldPath:
+                      description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
                       type: string
                     kind:
-                      description: Kind of the referenced object.
+                      description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
                       type: string
                     name:
-                      description: Name of the referenced object.
+                      description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                      type: string
+                    namespace:
+                      description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                      type: string
+                    resourceVersion:
+                      description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
                       type: string
                     uid:
-                      description: UID of the referenced object.
+                      description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                       type: string
-                  required:
-                  - apiVersion
-                  - kind
-                  - name
                   type: object
                 type: array
               conditions:
@@ -997,25 +1224,34 @@ spec:
                 - name
                 - revision
                 type: object
+              observedGeneration:
+                description: The generation observed by the application controller.
+                format: int64
+                type: integer
               resourceTracker:
                 description: ResourceTracker record the status of the ResourceTracker
                 properties:
                   apiVersion:
-                    description: APIVersion of the referenced object.
+                    description: API version of the referent.
+                    type: string
+                  fieldPath:
+                    description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
                     type: string
                   kind:
-                    description: Kind of the referenced object.
+                    description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
                     type: string
                   name:
-                    description: Name of the referenced object.
+                    description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                    type: string
+                  namespace:
+                    description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                    type: string
+                  resourceVersion:
+                    description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
                     type: string
                   uid:
-                    description: UID of the referenced object.
+                    description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                     type: string
-                required:
-                - apiVersion
-                - kind
-                - name
                 type: object
               rollout:
                 description: AppRolloutStatus defines the observed state of AppRollout
@@ -1098,6 +1334,8 @@ spec:
                 items:
                   description: ApplicationComponentStatus record the health status of App component
                   properties:
+                    env:
+                      type: string
                     healthy:
                       type: boolean
                     message:
@@ -1106,24 +1344,29 @@ spec:
                       type: string
                     scopes:
                       items:
-                        description: A TypedReference refers to an object by Name, Kind, and APIVersion. It is commonly used to reference cluster-scoped objects or objects where the namespace is already known.
+                        description: 'ObjectReference contains enough information to let you inspect or modify the referred object. --- New uses of this type are discouraged because of difficulty describing its usage when embedded in APIs.  1. Ignored fields.  It includes many fields which are not generally honored.  For instance, ResourceVersion and FieldPath are both very rarely valid in actual usage.  2. Invalid usage help.  It is impossible to add specific help for individual usage.  In most embedded usages, there are particular     restrictions like, "must refer only to types A and B" or "UID not honored" or "name must be restricted".     Those cannot be well described when embedded.  3. Inconsistent validation.  Because the usages are different, the validation rules are different by usage, which makes it hard for users to predict what will happen.  4. The fields are both imprecise and overly precise.  Kind is not a precise mapping to a URL. This can produce ambiguity     during interpretation and require a REST mapping.  In most cases, the dependency is on the group,resource tuple     and the version of the actual struct is irrelevant.  5. We cannot easily change it.  Because this type is embedded in many locations, updates to this type     will affect numerous schemas.  Don''t make new APIs embed an underspecified API type they do not control. Instead of using this type, create a locally provided and used type that is well-focused on your reference. For example, ServiceReferences for admission registration: https://github.com/kubernetes/api/blob/release-1.17/admissionregistration/v1/types.go#L533 .'
                         properties:
                           apiVersion:
-                            description: APIVersion of the referenced object.
+                            description: API version of the referent.
+                            type: string
+                          fieldPath:
+                            description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
                             type: string
                           kind:
-                            description: Kind of the referenced object.
+                            description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
                             type: string
                           name:
-                            description: Name of the referenced object.
+                            description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                            type: string
+                          namespace:
+                            description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                            type: string
+                          resourceVersion:
+                            description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
                             type: string
                           uid:
-                            description: UID of the referenced object.
+                            description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
                             type: string
-                        required:
-                        - apiVersion
-                        - kind
-                        - name
                         type: object
                       type: array
                     traits:
@@ -1161,41 +1404,101 @@ spec:
                 description: ApplicationPhase is a label for the condition of a application at the current time
                 type: string
               workflow:
-                description: Workflow record the status of workflow steps
+                description: Workflow record the status of workflow
                 properties:
+                  appRevision:
+                    type: string
+                  contextBackend:
+                    description: 'ObjectReference contains enough information to let you inspect or modify the referred object. --- New uses of this type are discouraged because of difficulty describing its usage when embedded in APIs.  1. Ignored fields.  It includes many fields which are not generally honored.  For instance, ResourceVersion and FieldPath are both very rarely valid in actual usage.  2. Invalid usage help.  It is impossible to add specific help for individual usage.  In most embedded usages, there are particular     restrictions like, "must refer only to types A and B" or "UID not honored" or "name must be restricted".     Those cannot be well described when embedded.  3. Inconsistent validation.  Because the usages are different, the validation rules are different by usage, which makes it hard for users to predict what will happen.  4. The fields are both imprecise and overly precise.  Kind is not a precise mapping to a URL. This can produce ambiguity     during interpretation and require a REST mapping.  In most cases, the dependency is on the group,resource tuple     and the version of the actual struct is irrelevant.  5. We cannot easily change it.  Because this type is embedded in many locations, updates to this type     will affect numerous schemas.  Don''t make new APIs embed an underspecified API type they do not control. Instead of using this type, create a locally provided and used type that is well-focused on your reference. For example, ServiceReferences for admission registration: https://github.com/kubernetes/api/blob/release-1.17/admissionregistration/v1/types.go#L533 .'
+                    properties:
+                      apiVersion:
+                        description: API version of the referent.
+                        type: string
+                      fieldPath:
+                        description: 'If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2]. For example, if the object reference is to a container within a pod, this would take on a value like: "spec.containers{name}" (where "name" refers to the name of the container that triggered the event) or if no container name is specified "spec.containers[2]" (container with index 2 in this pod). This syntax is chosen only to have some well-defined way of referencing a part of an object. TODO: this design is not final and this field is subject to change in the future.'
+                        type: string
+                      kind:
+                        description: 'Kind of the referent. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds'
+                        type: string
+                      name:
+                        description: 'Name of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names'
+                        type: string
+                      namespace:
+                        description: 'Namespace of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/'
+                        type: string
+                      resourceVersion:
+                        description: 'Specific resourceVersion to which this reference is made, if any. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency'
+                        type: string
+                      uid:
+                        description: 'UID of the referent. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids'
+                        type: string
+                    type: object
+                  mode:
+                    description: WorkflowMode describes the mode of workflow
+                    type: string
                   steps:
                     items:
                       description: WorkflowStepStatus record the status of a workflow step
                       properties:
+                        id:
+                          type: string
+                        message:
+                          description: A human readable message indicating details about why the workflowStep is in this state.
+                          type: string
                         name:
                           type: string
                         phase:
                           description: WorkflowStepPhase describes the phase of a workflow step.
                           type: string
-                        resourceRef:
-                          description: A TypedReference refers to an object by Name, Kind, and APIVersion. It is commonly used to reference cluster-scoped objects or objects where the namespace is already known.
+                        reason:
+                          description: A brief CamelCase message indicating details about why the workflowStep is in this state.
+                          type: string
+                        subSteps:
+                          description: SubStepsStatus record the status of workflow steps.
                           properties:
-                            apiVersion:
-                              description: APIVersion of the referenced object.
+                            mode:
+                              description: WorkflowMode describes the mode of workflow
                               type: string
-                            kind:
-                              description: Kind of the referenced object.
-                              type: string
-                            name:
-                              description: Name of the referenced object.
-                              type: string
-                            uid:
-                              description: UID of the referenced object.
-                              type: string
-                          required:
-                          - apiVersion
-                          - kind
-                          - name
+                            stepIndex:
+                              type: integer
+                            steps:
+                              items:
+                                description: WorkflowSubStepStatus record the status of a workflow step
+                                properties:
+                                  id:
+                                    type: string
+                                  message:
+                                    description: A human readable message indicating details about why the workflowStep is in this state.
+                                    type: string
+                                  name:
+                                    type: string
+                                  phase:
+                                    description: WorkflowStepPhase describes the phase of a workflow step.
+                                    type: string
+                                  reason:
+                                    description: A brief CamelCase message indicating details about why the workflowStep is in this state.
+                                    type: string
+                                  type:
+                                    type: string
+                                required:
+                                - id
+                                type: object
+                              type: array
                           type: object
                         type:
                           type: string
+                      required:
+                      - id
                       type: object
                     type: array
+                  suspend:
+                    type: boolean
+                  terminated:
+                    type: boolean
+                required:
+                - mode
+                - suspend
+                - terminated
                 type: object
             type: object
         type: object

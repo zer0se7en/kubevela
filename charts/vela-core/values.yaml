@@ -68,8 +68,8 @@ admissionWebhooks:
   patch:
     enabled: true
     image:
-      repository: wonderflow/kube-webhook-certgen
-      tag: v2.1
+      repository: oamdev/kube-webhook-certgen
+      tag: v2.2
       pullPolicy: IfNotPresent
     affinity: {}
     tolerations: []
@@ -102,3 +102,24 @@ dependCheckWait: 30s
 
 # OAMSpecVer is the oam spec version controller want to setup
 OAMSpecVer: "v0.3"
+
+apiServer:
+  enabled: true
+  port: 8000
+  replicaCount: 1
+  Service:
+    type: ClusterIP
+
+multicluster:
+  enabled: false
+  clusterGateway:
+    replicaCount: 1
+    port: 9443
+    image:
+      repository: oamdev/cluster-gateway
+      tag: latest
+      pullPolicy: Always
+    resource:
+      limits:
+        cpu: 100m
+        memory: 10Mi

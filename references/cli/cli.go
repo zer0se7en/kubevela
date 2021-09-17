@@ -29,6 +29,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
+	"github.com/oam-dev/kubevela/references/a/preimport"
 	"github.com/oam-dev/kubevela/references/cmd/cli/fake"
 	"github.com/oam-dev/kubevela/version"
 )
@@ -68,6 +69,10 @@ func NewCommand() *cobra.Command {
 		os.Exit(1)
 	}
 
+	preimport.SuppressLogging()
+	_, _ = commandArgs.GetClient()
+	preimport.ResumeLogging()
+
 	cmds.AddCommand(
 		// Getting Start
 		NewInitCommand(commandArgs, ioStream),
@@ -85,12 +90,31 @@ func NewCommand() *cobra.Command {
 		NewEnvCommand(commandArgs, ioStream),
 		NewConfigCommand(ioStream),
 
+		// Workflows
+		NewWorkflowCommand(commandArgs, ioStream),
+
 		// Capabilities
 		CapabilityCommandGroup(commandArgs, ioStream),
 		NewTemplateCommand(ioStream),
 		NewTraitsCommand(commandArgs, ioStream),
 		NewComponentsCommand(commandArgs, ioStream),
 		NewWorkloadsCommand(commandArgs, ioStream),
+		DefinitionCommandGroup(commandArgs),
+
+		// Addons
+		NewAddonCommand(commandArgs, ioStream),
+
+		// live-diff
+		NewLiveDiffCommand(commandArgs, ioStream),
+
+		// dry-run
+		NewDryRunCommand(commandArgs, ioStream),
+
+		// cue-packages
+		NewCUEPackageCommand(commandArgs, ioStream),
+
+		// cluster
+		ClusterCommandGroup(commandArgs),
 
 		// Helper
 		SystemCommandGroup(commandArgs, ioStream),

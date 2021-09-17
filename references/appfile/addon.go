@@ -19,7 +19,6 @@ package appfile
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	commontypes "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile"
@@ -47,7 +47,7 @@ const (
 )
 
 // ApplyTerraform deploys addon resources
-func ApplyTerraform(app *v1beta1.Application, k8sClient client.Client, ioStream util.IOStreams, namespace string, args common.Args) ([]v1beta1.ApplicationComponent, error) {
+func ApplyTerraform(app *v1beta1.Application, k8sClient client.Client, ioStream util.IOStreams, namespace string, args common.Args) ([]commontypes.ApplicationComponent, error) {
 	dm, err := args.GetDiscoveryMapper()
 	if err != nil {
 		return nil, err
@@ -58,7 +58,7 @@ func ApplyTerraform(app *v1beta1.Application, k8sClient client.Client, ioStream 
 	}
 
 	// TODO(zzxwill) Need to check whether authentication credentials of a specific cloud provider are exported as environment variables, like `ALICLOUD_ACCESS_KEY`
-	var nativeVelaComponents []v1beta1.ApplicationComponent
+	var nativeVelaComponents []commontypes.ApplicationComponent
 	// parse template
 	appParser := appfile.NewApplicationParser(k8sClient, dm, pd)
 
@@ -94,7 +94,7 @@ func ApplyTerraform(app *v1beta1.Application, k8sClient client.Client, ioStream 
 					return nil, fmt.Errorf("failed to create directory for %s: %w", tfJSONDir, err)
 				}
 			}
-			if err := ioutil.WriteFile(filepath.Join(tfJSONDir, "main.tf.json"), tf, 0600); err != nil {
+			if err := os.WriteFile(filepath.Join(tfJSONDir, "main.tf.json"), tf, 0600); err != nil {
 				return nil, fmt.Errorf("failed to convert Terraform template: %w", err)
 			}
 

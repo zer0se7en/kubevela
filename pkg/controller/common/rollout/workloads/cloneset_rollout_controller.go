@@ -128,15 +128,16 @@ func (c *CloneSetRolloutController) Initialize(ctx context.Context) (bool, error
 	}
 
 	if controller := metav1.GetControllerOf(c.cloneSet); controller != nil {
-		if controller.Kind == v1beta1.AppRolloutKind && controller.APIVersion == v1beta1.SchemeGroupVersion.String() {
+		if (controller.Kind == v1beta1.AppRolloutKind && controller.APIVersion == v1beta1.SchemeGroupVersion.String()) ||
+			(controller.Kind == v1alpha1.RolloutKind && controller.APIVersion == v1alpha1.SchemeGroupVersion.String()) {
 			// it's already there
 			return true, nil
 		}
 	}
 	// add the parent controller to the owner of the cloneset
 	// before kicking start the update and start from every pod in the old version
-	clonePatch := client.MergeFrom(c.cloneSet.DeepCopyObject())
-	ref := metav1.NewControllerRef(c.parentController, v1beta1.AppRolloutKindVersionKind)
+	clonePatch := client.MergeFrom(c.cloneSet.DeepCopy())
+	ref := metav1.NewControllerRef(c.parentController, c.parentController.GetObjectKind().GroupVersionKind())
 	c.cloneSet.SetOwnerReferences(append(c.cloneSet.GetOwnerReferences(), *ref))
 	c.cloneSet.Spec.UpdateStrategy.Paused = false
 	c.cloneSet.Spec.UpdateStrategy.Partition = &intstr.IntOrString{Type: intstr.Int, IntVal: totalReplicas}
@@ -164,7 +165,7 @@ func (c *CloneSetRolloutController) RolloutOneBatchPods(ctx context.Context) (bo
 
 	newPodTarget := calculateNewBatchTarget(c.rolloutSpec, 0, int(cloneSetSize), int(c.rolloutStatus.CurrentBatch))
 	// set the Partition as the desired number of pods in old revisions.
-	clonePatch := client.MergeFrom(c.cloneSet.DeepCopyObject())
+	clonePatch := client.MergeFrom(c.cloneSet.DeepCopy())
 	c.cloneSet.Spec.UpdateStrategy.Partition = &intstr.IntOrString{Type: intstr.Int,
 		IntVal: cloneSetSize - int32(newPodTarget)}
 	// patch the Cloneset
@@ -259,12 +260,13 @@ func (c *CloneSetRolloutController) Finalize(ctx context.Context, succeed bool) 
 		c.rolloutStatus.RolloutRetry(err.Error())
 		return false
 	}
-	clonePatch := client.MergeFrom(c.cloneSet.DeepCopyObject())
+	clonePatch := client.MergeFrom(c.cloneSet.DeepCopy())
 	// remove the parent controller from the resources' owner list
 	var newOwnerList []metav1.OwnerReference
 	isOwner := false
 	for _, owner := range c.cloneSet.GetOwnerReferences() {
-		if owner.Kind == v1beta1.AppRolloutKind && owner.APIVersion == v1beta1.SchemeGroupVersion.String() {
+		if owner.Kind == c.parentController.GetObjectKind().GroupVersionKind().Kind &&
+			owner.APIVersion == c.parentController.GetObjectKind().GroupVersionKind().GroupVersion().String() {
 			isOwner = true
 			continue
 		}

@@ -27,7 +27,6 @@ import (
 	"strconv"
 	"strings"
 
-	cpv1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/pkg/errors"
 	appsv1 "k8s.io/api/apps/v1"
@@ -40,13 +39,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/rand"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
-	oamtypes "github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 )
@@ -113,8 +113,8 @@ const (
 
 	// ErrGenerateDefinitionRevision is the error while generate DefinitionRevision
 	ErrGenerateDefinitionRevision = "cannot generate DefinitionRevision of %s: %v"
-	// ErrCreateOrUpdateDefinitionRevision is the error while create or update DefinitionRevision
-	ErrCreateOrUpdateDefinitionRevision = "cannot create or update DefinitionRevision %s: %v"
+	// ErrCreateDefinitionRevision is the error while create or update DefinitionRevision
+	ErrCreateDefinitionRevision = "cannot create DefinitionRevision %s: %v"
 )
 
 // WorkloadType describe the workload type of ComponentDefinition
@@ -146,13 +146,13 @@ const (
 
 // A ConditionedObject is an Object type with condition field
 type ConditionedObject interface {
-	oam.Object
+	client.Object
 
 	oam.Conditioned
 }
 
-// ErrBadRevisionName represents an error when the revision name is not standardized
-var ErrBadRevisionName = fmt.Errorf("bad revision name")
+// ErrBadRevision represents an error when the revision name is not standardized
+const ErrBadRevision = "bad revision name"
 
 // LocateParentAppConfig locate the parent application configuration object
 func LocateParentAppConfig(ctx context.Context, client client.Client, oamObject oam.Object) (oam.Object, error) {
@@ -313,7 +313,7 @@ func SetNamespaceInCtx(ctx context.Context, namespace string) context.Context {
 }
 
 // GetDefinition get definition from two level namespace
-func GetDefinition(ctx context.Context, cli client.Reader, definition runtime.Object, definitionName string) error {
+func GetDefinition(ctx context.Context, cli client.Reader, definition client.Object, definitionName string) error {
 	if dns := os.Getenv(DefinitionNamespaceEnv); dns != "" {
 		if err := cli.Get(ctx, types.NamespacedName{Name: definitionName, Namespace: dns}, definition); err == nil {
 			return nil
@@ -343,7 +343,7 @@ func GetDefinition(ctx context.Context, cli client.Reader, definition runtime.Ob
 }
 
 // GetCapabilityDefinition can get different versions of ComponentDefinition/TraitDefinition
-func GetCapabilityDefinition(ctx context.Context, cli client.Reader, definition runtime.Object,
+func GetCapabilityDefinition(ctx context.Context, cli client.Reader, definition client.Object,
 	definitionName string) error {
 	isLatestRevision, defRev, err := fetchDefinitionRev(ctx, cli, definitionName)
 	if err != nil {
@@ -367,32 +367,42 @@ func GetCapabilityDefinition(ctx context.Context, cli client.Reader, definition 
 }
 
 func fetchDefinitionRev(ctx context.Context, cli client.Reader, definitionName string) (bool, *v1beta1.DefinitionRevision, error) {
+	// if the component's type doesn't contain '@' means user want to use the latest Definition.
+	if !strings.Contains(definitionName, "@") {
+		return true, nil, nil
+	}
+
 	defRevName, err := ConvertDefinitionRevName(definitionName)
 	if err != nil {
-		if errors.As(err, &ErrBadRevisionName) {
-			return true, nil, nil
-		}
 		return false, nil, err
 	}
 	defRev := new(v1beta1.DefinitionRevision)
-	if err = GetDefinition(ctx, cli, defRev, defRevName); err != nil {
+	if err := GetDefinition(ctx, cli, defRev, defRevName); err != nil {
 		return false, nil, err
 	}
-	return false, defRev, err
+	return false, defRev, nil
 }
 
 // ConvertDefinitionRevName can help convert definition type defined in Application to DefinitionRevision Name
-// e.g., worker@v2 will be convert to worker-v2
+// e.g., worker@v1.3.1 will be convert to worker-v1.3.1
 func ConvertDefinitionRevName(definitionName string) (string, error) {
-	revNum, err := ExtractRevisionNum(definitionName, "@")
-	if err != nil {
-		return "", err
+	splits := strings.Split(definitionName, "@v")
+	if len(splits) == 1 || len(splits[0]) == 0 {
+		errs := validation.IsQualifiedName(definitionName)
+		if len(errs) != 0 {
+			return definitionName, errors.Errorf("invalid definitionRevision name %s:%s", definitionName, strings.Join(errs, ","))
+		}
+		return definitionName, nil
 	}
-	defName := strings.TrimSuffix(definitionName, fmt.Sprintf("@v%d", revNum))
-	if defName == "" {
-		return "", fmt.Errorf("invalid definition defName %s", definitionName)
+
+	defName := splits[0]
+	revisionName := strings.TrimPrefix(definitionName, fmt.Sprintf("%s@v", defName))
+	defRevName := fmt.Sprintf("%s-v%s", defName, revisionName)
+	errs := validation.IsQualifiedName(defRevName)
+	if len(errs) != 0 {
+		return defRevName, errors.Errorf("invalid definitionRevision name %s:%s", defName, strings.Join(errs, ","))
 	}
-	return fmt.Sprintf("%s-v%d", defName, revNum), nil
+	return defRevName, nil
 }
 
 // when get a  namespaced scope object without namespace, would get an error request namespace
@@ -453,21 +463,12 @@ func fetchChildResources(ctx context.Context, r client.Reader, workload *unstruc
 // It should not handle reconcile success with positive conditions, otherwise it will trigger
 // infinite requeue.
 func EndReconcileWithNegativeCondition(ctx context.Context, r client.StatusClient, workload ConditionedObject,
-	condition ...cpv1alpha1.Condition) error {
+	condition ...condition.Condition) error {
 	if len(condition) == 0 {
 		return nil
 	}
-	workloadPatch := client.MergeFrom(workload.DeepCopyObject())
-	var conditionIsChanged bool
-	for _, newCond := range condition {
-		// NOTE(roywang) an implicit rule here: condition type is unique in an object's conditions
-		// if this rule is changed in the future, we must revise below logic correspondingly
-		existingCond := workload.GetCondition(newCond.Type)
-		if !existingCond.Equal(newCond) {
-			conditionIsChanged = true
-			break
-		}
-	}
+	workloadPatch := client.MergeFrom(workload.DeepCopyObject().(client.Object))
+	conditionIsChanged := IsConditionChanged(condition, workload)
 	workload.SetConditions(condition...)
 	if err := r.Status().Patch(ctx, workload, workloadPatch, client.FieldOwner(workload.GetUID())); err != nil {
 		return errors.Wrap(err, ErrUpdateStatus)
@@ -479,14 +480,41 @@ func EndReconcileWithNegativeCondition(ctx context.Context, r client.StatusClien
 	}
 	// if no condition is changed, patching status can not trigger requeue, so we must return an error to
 	// requeue the resource
-	return fmt.Errorf(ErrReconcileErrInCondition, condition[0].Type, condition[0].Message)
+	return errors.Errorf(ErrReconcileErrInCondition, condition[0].Type, condition[0].Message)
+}
+
+// PatchCondition will patch status with condition and return, it generally used by cases which don't want reconcile after patch
+func PatchCondition(ctx context.Context, r client.StatusClient, workload ConditionedObject,
+	condition ...condition.Condition) error {
+	if len(condition) == 0 {
+		return nil
+	}
+	workloadPatch := client.MergeFrom(workload.DeepCopyObject().(client.Object))
+	workload.SetConditions(condition...)
+	return r.Status().Patch(ctx, workload, workloadPatch, client.FieldOwner(workload.GetUID()))
+}
+
+// IsConditionChanged will check if conditions in workload is changed compare to newCondition
+func IsConditionChanged(newCondition []condition.Condition, workload ConditionedObject) bool {
+	var conditionIsChanged bool
+	for _, newCond := range newCondition {
+		// NOTE(roywang) an implicit rule here: condition type is unique in an object's conditions
+		// if this rule is changed in the future, we must revise below logic correspondingly
+		existingCond := workload.GetCondition(newCond.Type)
+
+		if !existingCond.Equal(newCond) {
+			conditionIsChanged = true
+			break
+		}
+	}
+	return conditionIsChanged
 }
 
 // EndReconcileWithPositiveCondition is used to handle reconcile success for a conditioned resource.
 // It should only accept positive condition which means no need to requeue the resource.
 func EndReconcileWithPositiveCondition(ctx context.Context, r client.StatusClient, workload ConditionedObject,
-	condition ...cpv1alpha1.Condition) error {
-	workloadPatch := client.MergeFrom(workload.DeepCopyObject())
+	condition ...condition.Condition) error {
+	workloadPatch := client.MergeFrom(workload.DeepCopyObject().(client.Object))
 	workload.SetConditions(condition...)
 	return errors.Wrap(
 		r.Status().Patch(ctx, workload, workloadPatch, client.FieldOwner(workload.GetUID())),
@@ -558,13 +586,13 @@ func GetDefinitionName(dm discoverymapper.DiscoveryMapper, u *unstructured.Unstr
 }
 
 // GetGVKFromDefinition help get Group Version Kind from DefinitionReference
-func GetGVKFromDefinition(dm discoverymapper.DiscoveryMapper, definitionRef common.DefinitionReference) (schema.GroupVersionKind, error) {
+func GetGVKFromDefinition(dm discoverymapper.DiscoveryMapper, definitionRef common.DefinitionReference) (metav1.GroupVersionKind, error) {
 	// if given definitionRef is empty or it's a dummy definition, return an empty GVK
 	// NOTE currently, only TraitDefinition is allowed to omit definitionRef conditionally.
 	if len(definitionRef.Name) < 1 || definitionRef.Name == Dummy {
-		return schema.EmptyObjectKind.GroupVersionKind(), nil
+		return metav1.GroupVersionKind{}, nil
 	}
-	var gvk schema.GroupVersionKind
+	var gvk metav1.GroupVersionKind
 	groupResource := schema.ParseGroupResource(definitionRef.Name)
 	gvr := schema.GroupVersionResource{Group: groupResource.Group, Resource: groupResource.Resource, Version: definitionRef.Version}
 	kinds, err := dm.KindsFor(gvr)
@@ -576,7 +604,11 @@ func GetGVKFromDefinition(dm discoverymapper.DiscoveryMapper, definitionRef comm
 			PartialResource: gvr,
 		}
 	}
-	return kinds[0], nil
+	return metav1.GroupVersionKind{
+		Group:   kinds[0].Group,
+		Kind:    kinds[0].Kind,
+		Version: kinds[0].Version,
+	}, nil
 }
 
 // ConvertWorkloadGVK2Definition help convert a GVK to DefinitionReference
@@ -681,70 +713,20 @@ func RawExtension2Component(raw runtime.RawExtension) (*v1alpha2.Component, erro
 	return c, nil
 }
 
-// AppConfig2ComponentManifests convert AppConfig and Components to a slice of ComponentManifest.
-func AppConfig2ComponentManifests(acRaw runtime.RawExtension, comps []common.RawComponent) ([]*oamtypes.ComponentManifest, error) {
-	var err error
-	ac, err := RawExtension2AppConfig(acRaw)
+// RawExtension2Application converts runtime.RawExtension to Application
+func RawExtension2Application(raw runtime.RawExtension) (*v1beta1.Application, error) {
+	a := &v1beta1.Application{}
+	b, err := raw.MarshalJSON()
 	if err != nil {
 		return nil, err
 	}
-	cms := make([]*oamtypes.ComponentManifest, len(ac.Spec.Components))
-	for i, acc := range ac.Spec.Components {
-		cm := &oamtypes.ComponentManifest{
-			Name:         acc.ComponentName,
-			RevisionName: acc.RevisionName,
-		}
-		if acc.RevisionName == "--" {
-			// generate ComponentManifest from appfile
-			cms[i] = cm
-			continue
-		}
-		if acc.ComponentName == "" && acc.RevisionName != "" {
-			cm.Name = ExtractComponentName(acc.RevisionName)
-		}
-		for _, compRaw := range comps {
-			comp, err := RawExtension2Component(compRaw.Raw)
-			if err != nil {
-				return nil, err
-			}
-			cm.RevisionHash = comp.GetLabels()[oam.LabelComponentRevisionHash]
-			if comp.Name == cm.Name {
-				cm.StandardWorkload, err = RawExtension2Unstructured(&comp.Spec.Workload)
-				if err != nil {
-					return nil, err
-				}
-				if comp.Spec.Helm != nil {
-					rls, err := RawExtension2Unstructured(&comp.Spec.Helm.Release)
-					if err != nil {
-						return nil, err
-					}
-					repo, err := RawExtension2Unstructured(&comp.Spec.Helm.Repository)
-					if err != nil {
-						return nil, err
-					}
-					cm.PackagedWorkloadResources = []*unstructured.Unstructured{rls, repo}
-				}
-				break
-			}
-		}
-		cm.Traits = make([]*unstructured.Unstructured, len(acc.Traits))
-		for j, t := range acc.Traits {
-			cm.Traits[j], err = RawExtension2Unstructured(&t.Trait)
-			if err != nil {
-				return nil, err
-			}
-		}
-		cm.Scopes = make([]*corev1.ObjectReference, len(acc.Scopes))
-		for x, s := range acc.Scopes {
-			cm.Scopes[x] = &corev1.ObjectReference{
-				Kind:       s.ScopeReference.Kind,
-				Name:       s.ScopeReference.Name,
-				APIVersion: s.ScopeReference.APIVersion,
-			}
-		}
-		cms[i] = cm
+	if err := json.Unmarshal(b, a); err != nil {
+		return nil, err
 	}
-	return cms, nil
+	if len(a.GetNamespace()) == 0 {
+		a.SetNamespace("default")
+	}
+	return a, nil
 }
 
 // Object2Map turn the Object to a map
@@ -936,11 +918,11 @@ func ExtractRevisionNum(appRevision string, delimiter string) (int, error) {
 	splits := strings.Split(appRevision, delimiter)
 	// check some bad appRevision name, eg:v1, appv2
 	if len(splits) == 1 {
-		return 0, ErrBadRevisionName
+		return 0, errors.New(ErrBadRevision)
 	}
 	// check some bad appRevision name, eg:myapp-a1
 	if !strings.HasPrefix(splits[len(splits)-1], "v") {
-		return 0, ErrBadRevisionName
+		return 0, errors.New(ErrBadRevision)
 	}
 	return strconv.Atoi(strings.TrimPrefix(splits[len(splits)-1], "v"))
 }
@@ -967,4 +949,23 @@ func Abs(a int) int {
 		return -a
 	}
 	return a
+}
+
+// AsOwner converts the supplied object reference to an owner reference.
+func AsOwner(r *corev1.ObjectReference) metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion: r.APIVersion,
+		Kind:       r.Kind,
+		Name:       r.Name,
+		UID:        r.UID,
+	}
+}
+
+// AsController converts the supplied object reference to a controller
+// reference. You may also consider using metav1.NewControllerRef.
+func AsController(r *corev1.ObjectReference) metav1.OwnerReference {
+	c := true
+	ref := AsOwner(r)
+	ref.Controller = &c
+	return ref
 }

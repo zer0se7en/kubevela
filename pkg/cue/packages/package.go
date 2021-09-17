@@ -107,7 +107,6 @@ func (pd *PackageDiscover) ImportBuiltinPackagesFor(bi *build.Instance) {
 // ImportPackagesAndBuildInstance Combine import built-in packages and build cue template together to avoid data race
 func (pd *PackageDiscover) ImportPackagesAndBuildInstance(bi *build.Instance) (inst *cue.Instance, err error) {
 	pd.ImportBuiltinPackagesFor(bi)
-
 	var r cue.Runtime
 	pd.mutex.Lock()
 	defer pd.mutex.Unlock()
@@ -157,6 +156,9 @@ func (pd *PackageDiscover) Exist(gvk metav1.GroupVersionKind) bool {
 func (pd *PackageDiscover) mount(pkg *pkgInstance, pkgKinds []VersionKind) {
 	pd.mutex.Lock()
 	defer pd.mutex.Unlock()
+	if pkgKinds == nil {
+		pkgKinds = []VersionKind{}
+	}
 	for i, p := range pd.velaBuiltinPackages {
 		if p.ImportPath == pkg.ImportPath {
 			pd.pkgKinds[pkg.ImportPath] = pkgKinds

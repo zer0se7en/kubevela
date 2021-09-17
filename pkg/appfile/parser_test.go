@@ -20,22 +20,23 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/crossplane/crossplane-runtime/pkg/test"
-	"github.com/ghodss/yaml"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	errors2 "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/cue/definition"
-	"github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
@@ -111,6 +112,12 @@ var expectedExceptApp = &Appfile{
 `,
 				},
 			},
+		},
+	},
+	WorkflowSteps: []v1beta1.WorkflowStep{
+		{
+			Name: "suspend",
+			Type: "suspend",
 		},
 	},
 }
@@ -214,6 +221,24 @@ spec:
         - type: scaler
           properties:
             replicas: 10
+  workflow:
+    steps:
+    - name: "suspend"
+      type: "suspend" 
+`
+
+const appfileYaml2 = `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: application-sample
+  namespace: default
+spec:
+  components:
+    - name: myweb
+      type: worker-notexist
+      properties:
+        image: "busybox"
 `
 
 var _ = Describe("Test application parser", func() {
@@ -224,7 +249,10 @@ var _ = Describe("Test application parser", func() {
 
 		// Create mock client
 		tclient := test.MockClient{
-			MockGet: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+			MockGet: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
+				if strings.Contains(key.Name, "notexist") {
+					return &errors2.StatusError{ErrStatus: metav1.Status{Reason: "NotFound", Message: "not found"}}
+				}
 				switch o := obj.(type) {
 				case *v1beta1.ComponentDefinition:
 					wd, err := util.UnMarshalStringToComponentDefinition(componenetDefinition)
@@ -246,6 +274,12 @@ var _ = Describe("Test application parser", func() {
 		appfile, err := NewApplicationParser(&tclient, dm, pd).GenerateAppFile(context.TODO(), &o)
 		Expect(err).ShouldNot(HaveOccurred())
 		Expect(equal(expectedExceptApp, appfile)).Should(BeTrue())
+
+		notfound := v1beta1.Application{}
+		err = yaml.Unmarshal([]byte(appfileYaml2), &notfound)
+		Expect(err).ShouldNot(HaveOccurred())
+		_, err = NewApplicationParser(&tclient, dm, pd).GenerateAppFile(context.TODO(), &notfound)
+		Expect(err).Should(HaveOccurred())
 	})
 })
 
@@ -281,24 +315,24 @@ var _ = Describe("Test appFile parser", func() {
 	It("application without-trait will only create appfile with workload", func() {
 		// TestApp is test data
 		var TestApp = &Appfile{
-			RevisionName: "test-v1",
-			Name:         "test",
-			Namespace:    "default",
+			AppRevisionName: "test-v1",
+			Name:            "test",
+			Namespace:       "default",
+			RelatedTraitDefinitions: map[string]*v1beta1.TraitDefinition{
+				"scaler": {
+					Spec: v1beta1.TraitDefinitionSpec{},
+				},
+			},
 			Workloads: []*Workload{
 				{
 					Name: "myweb",
 					Type: "worker",
 					Params: map[string]interface{}{
-						"image":  "busybox",
-						"cmd":    []interface{}{"sleep", "1000"},
-						"config": "myconfig",
-					},
-					UserConfigs: []map[string]string{
-						{"name": "c1", "value": "v1"},
-						{"name": "c2", "value": "v2"},
+						"image": "busybox",
+						"cmd":   []interface{}{"sleep", "1000"},
 					},
 					Scopes: []Scope{
-						{Name: "test-scope", GVK: schema.GroupVersionKind{
+						{Name: "test-scope", GVK: metav1.GroupVersionKind{
 							Group:   "core.oam.dev",
 							Version: "v1alpha2",
 							Kind:    "HealthScope",
@@ -327,9 +361,6 @@ var _ = Describe("Test appFile parser", func() {
       
       					if parameter["cmd"] != _|_ {
       						command: parameter.cmd
-      					}
-      					if context["config"] != _|_ {
-      						env: context.config
       					}
       				}]
       			}
@@ -387,11 +418,14 @@ var _ = Describe("Test appFile parser", func() {
 				"apiVersion": "apps/v1",
 				"kind":       "Deployment",
 				"metadata": map[string]interface{}{
+					"name":      "myweb",
+					"namespace": "default",
 					"labels": map[string]interface{}{
-						"workload.oam.dev/type":   "worker",
-						"app.oam.dev/component":   "myweb",
-						"app.oam.dev/appRevision": "test-v1",
-						"app.oam.dev/name":        "test",
+						"workload.oam.dev/type":    "worker",
+						"app.oam.dev/component":    "myweb",
+						"app.oam.dev/appRevision":  "test-v1",
+						"app.oam.dev/name":         "test",
+						"app.oam.dev/resourceType": "WORKLOAD",
 					},
 				},
 				"spec": map[string]interface{}{
@@ -406,10 +440,6 @@ var _ = Describe("Test appFile parser", func() {
 									"command": []interface{}{"sleep", "1000"},
 									"image":   "busybox",
 									"name":    "myweb",
-									"env": []interface{}{
-										map[string]interface{}{"name": "c1", "value": "v1"},
-										map[string]interface{}{"name": "c2", "value": "v2"},
-									},
 								},
 							},
 						},
@@ -427,12 +457,15 @@ var _ = Describe("Test appFile parser", func() {
 						"apiVersion": "core.oam.dev/v1alpha2",
 						"kind":       "ManualScalerTrait",
 						"metadata": map[string]interface{}{
+							"name":      "myweb-scaler-5c7695d6c7",
+							"namespace": "default",
 							"labels": map[string]interface{}{
-								"app.oam.dev/component":   "myweb",
-								"app.oam.dev/appRevision": "test-v1",
-								"app.oam.dev/name":        "test",
-								"trait.oam.dev/type":      "scaler",
-								"trait.oam.dev/resource":  "scaler",
+								"app.oam.dev/component":    "myweb",
+								"app.oam.dev/appRevision":  "test-v1",
+								"app.oam.dev/name":         "test",
+								"trait.oam.dev/type":       "scaler",
+								"trait.oam.dev/resource":   "scaler",
+								"app.oam.dev/resourceType": "TRAIT",
 							},
 						},
 						"spec": map[string]interface{}{"replicaCount": int64(10)},
@@ -458,10 +491,6 @@ var _ = Describe("Test appFile parser", func() {
 				"command": []interface{}{"sleep", "1000"},
 				"image":   "busybox",
 				"name":    "myweb",
-				"env": []interface{}{
-					map[string]interface{}{"name": "c2", "value": "v2"},
-					map[string]interface{}{"name": "c1", "value": "v1"},
-				},
 			},
 		}, "spec", "template", "spec", "containers")
 
@@ -469,190 +498,9 @@ var _ = Describe("Test appFile parser", func() {
 		Expect(len(comps)).To(BeEquivalentTo(1))
 		comp := comps[0]
 		Expect(comp.Name).Should(Equal(expectCompManifest.Name))
-		Expect(comp.Traits).Should(Equal(expectCompManifest.Traits))
+		Expect(cmp.Diff(comp.Traits, expectCompManifest.Traits)).Should(BeEmpty())
 		Expect(comp.Scopes).Should(Equal(expectCompManifest.Scopes))
-		Expect(comp.StandardWorkload).Should(SatisfyAny(
-			BeEquivalentTo(expectWorkload),
-			BeEquivalentTo(expectWorkloadOptional)))
+		Expect(cmp.Diff(comp.StandardWorkload, expectWorkloadOptional)).Should(BeEmpty())
 	})
 
-})
-
-var _ = Describe("Test Get OutputSecretNames", func() {
-	Context("Workload will generate cloud resource secret", func() {
-		It("", func() {
-			var targetSecretName = "db-conn"
-			wl := &Workload{
-				Params: map[string]interface{}{
-					"outputSecretName": targetSecretName,
-				},
-			}
-			name, err := GetOutputSecretNames(wl)
-			Expect(err).Should(BeNil())
-			Expect(name).Should(Equal(targetSecretName))
-		})
-	})
-
-	Context("Workload will not generate cloud resource secret", func() {
-		It("", func() {
-			wl := &Workload{}
-			name, err := GetOutputSecretNames(wl)
-			Expect(err).ShouldNot(BeNil())
-			Expect(name).Should(Equal(""))
-		})
-	})
-})
-
-var _ = Describe("Test parsing Workload's insertSecretTo tag", func() {
-	var (
-		ctx              = context.Background()
-		ns               = "default"
-		targetSecretName = "db-conn"
-		data             = map[string][]byte{
-			"endpoint": []byte("aaa"),
-			"password": []byte("bbb"),
-			"username": []byte("ccc"),
-		}
-	)
-
-	Context("Workload template is not valid", func() {
-		It("", func() {
-			var (
-				template = `
-settings: {
-	// +usage=Which image would you like to use for your service
-	// +short=i
-	image: string
-
-	// +usage=Commands to run in the container
-	cmd?: [...string]
-
-	// +usage=Which port do you want customer traffic sent to
-	// +short=p
-	port: *80 | int
-
-	// +usage=Referred db secret
-	// +insertSecretTo=dbConn
-	dbSecret?: string
-
-	// +usage=Number of CPU units for the service
-	cpu?: string
-}
-`
-			)
-
-			wl := &Workload{
-				Name:         "abc",
-				FullTemplate: &Template{TemplateStr: template},
-			}
-			By("call target function")
-			secrets, err := parseInsertSecretTo(ctx, k8sClient, ns, wl.FullTemplate.TemplateStr, wl.Params)
-			Expect(err).Should(BeNil())
-			Expect(secrets).Should(BeNil())
-		})
-	})
-
-	Context("Workload will generate cloud resource secret", func() {
-		It("", func() {
-			var (
-				template = `
-parameter: {
-	// +usage=Which image would you like to use for your service
-	// +short=i
-	image: string
-
-	// +usage=Commands to run in the container
-	cmd?: [...string]
-
-	// +usage=Which port do you want customer traffic sent to
-	// +short=p
-	port: *80 | int
-
-	// +usage=Referred db secret
-	// +insertSecretTo=dbConn
-	dbSecret?: string
-
-	// +usage=Number of CPU units for the service
-	cpu?: string
-}
-`
-			)
-
-			wl := &Workload{
-				Name: "abc",
-				Params: map[string]interface{}{
-					"dbSecret": targetSecretName,
-				},
-				FullTemplate: &Template{TemplateStr: template},
-			}
-			By("create secret")
-			s := &corev1.Secret{
-				TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "db-conn",
-					Namespace: "default",
-				},
-				Data: data,
-			}
-			targetRequiredSecret := []process.RequiredSecrets{
-				{
-					Name:        targetSecretName,
-					ContextName: "dbConn",
-					Namespace:   ns,
-					Data: map[string]interface{}{
-						"endpoint": "aaa",
-						"password": "bbb",
-						"username": "ccc",
-					},
-				},
-			}
-			err := k8sClient.Create(ctx, s)
-			Expect(err).Should(BeNil())
-			By("call target function")
-			secrets, err := parseInsertSecretTo(ctx, k8sClient, ns, wl.FullTemplate.TemplateStr, wl.Params)
-			Expect(err).Should(BeNil())
-			Expect(secrets).Should(Equal(targetRequiredSecret))
-		})
-	})
-})
-
-var _ = Describe("Test IsSecretProducer", func() {
-	Context("Workload is a Cloud Resource producer", func() {
-		It("", func() {
-			var targetSecretName = "db-conn"
-			wl := &Workload{
-				Params: map[string]interface{}{
-					"outputSecretName": targetSecretName,
-				},
-			}
-			Expect(wl.IsSecretProducer()).Should(Equal(true))
-		})
-	})
-
-	Context("Workload is a Cloud Resource producer", func() {
-		It("", func() {
-			wl := &Workload{}
-			Expect(wl.IsSecretProducer()).Should(Equal(false))
-		})
-	})
-})
-
-var _ = Describe("Test IsSecretConsumer", func() {
-	Context("Workload is a Cloud Resource consumer", func() {
-		It("", func() {
-			wl := &Workload{
-				FullTemplate: &Template{TemplateStr: "// +insertSecretTo=dbConn"},
-			}
-			Expect(wl.IsSecretConsumer()).Should(Equal(true))
-		})
-	})
-
-	Context("Workload is a Cloud Resource consumer", func() {
-		It("", func() {
-			wl := &Workload{
-				FullTemplate: &Template{TemplateStr: "// +useage=dbConn"},
-			}
-			Expect(wl.IsSecretProducer()).Should(Equal(false))
-		})
-	})
 })

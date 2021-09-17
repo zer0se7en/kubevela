@@ -46,10 +46,10 @@ func (c *deploymentController) claimDeployment(ctx context.Context, deploy *apps
 		return true, nil
 	}
 
-	deployPatch := client.MergeFrom(deploy.DeepCopyObject())
+	deployPatch := client.MergeFrom(deploy.DeepCopy())
 
 	// add the parent controller to the owner of the deployment
-	ref := metav1.NewControllerRef(c.parentController, v1beta1.AppRolloutKindVersionKind)
+	ref := metav1.NewControllerRef(c.parentController, c.parentController.GetObjectKind().GroupVersionKind())
 	deploy.SetOwnerReferences(append(deploy.GetOwnerReferences(), *ref))
 
 	deploy.Spec.Paused = false
@@ -68,7 +68,7 @@ func (c *deploymentController) claimDeployment(ctx context.Context, deploy *apps
 
 // scale the deployment
 func (c *deploymentController) scaleDeployment(ctx context.Context, deploy *apps.Deployment, size int32) error {
-	deployPatch := client.MergeFrom(deploy.DeepCopyObject())
+	deployPatch := client.MergeFrom(deploy.DeepCopy())
 	deploy.Spec.Replicas = pointer.Int32Ptr(size)
 
 	// patch the Deployment
@@ -86,12 +86,13 @@ func (c *deploymentController) scaleDeployment(ctx context.Context, deploy *apps
 
 // remove the parent controller from the deployment's owner list
 func (c *deploymentController) releaseDeployment(ctx context.Context, deploy *apps.Deployment) (bool, error) {
-	deployPatch := client.MergeFrom(deploy.DeepCopyObject())
+	deployPatch := client.MergeFrom(deploy.DeepCopy())
 
 	var newOwnerList []metav1.OwnerReference
 	found := false
 	for _, owner := range deploy.GetOwnerReferences() {
-		if owner.Kind == v1beta1.AppRolloutKind && owner.APIVersion == v1beta1.SchemeGroupVersion.String() {
+		if owner.Kind == c.parentController.GetObjectKind().GroupVersionKind().Kind &&
+			owner.APIVersion == c.parentController.GetObjectKind().GroupVersionKind().GroupVersion().String() {
 			found = true
 			continue
 		}

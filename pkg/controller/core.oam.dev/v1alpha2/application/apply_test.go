@@ -22,22 +22,26 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ghodss/yaml"
+	"github.com/oam-dev/kubevela/pkg/oam/testutil"
+
 	terraformtypes "github.com/oam-dev/terraform-controller/api/types"
 	terraformapi "github.com/oam-dev/terraform-controller/api/v1beta1"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	velatypes "github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile"
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 const workloadDefinition = `
@@ -106,7 +110,7 @@ var _ = Describe("Test Application apply", func() {
 		}
 		app.Namespace = namespaceName
 		app.Spec = v1beta1.ApplicationSpec{
-			Components: []v1beta1.ApplicationComponent{{
+			Components: []common.ApplicationComponent{{
 				Type: "test-worker",
 				Name: "test-app",
 				Properties: runtime.RawExtension{
@@ -137,7 +141,7 @@ var _ = Describe("Test Application apply", func() {
 		Expect(err).Should(BeNil())
 
 		By("[TEST] get a application")
-		reconcileOnceAfterFinalizer(reconciler, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
+		testutil.ReconcileOnceAfterFinalizer(reconciler, reconcile.Request{NamespacedName: types.NamespacedName{Name: app.Name, Namespace: app.Namespace}})
 		testapp := v1beta1.Application{}
 		err = k8sClient.Get(ctx, types.NamespacedName{Name: app.Name, Namespace: app.Namespace}, &testapp)
 		Expect(err).Should(BeNil())
@@ -162,7 +166,7 @@ var _ = Describe("Test statusAggregate", func() {
 			ctx           = context.TODO()
 			componentName = "sample-oss"
 			ns            = "default"
-			h             = &appHandler{r: reconciler, app: &v1beta1.Application{
+			h             = &AppHandler{r: reconciler, app: &v1beta1.Application{
 				TypeMeta:   metav1.TypeMeta{},
 				ObjectMeta: metav1.ObjectMeta{Namespace: ns},
 			}}
@@ -203,7 +207,7 @@ var _ = Describe("Test statusAggregate", func() {
 		By("set status for Terraform configuration")
 		var gotConfiguration terraformapi.Configuration
 		k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: componentName}, &gotConfiguration)
-		gotConfiguration.Status.State = terraformtypes.Available
+		gotConfiguration.Status.Apply.State = terraformtypes.Available
 		k8sClient.Status().Update(ctx, &gotConfiguration)
 
 		By("aggregate status one more time")
@@ -211,5 +215,39 @@ var _ = Describe("Test statusAggregate", func() {
 		Expect(len(statuses)).Should(Equal(1))
 		Expect(healthy).Should(Equal(true))
 		Expect(err).Should(BeNil())
+	})
+})
+
+var _ = Describe("Test handleCheckManageWorkloadTrait func", func() {
+	It("Test every situation", func() {
+		traitDefs := map[string]v1beta1.TraitDefinition{
+			"rollout": v1beta1.TraitDefinition{
+				Spec: v1beta1.TraitDefinitionSpec{
+					ManageWorkload: true,
+				},
+			},
+			"normal": v1beta1.TraitDefinition{
+				Spec: v1beta1.TraitDefinitionSpec{},
+			},
+		}
+		rolloutTrait := &unstructured.Unstructured{}
+		rolloutTrait.SetLabels(map[string]string{oam.TraitTypeLabel: "rollout"})
+
+		normalTrait := &unstructured.Unstructured{}
+		normalTrait.SetLabels(map[string]string{oam.TraitTypeLabel: "normal"})
+		comps := []*velatypes.ComponentManifest{
+			{
+				Traits: []*unstructured.Unstructured{
+					rolloutTrait,
+					normalTrait,
+				},
+			},
+		}
+		h := AppHandler{}
+		h.handleCheckManageWorkloadTrait(traitDefs, comps)
+		Expect(len(rolloutTrait.GetLabels())).Should(BeEquivalentTo(2))
+		Expect(rolloutTrait.GetLabels()[oam.LabelManageWorkloadTrait]).Should(BeEquivalentTo("true"))
+		Expect(len(normalTrait.GetLabels())).Should(BeEquivalentTo(1))
+		Expect(normalTrait.GetLabels()[oam.LabelManageWorkloadTrait]).Should(BeEquivalentTo(""))
 	})
 })

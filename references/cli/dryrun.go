@@ -21,7 +21,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 
@@ -44,6 +43,20 @@ type DryRunCmdOptions struct {
 	cmdutil.IOStreams
 	ApplicationFile string
 	DefinitionFile  string
+}
+
+// NewSystemDryRunCommand is deprecated
+func NewSystemDryRunCommand(_ common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+	o := &DryRunCmdOptions{IOStreams: ioStreams}
+	cmd := &cobra.Command{
+		Use: "dry-run",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			o.Info("vela system dry-run is deprecated, please use vela dry-run instead")
+			return nil
+		},
+	}
+	cmd.SetOut(ioStreams.Out)
+	return cmd
 }
 
 // NewDryRunCommand creates `dry-run` command
@@ -120,7 +133,7 @@ func DryRunApplication(cmdOption *DryRunCmdOptions, c common.Args, namespace str
 		components[comp.Name] = comp.StandardWorkload
 	}
 	for _, c := range comps {
-		buff.Write([]byte(fmt.Sprintf("---\n# Application(%s) -- Comopnent(%s) \n---\n\n", app.Name, c.Name)))
+		buff.Write([]byte(fmt.Sprintf("---\n# Application(%s) -- Component(%s) \n---\n\n", app.Name, c.Name)))
 		result, err := yaml.Marshal(components[c.Name])
 		if err != nil {
 			return buff, errors.WithMessage(err, "marshal result for component "+c.Name+" object in yaml format")
@@ -157,7 +170,7 @@ func ReadObjectsFromFile(path string) ([]oam.Object, error) {
 
 	var objs []oam.Object
 	//nolint:gosec
-	fis, err := ioutil.ReadDir(path)
+	fis, err := os.ReadDir(path)
 	if err != nil {
 		return nil, err
 	}
@@ -181,7 +194,7 @@ func ReadObjectsFromFile(path string) ([]oam.Object, error) {
 
 func readApplicationFromFile(filename string) (*corev1beta1.Application, error) {
 
-	fileContent, err := ioutil.ReadFile(filepath.Clean(filename))
+	fileContent, err := os.ReadFile(filepath.Clean(filename))
 	if err != nil {
 		return nil, err
 	}

@@ -17,12 +17,12 @@ limitations under the License.
 package cli
 
 import (
-	"io/ioutil"
+	"os"
 	"path/filepath"
 
-	"github.com/ghodss/yaml"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
+	"sigs.k8s.io/yaml"
 
 	corev1beta1 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
@@ -61,7 +61,7 @@ func NewUpCommand(c common2.Args, ioStream cmdutil.IOStreams) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fileContent, err := ioutil.ReadFile(filepath.Clean(filePath))
+			fileContent, err := os.ReadFile(filepath.Clean(filePath))
 			if err != nil {
 				return err
 			}

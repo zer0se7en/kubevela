@@ -18,12 +18,11 @@ package driver
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/ghodss/yaml"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/pkg/utils/env"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
@@ -63,7 +62,7 @@ func (l *Local) Save(app *api.Application, envName string) error {
 		return err
 	}
 	//nolint:gosec
-	return ioutil.WriteFile(filepath.Join(appDir, app.Name+".yaml"), out, 0644)
+	return os.WriteFile(filepath.Join(appDir, app.Name+".yaml"), out, 0644)
 }
 
 // Delete application from local storage

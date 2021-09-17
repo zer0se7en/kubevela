@@ -20,25 +20,26 @@ import (
 	"context"
 	"testing"
 
-	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	"github.com/crossplane/crossplane-runtime/pkg/test"
 	"github.com/stretchr/testify/assert"
 	apps "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
 func TestCheckPodSpecWorkloadHealth(t *testing.T) {
 	mockClient := test.NewMockClient()
-	scRef := runtimev1alpha1.TypedReference{}
+	scRef := corev1.ObjectReference{}
 	scRef.SetGroupVersionKind(podSpecWorkloadGVK)
 
-	deployRef := runtimev1alpha1.TypedReference{}
+	deployRef := corev1.ObjectReference{}
 	deployRef.SetGroupVersionKind(apps.SchemeGroupVersion.WithKind(kindDeployment))
-	svcRef := runtimev1alpha1.TypedReference{}
+	deployRef.Name = "deploy"
+	svcRef := corev1.ObjectReference{}
 	svcRef.SetGroupVersionKind(apps.SchemeGroupVersion.WithKind(kindService))
 
 	deployRefData, _ := util.Object2Map(deployRef)
@@ -51,31 +52,37 @@ func TestCheckPodSpecWorkloadHealth(t *testing.T) {
 	tests := []struct {
 		caseName  string
 		mockGetFn test.MockGetFn
-		wlRef     runtimev1alpha1.TypedReference
+		wlRef     corev1.ObjectReference
 		expect    *WorkloadHealthCondition
 	}{
 		{
 			caseName: "not matched checker",
-			wlRef:    runtimev1alpha1.TypedReference{},
+			wlRef:    corev1.ObjectReference{},
 			expect:   nil,
 		},
 		{
 			caseName: "healthy workload",
 			wlRef:    scRef,
-			mockGetFn: func(ctx context.Context, key types.NamespacedName, obj runtime.Object) error {
-				if o, ok := obj.(*unstructured.Unstructured); ok {
-					*o = scUnstructured
-					return nil
-				}
-				if o, ok := obj.(*apps.Deployment); ok {
-					*o = apps.Deployment{
-						Spec: apps.DeploymentSpec{
-							Replicas: &varInt1,
-						},
-						Status: apps.DeploymentStatus{
-							ReadyReplicas: 1, // healthy
-						},
+			mockGetFn: func(ctx context.Context, key types.NamespacedName, obj client.Object) error {
+				switch o := obj.(type) {
+				case *unstructured.Unstructured:
+					if key.Name == "deploy" {
+						deployObj, err := util.Object2Unstructured(apps.Deployment{
+							Spec: apps.DeploymentSpec{
+								Replicas: &varInt1,
+							},
+							Status: apps.DeploymentStatus{
+								ReadyReplicas: 1, // healthy
+							},
+						})
+						if err != nil {
+							return err
+						}
+						*o = *deployObj
+					} else {
+						*o = scUnstructured
 					}
+					return nil
 				}
 				return nil
 			},
@@ -86,20 +93,26 @@ func TestCheckPodSpecWorkloadHealth(t *testing.T) {
 		{
 			caseName: "unhealthy for deployment not ready",
 			wlRef:    scRef,
-			mockGetFn: func(ctx context.Context, key types.NamespacedName, obj runtime.Object) error {
-				if o, ok := obj.(*unstructured.Unstructured); ok {
-					*o = scUnstructured
-					return nil
-				}
-				if o, ok := obj.(*apps.Deployment); ok {
-					*o = apps.Deployment{
-						Spec: apps.DeploymentSpec{
-							Replicas: &varInt1,
-						},
-						Status: apps.DeploymentStatus{
-							ReadyReplicas: 0, // unhealthy
-						},
+			mockGetFn: func(ctx context.Context, key types.NamespacedName, obj client.Object) error {
+				switch o := obj.(type) {
+				case *unstructured.Unstructured:
+					if key.Name == "deploy" {
+						deployObj, err := util.Object2Unstructured(apps.Deployment{
+							Spec: apps.DeploymentSpec{
+								Replicas: &varInt1,
+							},
+							Status: apps.DeploymentStatus{
+								ReadyReplicas: 0, // unhealthy
+							},
+						})
+						if err != nil {
+							return err
+						}
+						*o = *deployObj
+					} else {
+						*o = scUnstructured
 					}
+					return nil
 				}
 				return nil
 			},
@@ -110,7 +123,7 @@ func TestCheckPodSpecWorkloadHealth(t *testing.T) {
 		{
 			caseName: "unhealthy for PodSpecWorkload not found",
 			wlRef:    scRef,
-			mockGetFn: func(ctx context.Context, key types.NamespacedName, obj runtime.Object) error {
+			mockGetFn: func(ctx context.Context, key types.NamespacedName, obj client.Object) error {
 				return errMockErr
 			},
 			expect: &WorkloadHealthCondition{
@@ -120,13 +133,15 @@ func TestCheckPodSpecWorkloadHealth(t *testing.T) {
 		{
 			caseName: "unhealthy for deployment not found",
 			wlRef:    scRef,
-			mockGetFn: func(ctx context.Context, key types.NamespacedName, obj runtime.Object) error {
-				if o, ok := obj.(*unstructured.Unstructured); ok {
-					*o = scUnstructured
+			mockGetFn: func(ctx context.Context, key types.NamespacedName, obj client.Object) error {
+				switch o := obj.(type) {
+				case *unstructured.Unstructured:
+					if key.Name == "deploy" {
+						return errMockErr
+					} else {
+						*o = scUnstructured
+					}
 					return nil
-				}
-				if _, ok := obj.(*apps.Deployment); ok {
-					return errMockErr
 				}
 				return nil
 			},
@@ -145,7 +160,6 @@ func TestCheckPodSpecWorkloadHealth(t *testing.T) {
 			} else {
 				assert.Equal(t, tc.expect.HealthStatus, result.HealthStatus, tc.caseName)
 			}
-
 		}(t)
 	}
 }

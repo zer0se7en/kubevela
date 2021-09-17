@@ -18,14 +18,17 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+
+	"cuelang.org/go/cue/ast"
+	"cuelang.org/go/cue/parser"
+	"cuelang.org/go/cue/token"
 
 	"cuelang.org/go/cue"
 	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
-
-	velacue "github.com/oam-dev/kubevela/pkg/cue"
 )
 
 func TestGetCompileError(t *testing.T) {
@@ -196,7 +199,7 @@ metadata: name: parameter.name
 `,
 	}
 	_, err = ins.Unstructured()
-	assert.Equal(t, err.Error(), fmt.Sprintf(`metadata.name: reference "%s" not found`, velacue.ParameterTag))
+	assert.Equal(t, err.Error(), fmt.Sprintf(`failed to have the workload/trait unstructured: metadata.name: reference "%s" not found`, ParameterFieldName))
 	ins = &instance{
 		v: `
 apiVersion: "apps/v1"
@@ -215,4 +218,73 @@ metadata: name: "abc"
 			},
 		},
 	})
+
+	ins = &instance{
+		v: `
+apiVersion: "source.toolkit.fluxcd.io/v1beta1"
+metadata: {
+	name: "grafana"
+}
+kind: "HelmRepository"
+spec: {
+	url:      string
+	interval: *"5m" | string
+}`,
+	}
+	o, err := ins.Unstructured()
+	assert.Nil(t, o)
+	assert.NotNil(t, err)
+}
+
+func TestX(t *testing.T) {
+	f, err := parser.ParseFile("-", `abc: 10`)
+	fmt.Println(err)
+	ast.Walk(f, func(node ast.Node) bool {
+		field, ok := node.(*ast.Field)
+		if ok {
+			v := field.Value
+			//if bin, ok := v.(*ast.BinaryExpr); ok {
+			//	fmt.Printf("%#v\n", bin.X)
+			//	return true
+			//}
+			lit, is := v.(*ast.BasicLit)
+			if is {
+
+				switch lit.Kind {
+				case token.FLOAT:
+
+				}
+				field.Value = ast.NewBinExpr(token.OR, &ast.UnaryExpr{X: lit, Op: token.MUL}, ast.NewIdent(strings.ToLower(lit.Kind.String())))
+			}
+
+		}
+		return true
+	}, nil)
+
+	var r cue.Runtime
+
+	linst, err := r.CompileFile(f)
+	fmt.Println(err)
+	fmt.Println(linst.Value())
+	w, _ := r.Compile("-", `
+ss: *10|_
+_enable: *bool | string | int
+{
+_enable1: _enable1 & bool
+if  _enable1 != _|_ {
+outputs: "service": {}
+}
+}
+
+`)
+	base, _ := NewBase(w.Value())
+	p, _ := r.Compile("-", `
+ss: "100"
+_enable: "123"
+`)
+	fmt.Println(base.String())
+
+	pr, _ := NewOther(p.Value())
+	base.Unify(pr)
+	fmt.Println(base.String())
 }

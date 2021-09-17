@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"strings"
 
-	cpv1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	"github.com/crossplane/crossplane-runtime/pkg/event"
 	cpmeta "github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/pkg/errors"
@@ -37,7 +36,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 	oamv1alpha2 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	"github.com/oam-dev/kubevela/pkg/controller/common"
 	controller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
@@ -78,8 +79,10 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=core.oam.dev,resources=containerizedworkloads/status,verbs=get;
 // +kubebuilder:rbac:groups=core.oam.dev,resources=workloaddefinition,verbs=get;list;
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;update;patch;delete
-func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
-	ctx := context.Background()
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	ctx, cancel := common.NewReconcileContext(ctx)
+	defer cancel()
+
 	klog.InfoS("Reconcile manualscalar trait", "trait", klog.KRef(req.Namespace, req.Name))
 
 	var manualScalar oamv1alpha2.ManualScalerTrait
@@ -99,20 +102,20 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		eventObj = &manualScalar
 	}
 	// Fetch the workload instance this trait is referring to
-	workload, err := util.FetchWorkload(ctx, r, &manualScalar)
+	workload, err := util.FetchWorkload(ctx, r.Client, &manualScalar)
 	if err != nil {
 		r.record.Event(eventObj, event.Warning(util.ErrLocateWorkload, err))
 		return ctrl.Result{}, util.EndReconcileWithNegativeCondition(
-			ctx, r, &manualScalar, cpv1alpha1.ReconcileError(errors.Wrap(err, util.ErrLocateWorkload)))
+			ctx, r, &manualScalar, condition.ReconcileError(errors.Wrap(err, util.ErrLocateWorkload)))
 	}
 
 	// Fetch the child resources list from the corresponding workload
-	resources, err := util.FetchWorkloadChildResources(ctx, r, r.dm, workload)
+	resources, err := util.FetchWorkloadChildResources(ctx, r.Client, r.dm, workload)
 	if err != nil {
 		klog.ErrorS(err, "Error while fetching the workload child resources", "workload", workload.UnstructuredContent())
 		r.record.Event(eventObj, event.Warning(util.ErrFetchChildResources, err))
 		return ctrl.Result{}, util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar,
-			cpv1alpha1.ReconcileError(errors.New(util.ErrFetchChildResources)))
+			condition.ReconcileError(errors.New(util.ErrFetchChildResources)))
 	}
 	// include the workload itself if there is no child resources
 	if len(resources) == 0 {
@@ -131,7 +134,7 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	r.record.Event(eventObj, event.Normal("Manual scalar applied",
 		fmt.Sprintf("Trait `%s` successfully scaled a resource to %d instances",
 			manualScalar.Name, manualScalar.Spec.ReplicaCount)))
-	return ctrl.Result{}, util.EndReconcileWithPositiveCondition(ctx, r, &manualScalar, cpv1alpha1.ReconcileSuccess())
+	return ctrl.Result{}, util.EndReconcileWithPositiveCondition(ctx, r, &manualScalar, condition.ReconcileSuccess())
 }
 
 // identify child resources and scale them
@@ -153,17 +156,17 @@ func (r *Reconciler) scaleResources(ctx context.Context, manualScalar oamv1alpha
 	schemaDoc, err := r.DiscoveryClient.OpenAPISchema()
 	if err != nil {
 		return ctrl.Result{},
-			util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar, cpv1alpha1.ReconcileError(errors.Wrap(err, errQueryOpenAPI)))
+			util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar, condition.ReconcileError(errors.Wrap(err, errQueryOpenAPI)))
 	}
 	document, err := openapi.NewOpenAPIData(schemaDoc)
 	if err != nil {
 		return ctrl.Result{},
-			util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar, cpv1alpha1.ReconcileError(errors.Wrap(err, errQueryOpenAPI)))
+			util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar, condition.ReconcileError(errors.Wrap(err, errQueryOpenAPI)))
 	}
 	for _, res := range resources {
 		if locateReplicaField(document, res) {
 			found = true
-			resPatch := client.MergeFrom(res.DeepCopyObject())
+			resPatch := client.MergeFrom(res.DeepCopy())
 			klog.InfoS("Get the resource the trait is going to modify",
 				"resource name", res.GetName(), "UID", res.GetUID())
 			cpmeta.AddOwnerReference(res, ownerRef)
@@ -171,13 +174,13 @@ func (r *Reconciler) scaleResources(ctx context.Context, manualScalar oamv1alpha
 			if err != nil {
 				klog.ErrorS(err, "Failed to patch a resource for scaling")
 				return ctrl.Result{},
-					util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar, cpv1alpha1.ReconcileError(errors.Wrap(err, errPatchTobeScaledResource)))
+					util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar, condition.ReconcileError(errors.Wrap(err, errPatchTobeScaledResource)))
 			}
 			// merge patch to scale the resource
 			if err := r.Patch(ctx, res, resPatch, client.FieldOwner(manualScalar.GetUID())); err != nil {
 				klog.ErrorS(err, "Failed to scale a resource")
 				return ctrl.Result{},
-					util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar, cpv1alpha1.ReconcileError(errors.Wrap(err, errScaleResource)))
+					util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar, condition.ReconcileError(errors.Wrap(err, errScaleResource)))
 			}
 			klog.InfoS("Successfully scaled a resource", "resource GVK", res.GroupVersionKind().String(),
 				"res UID", res.GetUID(), "target replica", manualScalar.Spec.ReplicaCount)
@@ -186,7 +189,7 @@ func (r *Reconciler) scaleResources(ctx context.Context, manualScalar oamv1alpha
 	if !found {
 		klog.InfoS("Cannot locate any resource", "total resources", len(resources))
 		return ctrl.Result{},
-			util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar, cpv1alpha1.ReconcileError(errors.New(errScaleResource)))
+			util.EndReconcileWithNegativeCondition(ctx, r, &manualScalar, condition.ReconcileError(errors.New(errScaleResource)))
 	}
 	return ctrl.Result{}, nil
 }

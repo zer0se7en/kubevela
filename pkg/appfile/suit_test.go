@@ -19,6 +19,7 @@ package appfile
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -54,12 +55,13 @@ func TestAppFile(t *testing.T) {
 
 var _ = BeforeSuite(func(done Done) {
 	logf.SetLogger(zap.New(zap.UseDevMode(true), zap.WriteTo(GinkgoWriter)))
-	//ctx := context.Background()
 	By("bootstrapping test environment")
 	useExistCluster := false
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:  []string{filepath.Join("..", "..", "charts", "vela-core", "crds")},
-		UseExistingCluster: &useExistCluster,
+		ControlPlaneStartTimeout: time.Minute,
+		ControlPlaneStopTimeout:  time.Minute,
+		CRDDirectoryPaths:        []string{filepath.Join("..", "..", "charts", "vela-core", "crds")},
+		UseExistingCluster:       &useExistCluster,
 	}
 
 	var err error
@@ -81,7 +83,7 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(pd).ToNot(BeNil())
 
 	close(done)
-}, 60)
+}, 120)
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")

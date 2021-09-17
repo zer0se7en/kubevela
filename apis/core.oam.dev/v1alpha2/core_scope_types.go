@@ -17,8 +17,10 @@ limitations under the License.
 package v1alpha2
 
 import (
-	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 
 	"github.com/oam-dev/kubevela/pkg/oam"
 )
@@ -45,19 +47,48 @@ type HealthScopeSpec struct {
 	// ProbeInterval is the amount of time in seconds between probing tries.
 	ProbeInterval *int32 `json:"probe-interval,omitempty"`
 
+	// AppRefs records references of applications' components
+	AppRefs []AppReference `json:"appReferences,omitempty"`
+
 	// WorkloadReferences to the workloads that are in this scope.
-	WorkloadReferences []runtimev1alpha1.TypedReference `json:"workloadRefs"`
+	// +deprecated
+	WorkloadReferences []corev1.ObjectReference `json:"workloadRefs"`
+}
+
+// AppReference records references of an application's components
+type AppReference struct {
+	AppName        string          `json:"appName,omitempty"`
+	CompReferences []CompReference `json:"compReferences,omitempty"`
+}
+
+// CompReference records references of a component's resources
+type CompReference struct {
+	CompName string                   `json:"compName,omitempty"`
+	Workload corev1.ObjectReference   `json:"workload,omitempty"`
+	Traits   []corev1.ObjectReference `json:"traits,omitempty"`
 }
 
 // A HealthScopeStatus represents the observed state of a HealthScope.
 type HealthScopeStatus struct {
-	runtimev1alpha1.ConditionedStatus `json:",inline"`
+	condition.ConditionedStatus `json:",inline"`
 
 	// ScopeHealthCondition represents health condition summary of the scope
 	ScopeHealthCondition ScopeHealthCondition `json:"scopeHealthCondition"`
 
+	// AppHealthConditions represents health condition of applications in the scope
+	AppHealthConditions []*AppHealthCondition `json:"appHealthConditions,omitempty"`
+
 	// WorkloadHealthConditions represents health condition of workloads in the scope
+	// Use AppHealthConditions to provide app level status
+	// +deprecated
 	WorkloadHealthConditions []*WorkloadHealthCondition `json:"healthConditions,omitempty"`
+}
+
+// AppHealthCondition represents health condition of an application
+type AppHealthCondition struct {
+	AppName    string                     `json:"appName"`
+	EnvName    string                     `json:"envName,omitempty"`
+	Components []*WorkloadHealthCondition `json:"components,omitempty"`
 }
 
 // ScopeHealthCondition represents health condition summary of a scope.
@@ -69,15 +100,26 @@ type ScopeHealthCondition struct {
 	UnknownWorkloads   int64        `json:"unknownWorkloads,omitempty"`
 }
 
-// WorkloadHealthCondition represents informative health condition.
+// WorkloadHealthCondition represents informative health condition of a workload.
 type WorkloadHealthCondition struct {
 	// ComponentName represents the component name if target is a workload
-	ComponentName  string                         `json:"componentName,omitempty"`
-	TargetWorkload runtimev1alpha1.TypedReference `json:"targetWorkload,omitempty"`
-	HealthStatus   HealthStatus                   `json:"healthStatus"`
-	Diagnosis      string                         `json:"diagnosis,omitempty"`
+	ComponentName  string                 `json:"componentName,omitempty"`
+	TargetWorkload corev1.ObjectReference `json:"targetWorkload,omitempty"`
+	HealthStatus   HealthStatus           `json:"healthStatus"`
+	Diagnosis      string                 `json:"diagnosis,omitempty"`
 	// WorkloadStatus represents status of workloads whose HealthStatus is UNKNOWN.
-	WorkloadStatus string `json:"workloadStatus,omitempty"`
+	WorkloadStatus  string                  `json:"workloadStatus,omitempty"`
+	CustomStatusMsg string                  `json:"customStatusMsg,omitempty"`
+	Traits          []*TraitHealthCondition `json:"traits,omitempty"`
+}
+
+// TraitHealthCondition represents informative health condition of a trait.
+type TraitHealthCondition struct {
+	Type            string       `json:"type"`
+	Resource        string       `json:"resource"`
+	HealthStatus    HealthStatus `json:"healthStatus"`
+	Diagnosis       string       `json:"diagnosis,omitempty"`
+	CustomStatusMsg string       `json:"customStatusMsg,omitempty"`
 }
 
 // +kubebuilder:object:root=true

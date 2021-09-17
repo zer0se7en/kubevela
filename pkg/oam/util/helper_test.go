@@ -26,12 +26,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
-	"github.com/crossplane/crossplane-runtime/pkg/resource/fake"
 	"github.com/crossplane/crossplane-runtime/pkg/test"
 	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -42,6 +41,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/oam"
@@ -118,7 +118,7 @@ func TestLocateParentAppConfig(t *testing.T) {
 	}{
 		"LocateParentAppConfig fail when getAppConfig fails": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					return getErr
 				},
 				oamObj: &mockComp,
@@ -131,7 +131,7 @@ func TestLocateParentAppConfig(t *testing.T) {
 
 		"LocateParentAppConfig fail when no ApplicationConfiguration in OwnerReferences": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					return getErr
 				},
 				oamObj: &mockCompWithEmptyOwnerRef,
@@ -143,7 +143,7 @@ func TestLocateParentAppConfig(t *testing.T) {
 		},
 		"LocateParentAppConfig success": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					o, _ := obj.(*v1alpha2.ApplicationConfiguration)
 					ac := mockAC
 					*o = ac
@@ -186,7 +186,7 @@ func TestFetchWorkloadTraitReference(t *testing.T) {
 		},
 		Spec: v1alpha2.ManualScalerTraitSpec{
 			ReplicaCount: 3,
-			WorkloadReference: v1alpha1.TypedReference{
+			WorkloadReference: corev1.ObjectReference{
 				APIVersion: "apiversion",
 				Kind:       "Kind",
 			},
@@ -230,7 +230,7 @@ func TestFetchWorkloadTraitReference(t *testing.T) {
 		"FetchWorkload fails when getWorkload fails": {
 			fields: fields{
 				trait: &manualScalar,
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					return workloadErr
 				},
 			},
@@ -242,7 +242,7 @@ func TestFetchWorkloadTraitReference(t *testing.T) {
 		"FetchWorkload succeeds when getWorkload succeeds": {
 			fields: fields{
 				trait: &manualScalar,
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					o, _ := obj.(*unstructured.Unstructured)
 					*o = *uwl
 					return nil
@@ -333,7 +333,7 @@ func TestScopeRelatedUtils(t *testing.T) {
 	}{
 		"FetchScopeDefinition fail when getScopeDefinition fails": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					return getErr
 				},
 			},
@@ -345,7 +345,7 @@ func TestScopeRelatedUtils(t *testing.T) {
 
 		"FetchScopeDefinition Success": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					o, _ := obj.(*v1alpha2.ScopeDefinition)
 					sd := mockScopeDefinition
 					*o = sd
@@ -426,7 +426,7 @@ func TestTraitHelper(t *testing.T) {
 	}{
 		"FetchTraitDefinition fail when getTraitDefinition fails": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					return getErr
 				},
 			},
@@ -438,7 +438,7 @@ func TestTraitHelper(t *testing.T) {
 
 		"FetchTraitDefinition Success": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					o, _ := obj.(*v1alpha2.TraitDefinition)
 					td := mockTraitDefinition
 					*o = td
@@ -513,7 +513,7 @@ func TestUtils(t *testing.T) {
 	}{
 		"FetchWorkloadDefinition fail when getWorkloadDefinition fails": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					return getErr
 				},
 			},
@@ -525,7 +525,7 @@ func TestUtils(t *testing.T) {
 
 		"FetchWorkloadDefinition Success": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					o, _ := obj.(*v1alpha2.WorkloadDefinition)
 					w := workloadDefinition
 					*o = w
@@ -617,7 +617,7 @@ func TestChildResources(t *testing.T) {
 			UID: "NotWorkloadUID",
 		},
 	})
-	var nilListFunc test.ObjectFn = func(o runtime.Object) error {
+	var nilListFunc test.ObjectListFn = func(o client.ObjectList) error {
 		u := &unstructured.Unstructured{}
 		l := o.(*unstructured.UnstructuredList)
 		l.Items = []unstructured.Unstructured{*u}
@@ -625,7 +625,7 @@ func TestChildResources(t *testing.T) {
 	}
 	type fields struct {
 		getFunc  test.ObjectFn
-		listFunc test.ObjectFn
+		listFunc test.ObjectListFn
 	}
 	type want struct {
 		crks []*unstructured.Unstructured
@@ -638,7 +638,7 @@ func TestChildResources(t *testing.T) {
 	}{
 		"FetchWorkloadChildResources fail when getWorkloadDefinition fails": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					return getErr
 				},
 				listFunc: nilListFunc,
@@ -650,7 +650,7 @@ func TestChildResources(t *testing.T) {
 		},
 		"FetchWorkloadChildResources return nothing when the workloadDefinition doesn't have child list": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					o, _ := obj.(*v1alpha2.WorkloadDefinition)
 					*o = workloadDefinition
 					return nil
@@ -664,14 +664,14 @@ func TestChildResources(t *testing.T) {
 		},
 		"FetchWorkloadChildResources Success": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					o, _ := obj.(*v1alpha2.WorkloadDefinition)
 					w := workloadDefinition
 					w.Spec.ChildResourceKinds = crkl
 					*o = w
 					return nil
 				},
-				listFunc: func(o runtime.Object) error {
+				listFunc: func(o client.ObjectList) error {
 					l := o.(*unstructured.UnstructuredList)
 					switch l.GetKind() {
 					case util.KindDeployment:
@@ -693,14 +693,14 @@ func TestChildResources(t *testing.T) {
 		},
 		"FetchWorkloadChildResources with many resources only pick the child one": {
 			fields: fields{
-				getFunc: func(obj runtime.Object) error {
+				getFunc: func(obj client.Object) error {
 					o, _ := obj.(*v1alpha2.WorkloadDefinition)
 					w := workloadDefinition
 					w.Spec.ChildResourceKinds = crkl
 					*o = w
 					return nil
 				},
-				listFunc: func(o runtime.Object) error {
+				listFunc: func(o client.ObjectList) error {
 					l := o.(*unstructured.UnstructuredList)
 					l.Items = []unstructured.Unstructured{oResource, oResource, oResource, oResource,
 						oResource, oResource, oResource}
@@ -797,7 +797,7 @@ func TestGetGVKFromDef(t *testing.T) {
 	mapper.MockKindsFor = mock.NewMockKindsFor("Abc", "v1", "v2")
 	gvk, err := util.GetGVKFromDefinition(mapper, common.DefinitionReference{Name: "abcs.example.com"})
 	assert.NoError(t, err)
-	assert.Equal(t, schema.GroupVersionKind{
+	assert.Equal(t, metav1.GroupVersionKind{
 		Group:   "example.com",
 		Version: "v1",
 		Kind:    "Abc",
@@ -805,7 +805,7 @@ func TestGetGVKFromDef(t *testing.T) {
 
 	gvk, err = util.GetGVKFromDefinition(mapper, common.DefinitionReference{Name: "abcs.example.com", Version: "v2"})
 	assert.NoError(t, err)
-	assert.Equal(t, schema.GroupVersionKind{
+	assert.Equal(t, metav1.GroupVersionKind{
 		Group:   "example.com",
 		Version: "v2",
 		Kind:    "Abc",
@@ -813,7 +813,7 @@ func TestGetGVKFromDef(t *testing.T) {
 
 	gvk, err = util.GetGVKFromDefinition(mapper, common.DefinitionReference{})
 	assert.NoError(t, err)
-	assert.Equal(t, schema.GroupVersionKind{
+	assert.Equal(t, metav1.GroupVersionKind{
 		Group:   "",
 		Version: "",
 		Kind:    "",
@@ -821,7 +821,7 @@ func TestGetGVKFromDef(t *testing.T) {
 
 	gvk, err = util.GetGVKFromDefinition(mapper, common.DefinitionReference{Name: "dummy"})
 	assert.NoError(t, err)
-	assert.Equal(t, schema.GroupVersionKind{
+	assert.Equal(t, metav1.GroupVersionKind{
 		Group:   "",
 		Version: "",
 		Kind:    "",
@@ -910,7 +910,7 @@ func TestGenTraitName(t *testing.T) {
 				},
 			},
 			definitionName: "",
-			exp:            "simple-trait-5ddc8b7556",
+			exp:            "simple-trait-69dbc6b96",
 		},
 		{
 			name:           "simple-definition",
@@ -954,7 +954,7 @@ func TestComputeHash(t *testing.T) {
 					Object: &mts,
 				},
 			},
-			exp: "5ddc8b7556",
+			exp: "69dbc6b96",
 		},
 	}
 	for _, test := range test {
@@ -993,7 +993,7 @@ func TestEndReconcileWithNegativeCondition(t *testing.T) {
 		ctx       context.Context
 		r         client.StatusClient
 		workload  util.ConditionedObject
-		condition []v1alpha1.Condition
+		condition []condition.Condition
 	}
 	patchErr := fmt.Errorf("eww")
 	tests := []struct {
@@ -1008,8 +1008,8 @@ func TestEndReconcileWithNegativeCondition(t *testing.T) {
 				r: &test.MockClient{
 					MockStatusPatch: test.NewMockStatusPatchFn(nil),
 				},
-				workload:  &fake.Target{},
-				condition: []v1alpha1.Condition{},
+				workload:  &mock.Target{},
+				condition: []condition.Condition{},
 			},
 			expected: nil,
 		},
@@ -1020,9 +1020,9 @@ func TestEndReconcileWithNegativeCondition(t *testing.T) {
 				r: &test.MockClient{
 					MockStatusPatch: test.NewMockStatusPatchFn(nil),
 				},
-				workload: &fake.Target{
-					ConditionedStatus: v1alpha1.ConditionedStatus{
-						Conditions: []v1alpha1.Condition{
+				workload: &mock.Target{
+					ConditionedStatus: condition.ConditionedStatus{
+						Conditions: []condition.Condition{
 							{
 								Type:               "test",
 								LastTransitionTime: metav1.NewTime(time1),
@@ -1032,7 +1032,7 @@ func TestEndReconcileWithNegativeCondition(t *testing.T) {
 						},
 					},
 				},
-				condition: []v1alpha1.Condition{
+				condition: []condition.Condition{
 					{
 						Type:               "test",
 						LastTransitionTime: metav1.NewTime(time2),
@@ -1050,9 +1050,9 @@ func TestEndReconcileWithNegativeCondition(t *testing.T) {
 				r: &test.MockClient{
 					MockStatusPatch: test.NewMockStatusPatchFn(nil),
 				},
-				workload: &fake.Target{
-					ConditionedStatus: v1alpha1.ConditionedStatus{
-						Conditions: []v1alpha1.Condition{
+				workload: &mock.Target{
+					ConditionedStatus: condition.ConditionedStatus{
+						Conditions: []condition.Condition{
 							{
 								Type:               "test",
 								LastTransitionTime: metav1.NewTime(time1),
@@ -1062,7 +1062,7 @@ func TestEndReconcileWithNegativeCondition(t *testing.T) {
 						},
 					},
 				},
-				condition: []v1alpha1.Condition{
+				condition: []condition.Condition{
 					{
 						Type:               "test",
 						LastTransitionTime: metav1.NewTime(time2),
@@ -1080,8 +1080,8 @@ func TestEndReconcileWithNegativeCondition(t *testing.T) {
 				r: &test.MockClient{
 					MockStatusPatch: test.NewMockStatusPatchFn(patchErr),
 				},
-				workload: &fake.Target{},
-				condition: []v1alpha1.Condition{
+				workload: &mock.Target{},
+				condition: []condition.Condition{
 					{},
 				},
 			},
@@ -1103,7 +1103,7 @@ func TestEndReconcileWithPositiveCondition(t *testing.T) {
 		ctx       context.Context
 		r         client.StatusClient
 		workload  util.ConditionedObject
-		condition []v1alpha1.Condition
+		condition []condition.Condition
 	}
 	patchErr := fmt.Errorf("eww")
 	tests := []struct {
@@ -1118,8 +1118,8 @@ func TestEndReconcileWithPositiveCondition(t *testing.T) {
 				r: &test.MockClient{
 					MockStatusPatch: test.NewMockStatusPatchFn(nil),
 				},
-				workload: &fake.Target{},
-				condition: []v1alpha1.Condition{
+				workload: &mock.Target{},
+				condition: []condition.Condition{
 					{},
 				},
 			},
@@ -1132,8 +1132,8 @@ func TestEndReconcileWithPositiveCondition(t *testing.T) {
 				r: &test.MockClient{
 					MockStatusPatch: test.NewMockStatusPatchFn(patchErr),
 				},
-				workload: &fake.Target{},
-				condition: []v1alpha1.Condition{
+				workload: &mock.Target{},
+				condition: []condition.Condition{
 					{},
 				},
 			},
@@ -1192,7 +1192,7 @@ func TestComponentHelper(t *testing.T) {
 		},
 	}
 
-	client := &test.MockClient{MockGet: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+	client := &test.MockClient{MockGet: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 		if o, ok := obj.(*v1alpha2.Component); ok {
 			switch key.Name {
 			case componentName:
@@ -1551,7 +1551,7 @@ func TestGetDefinitionError(t *testing.T) {
 	errNotFound := apierrors.NewNotFound(schema.GroupResource{Group: "core.oma.dev", Resource: "traitDefinition"}, "mock")
 	errNeedNamespace := fmt.Errorf("an empty namespace may not be set when a resource name is provided")
 
-	getFunc := func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+	getFunc := func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 		ns := key.Namespace
 		if ns != "" {
 			return errNotFound
@@ -1619,7 +1619,7 @@ func TestGetDefinitionWithClusterScope(t *testing.T) {
 		mockIndexer[key] = tdList[i]
 	}
 
-	getFunc := func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+	getFunc := func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 		var namespacedName string
 		if key.Namespace != "" {
 			namespacedName = key.Namespace + "/" + key.Name
@@ -1732,7 +1732,7 @@ func TestGetWorkloadDefinition(t *testing.T) {
 
 		"app defintion will overlay system definition": {
 			fields: fields{
-				getFunc: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+				getFunc: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 					o := obj.(*v1alpha2.WorkloadDefinition)
 					if key.Namespace == "vela-system" {
 						*o = sysWorkloadDefinition
@@ -1750,7 +1750,7 @@ func TestGetWorkloadDefinition(t *testing.T) {
 
 		"return system definiton when cannot find in app ns": {
 			fields: fields{
-				getFunc: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+				getFunc: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 					if key.Namespace == "vela-system" {
 						o := obj.(*v1alpha2.WorkloadDefinition)
 						*o = sysWorkloadDefinition
@@ -1823,7 +1823,7 @@ func TestGetTraitDefinition(t *testing.T) {
 	}{
 		"app defintion will overlay system definition": {
 			fields: fields{
-				getFunc: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+				getFunc: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 					o := obj.(*v1alpha2.TraitDefinition)
 					if key.Namespace == "vela-system" {
 						*o = sysTraitDefinition
@@ -1841,7 +1841,7 @@ func TestGetTraitDefinition(t *testing.T) {
 
 		"return system definiton when cannot find in app ns": {
 			fields: fields{
-				getFunc: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+				getFunc: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 					if key.Namespace == "vela-system" {
 						o := obj.(*v1alpha2.TraitDefinition)
 						*o = sysTraitDefinition
@@ -1897,7 +1897,7 @@ func TestGetDefinition(t *testing.T) {
 		},
 	}
 
-	cli := test.MockClient{MockGet: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+	cli := test.MockClient{MockGet: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 		o := obj.(*v1alpha2.TraitDefinition)
 		switch key.Namespace {
 		case "vela-system":
@@ -1985,7 +1985,7 @@ func TestGetScopeDefiniton(t *testing.T) {
 	}{
 		"app defintion will overlay system definition": {
 			fields: fields{
-				getFunc: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+				getFunc: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 					o := obj.(*v1alpha2.ScopeDefinition)
 					if key.Namespace == "vela-system" {
 						*o = sysScopeDefinition
@@ -2003,7 +2003,7 @@ func TestGetScopeDefiniton(t *testing.T) {
 
 		"return system definiton when cannot find in app ns": {
 			fields: fields{
-				getFunc: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+				getFunc: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 					if key.Namespace == "vela-system" {
 						o := obj.(*v1alpha2.ScopeDefinition)
 						*o = sysScopeDefinition
@@ -2223,7 +2223,7 @@ func TestExtractRevisionNum(t *testing.T) {
 	}
 }
 
-func TestExtractDefinitionRevName(t *testing.T) {
+func TestConvertDefinitionRevName(t *testing.T) {
 	testcases := []struct {
 		defName     string
 		wantRevName string
@@ -2238,245 +2238,24 @@ func TestExtractDefinitionRevName(t *testing.T) {
 		hasError:    false,
 	}, {
 		defName:     "worker",
-		wantRevName: "",
-		hasError:    true,
-	}, {
-		defName:     "webservice@@v2",
-		wantRevName: "webservice@-v2",
+		wantRevName: "worker",
 		hasError:    false,
 	}, {
-		defName:     "webservice@v10@v3",
-		wantRevName: "webservice@v10-v3",
-		hasError:    false,
+		defName:  "webservice@@v2",
+		hasError: true,
 	}, {
-		defName:     "@v10",
-		wantRevName: "",
-		hasError:    true,
+		defName:  "webservice@v10@v3",
+		hasError: true,
+	}, {
+		defName:  "@v10",
+		hasError: true,
 	}}
 
 	for _, tt := range testcases {
 		revName, err := util.ConvertDefinitionRevName(tt.defName)
-		hasError := err != nil
-		assert.Equal(t, tt.wantRevName, revName)
-		assert.Equal(t, tt.hasError, hasError)
+		assert.Equal(t, tt.hasError, err != nil)
+		if !tt.hasError {
+			assert.Equal(t, tt.wantRevName, revName)
+		}
 	}
-}
-
-func TestAppConfig2ComponentManifests(t *testing.T) {
-	testcases := []struct {
-		ac        string
-		comp      string
-		expectErr bool
-	}{
-		{
-			ac: `apiVersion: core.oam.dev/v1alpha2
-kind: ApplicationConfiguration
-metadata: {}
-spec:
-  components:
-  - componentName: demo-podinfo
-    revisionName: demo-podinfo-v2
-    traits:
-    - trait:
-        apiVersion: networking.k8s.io/v1beta1
-        kind: Ingress
-        metadata:
-          name: demo-podinfo
-        spec:
-          rules:
-          - host: localhost
-            http:
-              paths:
-              - backend:
-                  serviceName: demo-podinfo
-                  servicePort: 8000
-                path: /`,
-			comp: `apiVersion: core.oam.dev/v1alpha2
-kind: Component
-metadata:
-  name: demo-podinfo
-spec:
-  helm:
-    release:
-      apiVersion: helm.toolkit.fluxcd.io/v2beta1
-      kind: HelmRelease
-      metadata:
-        name: myapp-demo-podinfo
-        namespace: default
-      spec:
-        chart:
-          spec:
-            chart: podinfo
-            sourceRef:
-              kind: HelmRepository
-              name: myapp-demo-podinfo
-              namespace: default
-            version: 5.1.4
-        interval: 5m0s
-        values:
-          image:
-            tag: 5.1.2
-    repository:
-      apiVersion: source.toolkit.fluxcd.io/v1beta1
-      kind: HelmRepository
-      metadata:
-        name: myapp-demo-podinfo
-        namespace: default
-      spec:
-        interval: 5m0s
-        url: http://oam.dev/catalog/
-  workload:
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-    spec:
-      replicas: 2`,
-			expectErr: false,
-		},
-		{
-			ac:        `errBoom`,
-			comp:      "",
-			expectErr: true,
-		},
-		{
-			ac: `apiVersion: core.oam.dev/v1alpha2
-kind: ApplicationConfiguration
-metadata: {}
-spec:
-  components:
-  - componentName: demo-podinfo
-    revisionName: demo-podinfo-v2`,
-			comp:      `errBoom`,
-			expectErr: true,
-		},
-		{
-			ac: `apiVersion: core.oam.dev/v1alpha2
-kind: ApplicationConfiguration
-metadata: {}
-spec:
-  components:
-  - componentName: demo-podinfo
-    revisionName: demo-podinfo-v2`,
-			comp: `apiVersion: core.oam.dev/v1alpha2
-kind: Component
-metadata:
-  name: demo-podinfo
-spec:
-  workload:
-    errorBoom`,
-			expectErr: true,
-		},
-		{
-			ac: `apiVersion: core.oam.dev/v1alpha2
-kind: ApplicationConfiguration
-metadata: {}
-spec:
-  components:
-  - componentName: demo-podinfo
-    revisionName: demo-podinfo-v2`,
-			comp: `apiVersion: core.oam.dev/v1alpha2
-kind: Component
-metadata:
-  name: demo-podinfo
-spec:
-  helm:
-    release:
-      errorBoom
-    repository:
-      apiVersion: source.toolkit.fluxcd.io/v1beta1
-      kind: HelmRepository
-      metadata:
-        name: myapp-demo-podinfo
-        namespace: default
-      spec:
-        interval: 5m0s
-        url: http://oam.dev/catalog/
-  workload:
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-    spec:
-      replicas: 2`,
-			expectErr: true,
-		},
-		{
-			ac: `apiVersion: core.oam.dev/v1alpha2
-kind: ApplicationConfiguration
-metadata: {}
-spec:
-  components:
-  - componentName: demo-podinfo
-    revisionName: demo-podinfo-v2`,
-			comp: `apiVersion: core.oam.dev/v1alpha2
-kind: Component
-metadata:
-  name: demo-podinfo
-spec:
-  helm:
-    release:
-      apiVersion: helm.toolkit.fluxcd.io/v2beta1
-      kind: HelmRelease
-      metadata:
-        name: myapp-demo-podinfo
-        namespace: default
-      spec:
-        chart:
-          spec:
-            chart: podinfo
-            sourceRef:
-              kind: HelmRepository
-              name: myapp-demo-podinfo
-              namespace: default
-            version: 5.1.4
-        interval: 5m0s
-        values:
-          image:
-            tag: 5.1.2
-    repository:
-      errorBoom
-  workload:
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-    spec:
-      replicas: 2`,
-			expectErr: true,
-		},
-		{
-			ac: `apiVersion: core.oam.dev/v1alpha2
-kind: ApplicationConfiguration
-metadata: {}
-spec:
-  components:
-  - componentName: demo-podinfo
-    revisionName: demo-podinfo-v2
-    traits:
-    - trait:
-        errorBoom`,
-			comp: `apiVersion: core.oam.dev/v1alpha2
-kind: Component
-metadata:
-  name: demo-podinfo
-spec:
-  workload:
-    apiVersion: apps/v1
-    kind: Deployment
-    metadata:
-    spec:
-      replicas: 2`,
-			expectErr: true,
-		},
-	}
-	for _, tc := range testcases {
-		acJSON, _ := yaml.YAMLToJSON([]byte(tc.ac))
-		acRaw := runtime.RawExtension{Raw: acJSON}
-		compJSON, _ := yaml.YAMLToJSON([]byte(tc.comp))
-		compRaw := runtime.RawExtension{Raw: compJSON}
-		_, err := util.AppConfig2ComponentManifests(acRaw, []common.RawComponent{
-			{Raw: compRaw},
-		})
-		hasError := err != nil
-		assert.Equal(t, tc.expectErr, hasError, "err", err)
-	}
-
 }

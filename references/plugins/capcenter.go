@@ -20,17 +20,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/ghodss/yaml"
 	"github.com/google/go-github/v32/github"
 	"golang.org/x/oauth2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
@@ -189,7 +188,7 @@ func LoadRepos() ([]CapCenterConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	data, err := ioutil.ReadFile(filepath.Clean(config))
+	data, err := os.ReadFile(filepath.Clean(config))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return []CapCenterConfig{defaultRepo}, nil
@@ -224,7 +223,7 @@ func StoreRepos(repos []CapCenterConfig) error {
 		return err
 	}
 	//nolint:gosec
-	return ioutil.WriteFile(config, data, 0644)
+	return os.WriteFile(config, data, 0644)
 }
 
 // ParseCapability will convert config from remote center to capability
@@ -245,14 +244,14 @@ func ParseCapability(mapper discoverymapper.DiscoveryMapper, data []byte) (types
 		if err != nil {
 			return types.Capability{}, err
 		}
-		return HandleDefinition(cd.Name, ref.Name, cd.Annotations, cd.Spec.Extension, types.TypeComponentDefinition, nil, cd.Spec.Schematic)
+		return HandleDefinition(cd.Name, ref.Name, cd.Annotations, cd.Labels, cd.Spec.Extension, types.TypeComponentDefinition, nil, cd.Spec.Schematic)
 	case "TraitDefinition":
 		var td v1beta1.TraitDefinition
 		err = yaml.Unmarshal(data, &td)
 		if err != nil {
 			return types.Capability{}, err
 		}
-		return HandleDefinition(td.Name, td.Spec.Reference.Name, td.Annotations, td.Spec.Extension, types.TypeTrait, td.Spec.AppliesToWorkloads, td.Spec.Schematic)
+		return HandleDefinition(td.Name, td.Spec.Reference.Name, td.Annotations, td.Labels, td.Spec.Extension, types.TypeTrait, td.Spec.AppliesToWorkloads, td.Spec.Schematic)
 	case "ScopeDefinition":
 		// TODO(wonderflow): support scope definition here.
 	}
@@ -292,7 +291,7 @@ func (g *GithubRegistry) SyncCapabilityFromCenter() error {
 			continue
 		}
 		//nolint:gosec
-		err = ioutil.WriteFile(filepath.Join(repoDir, addon.Name+".yaml"), item.data, 0644)
+		err = os.WriteFile(filepath.Join(repoDir, addon.Name+".yaml"), item.data, 0644)
 		if err != nil {
 			fmt.Printf("write definition %s to %s err %v\n", addon.Name+".yaml", repoDir, err)
 			continue
@@ -333,7 +332,7 @@ func (o *OssRegistry) SyncCapabilityFromCenter() error {
 			continue
 		}
 		//nolint:gosec
-		err = ioutil.WriteFile(filepath.Join(repoDir, addon.Name+".yaml"), item.data, 0644)
+		err = os.WriteFile(filepath.Join(repoDir, addon.Name+".yaml"), item.data, 0644)
 		if err != nil {
 			fmt.Printf("write definition %s to %s err %v\n", addon.Name+".yaml", repoDir, err)
 			continue

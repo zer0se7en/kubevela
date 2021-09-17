@@ -18,12 +18,13 @@ package controllers_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
-	"github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,7 +35,9 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
+	utilcommon "github.com/oam-dev/kubevela/pkg/utils/common"
 )
 
 var (
@@ -43,46 +46,19 @@ var (
 
 var _ = Describe("HealthScope", func() {
 	ctx := context.Background()
-	namespace := "health-scope-test"
+	var namespace string
 	trueVar := true
 	falseVar := false
-	ns := corev1.Namespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: namespace,
-		},
-	}
+	var ns corev1.Namespace
 	BeforeEach(func() {
-		logf.Log.Info("Start to run a test, clean up previous resources")
-		// delete the namespace with all its resources
-		Expect(k8sClient.Delete(ctx, &ns, client.PropagationPolicy(metav1.DeletePropagationForeground))).
-			Should(SatisfyAny(BeNil(), &util.NotFoundMatcher{}))
-		logf.Log.Info("make sure all the resources are removed")
-		objectKey := client.ObjectKey{
-			Name: namespace,
+		namespace = randomNamespaceName("health-scope-test")
+		ns = corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: namespace,
+			},
 		}
-		res := &corev1.Namespace{}
-		Eventually(
-			// gomega has a bug that can't take nil as the actual input, so has to make it a func
-			func() error {
-				return k8sClient.Get(ctx, objectKey, res)
-			},
-			time.Second*120, time.Millisecond*500).Should(&util.NotFoundMatcher{})
-		// recreate it
-		Eventually(
-			func() error {
-				return k8sClient.Create(ctx, &ns)
-			},
-			time.Second*3, time.Millisecond*300).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+		Expect(k8sClient.Create(ctx, &ns)).Should(Succeed())
 
-	})
-	AfterEach(func() {
-		logf.Log.Info("Clean up resources")
-		// delete the namespace with all its resources
-		Expect(k8sClient.Delete(ctx, &ns, client.PropagationPolicy(metav1.DeletePropagationForeground))).Should(BeNil())
-	})
-
-	It("Test an application config with health scope", func() {
-		healthScopeName := "example-health-scope"
 		// create health scope definition
 		sd := v1alpha2.ScopeDefinition{
 			ObjectMeta: metav1.ObjectMeta{
@@ -99,7 +75,16 @@ var _ = Describe("HealthScope", func() {
 		}
 		logf.Log.Info("Creating health scope definition")
 		Expect(k8sClient.Create(ctx, &sd)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+	})
+	AfterEach(func() {
+		logf.Log.Info("Clean up resources")
+		Expect(k8sClient.DeleteAllOf(ctx, &v1alpha2.HealthScope{}, client.InNamespace(namespace))).Should(BeNil())
+		// delete the namespace with all its resources
+		Expect(k8sClient.Delete(ctx, &ns, client.PropagationPolicy(metav1.DeletePropagationForeground))).Should(BeNil())
+	})
 
+	It("Test an application config with health scope", func() {
+		healthScopeName := "example-health-scope"
 		// create health scope.
 		hs := v1alpha2.HealthScope{
 			ObjectMeta: metav1.ObjectMeta{
@@ -108,11 +93,11 @@ var _ = Describe("HealthScope", func() {
 			},
 			Spec: v1alpha2.HealthScopeSpec{
 				ProbeTimeout:       &varInt32_60,
-				WorkloadReferences: []v1alpha1.TypedReference{},
+				WorkloadReferences: []corev1.ObjectReference{},
 			},
 		}
-		logf.Log.Info("Creating health scope")
 		Expect(k8sClient.Create(ctx, &hs)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
+
 		By("Check empty health scope is healthy")
 		Eventually(func() v1alpha2.HealthStatus {
 			k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: healthScopeName}, &hs)
@@ -233,7 +218,7 @@ var _ = Describe("HealthScope", func() {
 						},
 						Scopes: []v1alpha2.ComponentScope{
 							{
-								ScopeReference: v1alpha1.TypedReference{
+								ScopeReference: corev1.ObjectReference{
 									APIVersion: gvks[0].GroupVersion().String(),
 									Kind:       v1alpha2.HealthScopeGroupVersionKind.Kind,
 									Name:       healthScopeName,
@@ -255,7 +240,7 @@ var _ = Describe("HealthScope", func() {
 						},
 						Scopes: []v1alpha2.ComponentScope{
 							{
-								ScopeReference: v1alpha1.TypedReference{
+								ScopeReference: corev1.ObjectReference{
 									APIVersion: gvks[0].GroupVersion().String(),
 									Kind:       v1alpha2.HealthScopeGroupVersionKind.Kind,
 									Name:       healthScopeName,
@@ -317,7 +302,7 @@ var _ = Describe("HealthScope", func() {
 		By("Verify health scope")
 		Eventually(
 			func() v1alpha2.ScopeHealthCondition {
-				requestReconcileNow(ctx, &appConfig)
+				RequestReconcileNow(ctx, &appConfig)
 				*healthScope = v1alpha2.HealthScope{}
 				k8sClient.Get(ctx, healthScopeObject, healthScope)
 				logf.Log.Info("Checking on health scope",
@@ -332,5 +317,136 @@ var _ = Describe("HealthScope", func() {
 			Total:            int64(2),
 			HealthyWorkloads: int64(2),
 		}))
+	})
+
+	It("Test an application with health policy", func() {
+		By("Apply a healthy application")
+		var newApp v1beta1.Application
+		var healthyAppName, unhealthyAppName string
+		Expect(utilcommon.ReadYamlToObject("testdata/app/app_healthscope.yaml", &newApp)).Should(BeNil())
+		newApp.Namespace = namespace
+		Eventually(func() error {
+			return k8sClient.Create(ctx, newApp.DeepCopy())
+		}, 10*time.Second, 500*time.Millisecond).Should(Succeed())
+
+		healthyAppName = newApp.Name
+		By("Get Application latest status")
+		Eventually(
+			func() *common.Revision {
+				var app v1beta1.Application
+				k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: healthyAppName}, &app)
+				if app.Status.LatestRevision != nil {
+					return app.Status.LatestRevision
+				}
+				return nil
+			},
+			time.Second*30, time.Millisecond*500).ShouldNot(BeNil())
+
+		By("Apply an unhealthy application")
+		newApp = v1beta1.Application{}
+		Expect(utilcommon.ReadYamlToObject("testdata/app/app_healthscope_unhealthy.yaml", &newApp)).Should(BeNil())
+		newApp.Namespace = namespace
+		Eventually(func() error {
+			return k8sClient.Create(ctx, newApp.DeepCopy())
+		}, 10*time.Second, 500*time.Millisecond).Should(Succeed())
+
+		unhealthyAppName = newApp.Name
+		By("Get Application latest status")
+		Eventually(
+			func() *common.Revision {
+				var app v1beta1.Application
+				k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: unhealthyAppName}, &app)
+				if app.Status.LatestRevision != nil {
+					return app.Status.LatestRevision
+				}
+				return nil
+			},
+			time.Second*30, time.Millisecond*500).ShouldNot(BeNil())
+
+		By("Verify the healthy health scope")
+		healthScopeObject := client.ObjectKey{
+			Name:      "app-healthscope",
+			Namespace: namespace,
+		}
+
+		healthScope := &v1alpha2.HealthScope{}
+		Expect(k8sClient.Get(ctx, healthScopeObject, healthScope)).Should(Succeed())
+
+		Eventually(
+			func() v1alpha2.ScopeHealthCondition {
+				*healthScope = v1alpha2.HealthScope{}
+				k8sClient.Get(ctx, healthScopeObject, healthScope)
+				return healthScope.Status.ScopeHealthCondition
+			},
+			time.Second*60, time.Millisecond*500).Should(Equal(v1alpha2.ScopeHealthCondition{
+			HealthStatus:     v1alpha2.StatusHealthy,
+			Total:            int64(2),
+			HealthyWorkloads: int64(2),
+		}))
+
+		By("Verify the healthy application status")
+		Eventually(func() error {
+			healthyApp := &v1beta1.Application{}
+			if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: healthyAppName}, healthyApp); err != nil {
+				return err
+			}
+			appCompStatuses := healthyApp.Status.Services
+			if len(appCompStatuses) != 2 {
+				return fmt.Errorf("expect 2 comp statuses, but got %d", len(appCompStatuses))
+			}
+			compSts1 := appCompStatuses[0]
+			if !compSts1.Healthy || !strings.Contains(compSts1.Message, "Ready:1/1") {
+				return fmt.Errorf("expect healthy comp, but %v is unhealthy, msg: %q", compSts1.Name, compSts1.Message)
+			}
+			if len(compSts1.Traits) != 1 {
+				return fmt.Errorf("expect 2 traits statuses, but got %d", len(compSts1.Traits))
+			}
+			Expect(compSts1.Traits[0].Message).Should(ContainSubstring("No loadBalancer found"))
+
+			return nil
+		}, time.Second*30, time.Millisecond*500).Should(Succeed())
+
+		By("Verify the unhealthy health scope")
+		healthScopeObject = client.ObjectKey{
+			Name:      "app-healthscope-unhealthy",
+			Namespace: namespace,
+		}
+
+		healthScope = &v1alpha2.HealthScope{}
+		Expect(k8sClient.Get(ctx, healthScopeObject, healthScope)).Should(Succeed())
+
+		Eventually(
+			func() v1alpha2.ScopeHealthCondition {
+				*healthScope = v1alpha2.HealthScope{}
+				k8sClient.Get(ctx, healthScopeObject, healthScope)
+				return healthScope.Status.ScopeHealthCondition
+			},
+			time.Second*60, time.Millisecond*500).Should(Equal(v1alpha2.ScopeHealthCondition{
+			HealthStatus:       v1alpha2.StatusUnhealthy,
+			Total:              int64(2),
+			UnhealthyWorkloads: int64(1),
+			HealthyWorkloads:   int64(1),
+		}))
+
+		By("Verify the unhealthy application status")
+		Eventually(func() error {
+			unhealthyApp := &v1beta1.Application{}
+			if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: healthyAppName}, unhealthyApp); err != nil {
+				return err
+			}
+			appCompStatuses := unhealthyApp.Status.Services
+			if len(appCompStatuses) != 2 {
+				return fmt.Errorf("expect 2 comp statuses, but got %d", len(appCompStatuses))
+			}
+			for _, cSts := range appCompStatuses {
+				if cSts.Name == "my-server-unhealthy" {
+					unhealthyCompSts := cSts
+					if unhealthyCompSts.Healthy || !strings.Contains(unhealthyCompSts.Message, "Ready:0/1") {
+						return fmt.Errorf("expect unhealthy comp, but %s is unhealthy, msg: %q", unhealthyCompSts.Name, unhealthyCompSts.Message)
+					}
+				}
+			}
+			return nil
+		}, time.Second*30, time.Millisecond*500).Should(Succeed())
 	})
 })

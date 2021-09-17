@@ -22,22 +22,22 @@ import (
 	"strings"
 
 	"github.com/aryann/difflib"
-	"github.com/ghodss/yaml"
 	"github.com/pkg/errors"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
-	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
 // NewLiveDiffOption creates a live-diff option
 func NewLiveDiffOption(c client.Client, dm discoverymapper.DiscoveryMapper, pd *packages.PackageDiscover, as []oam.Object) *LiveDiffOption {
-	return &LiveDiffOption{NewDryRunOption(c, dm, pd, as)}
+	parser := appfile.NewApplicationParser(c, dm, pd)
+	return &LiveDiffOption{DryRun: NewDryRunOption(c, dm, pd, as), Parser: parser}
 }
 
 // ManifestKind enums the kind of OAM objects
@@ -87,6 +87,7 @@ type manifest struct {
 // living AppRevision in the cluster
 type LiveDiffOption struct {
 	DryRun
+	Parser *appfile.Parser
 }
 
 // Diff does three phases, dry-run on input app, preparing manifest for diff, and
@@ -103,7 +104,7 @@ func (l *LiveDiffOption) Diff(ctx context.Context, app *v1beta1.Application, app
 	}
 
 	// old refers to the living app revision
-	oldManifest, err := generateManifestFromAppRevision(appRevision)
+	oldManifest, err := generateManifestFromAppRevision(l.Parser, appRevision)
 	if err != nil {
 		return nil, errors.WithMessagef(err, "cannot generate diff manifest for AppRevision %q", appRevision.Name)
 	}
@@ -254,6 +255,7 @@ func generateManifest(app *v1beta1.Application, comps []*types.ComponentManifest
 		Name: app.Name,
 		Kind: AppKind,
 	}
+	removeRevisionRelatedLabelAndAnnotation(app)
 	b, err := yaml.Marshal(app)
 	if err != nil {
 		return nil, errors.Wrapf(err, "cannot marshal application %q", app.Name)
@@ -268,7 +270,7 @@ func generateManifest(app *v1beta1.Application, comps []*types.ComponentManifest
 			Name: comp.Name,
 			Kind: RawCompKind,
 		}
-		emptifyAppRevisionLabel(comp.StandardWorkload)
+		removeRevisionRelatedLabelAndAnnotation(comp.StandardWorkload)
 		b, err := yaml.Marshal(comp.StandardWorkload)
 		if err != nil {
 			return nil, errors.Wrapf(err, "cannot marshal component %q", comp.Name)
@@ -288,7 +290,7 @@ func generateManifest(app *v1beta1.Application, comps []*types.ComponentManifest
 		// get matched raw component and add it into appConfigComponent's subs
 		subs := []*manifest{rawCompManifests[comp.Name]}
 		for _, t := range comp.Traits {
-			emptifyAppRevisionLabel(t)
+			removeRevisionRelatedLabelAndAnnotation(t)
 
 			tType := t.GetLabels()[oam.TraitTypeLabel]
 			tResource := t.GetLabels()[oam.TraitResource]
@@ -315,9 +317,12 @@ func generateManifest(app *v1beta1.Application, comps []*types.ComponentManifest
 }
 
 // generateManifestFromAppRevision generates manifest from an AppRevision
-func generateManifestFromAppRevision(appRevision *v1beta1.ApplicationRevision) (*manifest, error) {
-	// comps, err := util.ConvertRawComponentManifests(appRevision.Spec.ComponentManifests)
-	comps, err := util.AppConfig2ComponentManifests(appRevision.Spec.ApplicationConfiguration, appRevision.Spec.Components)
+func generateManifestFromAppRevision(parser *appfile.Parser, appRevision *v1beta1.ApplicationRevision) (*manifest, error) {
+	af, err := parser.GenerateAppFileFromRevision(appRevision)
+	if err != nil {
+		return nil, err
+	}
+	comps, err := af.GenerateComponentManifests()
 	if err != nil {
 		return nil, err
 	}
@@ -340,9 +345,9 @@ func extractNameFromRevisionName(r string) string {
 	return strings.Join(s[0:len(s)-1], "-")
 }
 
-// emptifyAppRevisionLabel will set label oam.LabelAppRevision to empty
+// removeRevisionRelatedLabelAndAnnotation will set label oam.LabelAppRevision to empty
 // because dry-run cannot set value to this label
-func emptifyAppRevisionLabel(o *unstructured.Unstructured) {
+func removeRevisionRelatedLabelAndAnnotation(o client.Object) {
 	newLabels := map[string]string{}
 	labels := o.GetLabels()
 	for k, v := range labels {
@@ -353,6 +358,16 @@ func emptifyAppRevisionLabel(o *unstructured.Unstructured) {
 		newLabels[k] = v
 	}
 	o.SetLabels(newLabels)
+
+	newAnnotations := map[string]string{}
+	annotations := o.GetAnnotations()
+	for k, v := range annotations {
+		if k == oam.AnnotationKubeVelaVersion || k == oam.AnnotationAppRevision || k == "kubectl.kubernetes.io/last-applied-configuration" {
+			continue
+		}
+		newAnnotations[k] = v
+	}
+	o.SetAnnotations(newAnnotations)
 }
 
 // hasChanges checks whether existing change in diff records

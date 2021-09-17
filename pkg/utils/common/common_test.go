@@ -20,7 +20,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -212,7 +211,7 @@ func TestGenOpenAPI(t *testing.T) {
 			if tc.want.targetSchemaFile == "" {
 				return
 			}
-			wantSchema, _ := ioutil.ReadFile(filepath.Join("testdata", tc.want.targetSchemaFile))
+			wantSchema, _ := os.ReadFile(filepath.Join("testdata", tc.want.targetSchemaFile))
 			if diff := cmp.Diff(wantSchema, got); diff != "" {
 				t.Errorf("\n%s\nGenOpenAPIFromFile(...): -want, +got:\n%s", tc.reason, diff)
 			}
@@ -232,7 +231,7 @@ func TestRealtimePrintCommandOutput(t *testing.T) {
 	err = RealtimePrintCommandOutput(cmd, logFile)
 	assert.NoError(t, err)
 
-	data, _ := ioutil.ReadFile(logFile)
+	data, _ := os.ReadFile(logFile)
 	assert.Contains(t, string(data), hello)
 	os.Remove(logFile)
 }
@@ -307,4 +306,51 @@ variable "mapVar" {
 
 	_, intVarExisted := variables["password"]
 	assert.True(t, intVarExisted)
+}
+
+func TestRefineParameterInstance(t *testing.T) {
+	// test #parameter exists: mock issues in #1939 & #2062
+	s := `parameter: #parameter
+#parameter: {
+	x?: string
+	if x != _|_ {
+	y: string
+	}
+}
+patch: {
+	if parameter.x != _|_ {
+	label: parameter.x
+	}
+}`
+	r := cue.Runtime{}
+	inst, err := r.Compile("-", s)
+	assert.NoError(t, err)
+	_, err = RefineParameterInstance(inst)
+	assert.NoError(t, err)
+	// test #parameter not exist but parameter exists
+	s = `parameter: {
+	x?: string
+	if x != _|_ {
+	y: string
+	}
+}`
+	inst, err = r.Compile("-", s)
+	assert.NoError(t, err)
+	_ = extractParameterDefinitionNodeFromInstance(inst)
+	_, err = RefineParameterInstance(inst)
+	assert.NoError(t, err)
+	// test #parameter as int
+	s = `parameter: #parameter
+#parameter: int`
+	inst, err = r.Compile("-", s)
+	assert.NoError(t, err)
+	_, err = RefineParameterInstance(inst)
+	assert.NoError(t, err)
+	// test invalid parameter kind
+	s = `parameter: #parameter
+#parameter: '\x03abc'`
+	inst, err = r.Compile("-", s)
+	assert.NoError(t, err)
+	_, err = RefineParameterInstance(inst)
+	assert.NotNil(t, err)
 }

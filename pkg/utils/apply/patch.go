@@ -20,9 +20,6 @@ import (
 	"encoding/json"
 
 	"github.com/pkg/errors"
-
-	"github.com/oam-dev/kubevela/pkg/oam"
-
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -31,6 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 var k8sScheme = runtime.NewScheme()
@@ -43,7 +42,7 @@ func init() {
 // threeWayMergePatch creates a patch by computing a three way diff based on
 // its current state, modified state, and last-applied-state recorded in the
 // annotation.
-func threeWayMergePatch(currentObj, modifiedObj runtime.Object) (client.Patch, error) {
+func threeWayMergePatch(currentObj, modifiedObj client.Object) (client.Patch, error) {
 	current, err := json.Marshal(currentObj)
 	if err != nil {
 		return nil, err

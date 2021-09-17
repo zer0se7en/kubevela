@@ -17,8 +17,9 @@
 package v1beta1
 
 import (
-	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 )
@@ -31,12 +32,16 @@ type PolicyDefinitionSpec struct {
 	// Schematic defines the data format and template of the encapsulation of the policy definition
 	// +optional
 	Schematic *common.Schematic `json:"schematic,omitempty"`
+
+	// ManageHealthCheck means the policy will handle health checking and skip application controller
+	// built-in health checking.
+	ManageHealthCheck bool `json:"manageHealthCheck,omitempty"`
 }
 
 // PolicyDefinitionStatus is the status of PolicyDefinition
 type PolicyDefinitionStatus struct {
 	// ConditionedStatus reflects the observed status of a resource
-	runtimev1alpha1.ConditionedStatus `json:",inline"`
+	condition.ConditionedStatus `json:",inline"`
 
 	// LatestRevision of the component definition
 	// +optional
@@ -44,12 +49,12 @@ type PolicyDefinitionStatus struct {
 }
 
 // SetConditions set condition for PolicyDefinition
-func (d *PolicyDefinition) SetConditions(c ...runtimev1alpha1.Condition) {
+func (d *PolicyDefinition) SetConditions(c ...condition.Condition) {
 	d.Status.SetConditions(c...)
 }
 
 // GetCondition gets condition from PolicyDefinition
-func (d *PolicyDefinition) GetCondition(conditionType runtimev1alpha1.ConditionType) runtimev1alpha1.Condition {
+func (d *PolicyDefinition) GetCondition(conditionType condition.ConditionType) condition.Condition {
 	return d.Status.GetCondition(conditionType)
 }
 
@@ -59,6 +64,8 @@ func (d *PolicyDefinition) GetCondition(conditionType runtimev1alpha1.ConditionT
 // +kubebuilder:resource:scope=Namespaced,categories={oam},shortName=policy
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type PolicyDefinition struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -68,6 +75,7 @@ type PolicyDefinition struct {
 }
 
 // +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // PolicyDefinitionList contains a list of PolicyDefinition
 type PolicyDefinitionList struct {

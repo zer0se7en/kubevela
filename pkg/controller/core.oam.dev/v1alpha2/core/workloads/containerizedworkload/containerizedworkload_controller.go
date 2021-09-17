@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"strings"
 
-	cpv1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	"github.com/crossplane/crossplane-runtime/pkg/event"
 	"github.com/pkg/errors"
 	appsv1 "k8s.io/api/apps/v1"
@@ -36,7 +35,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	common2 "github.com/oam-dev/kubevela/pkg/controller/common"
 	controller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
@@ -73,10 +74,11 @@ type Reconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update;patch;delete
-func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
-	ctx := context.Background()
-	klog.InfoS("Reconcile containerizedworkload", klog.KRef(req.Namespace, req.Name))
+func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	ctx, cancel := common2.NewReconcileContext(ctx)
+	defer cancel()
 
+	klog.InfoS("Reconcile containerizedworkload", klog.KRef(req.Namespace, req.Name))
 	var workload v1alpha2.ContainerizedWorkload
 	if err := r.Get(ctx, req.NamespacedName, &workload); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -97,7 +99,7 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		klog.ErrorS(err, "Failed to render a deployment")
 		r.record.Event(eventObj, event.Warning(errRenderWorkload, err))
 		return ctrl.Result{},
-			util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errRenderWorkload)))
+			util.EndReconcileWithNegativeCondition(ctx, r, &workload, condition.ReconcileError(errors.Wrap(err, errRenderWorkload)))
 	}
 	// server side apply, only the fields we set are touched
 	applyOpts := []client.PatchOption{client.ForceOwnership, client.FieldOwner(workload.GetUID())}
@@ -105,7 +107,7 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		klog.ErrorS(err, "Failed to apply to a deployment")
 		r.record.Event(eventObj, event.Warning(errApplyDeployment, err))
 		return ctrl.Result{},
-			util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errApplyDeployment)))
+			util.EndReconcileWithNegativeCondition(ctx, r, &workload, condition.ReconcileError(errors.Wrap(err, errApplyDeployment)))
 	}
 	r.record.Event(eventObj, event.Normal("Deployment created",
 		fmt.Sprintf("Workload `%s` successfully server side patched a deployment `%s`",
@@ -117,14 +119,14 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		klog.ErrorS(err, "Failed to render configmaps")
 		r.record.Event(eventObj, event.Warning(errRenderWorkload, err))
 		return ctrl.Result{},
-			util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errRenderWorkload)))
+			util.EndReconcileWithNegativeCondition(ctx, r, &workload, condition.ReconcileError(errors.Wrap(err, errRenderWorkload)))
 	}
 	for _, cm := range configmaps {
 		if err := r.Patch(ctx, cm, client.Apply, configMapApplyOpts...); err != nil {
 			klog.ErrorS(err, "Failed to apply a configmap")
 			r.record.Event(eventObj, event.Warning(errApplyConfigMap, err))
 			return ctrl.Result{},
-				util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errApplyConfigMap)))
+				util.EndReconcileWithNegativeCondition(ctx, r, &workload, condition.ReconcileError(errors.Wrap(err, errApplyConfigMap)))
 		}
 		r.record.Event(eventObj, event.Normal("ConfigMap created",
 			fmt.Sprintf("Workload `%s` successfully server side patched a configmap `%s`",
@@ -137,14 +139,14 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		klog.ErrorS(err, "Failed to render a service")
 		r.record.Event(eventObj, event.Warning(errRenderService, err))
 		return ctrl.Result{},
-			util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errRenderService)))
+			util.EndReconcileWithNegativeCondition(ctx, r, &workload, condition.ReconcileError(errors.Wrap(err, errRenderService)))
 	}
 	// server side apply the service
 	if err := r.Patch(ctx, service, client.Apply, applyOpts...); err != nil {
 		klog.ErrorS(err, "Failed to apply a service")
 		r.record.Event(eventObj, event.Warning(errApplyDeployment, err))
 		return ctrl.Result{},
-			util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(errors.Wrap(err, errApplyService)))
+			util.EndReconcileWithNegativeCondition(ctx, r, &workload, condition.ReconcileError(errors.Wrap(err, errApplyService)))
 	}
 	r.record.Event(eventObj, event.Normal("Service created",
 		fmt.Sprintf("Workload `%s` successfully server side patched a service `%s`",
@@ -157,13 +159,13 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 	workload.Status.Resources = nil
 	// record the new deployment, new service
 	workload.Status.Resources = append(workload.Status.Resources,
-		cpv1alpha1.TypedReference{
+		corev1.ObjectReference{
 			APIVersion: deploy.GetObjectKind().GroupVersionKind().GroupVersion().String(),
 			Kind:       deploy.GetObjectKind().GroupVersionKind().Kind,
 			Name:       deploy.GetName(),
 			UID:        deploy.UID,
 		},
-		cpv1alpha1.TypedReference{
+		corev1.ObjectReference{
 			APIVersion: service.GetObjectKind().GroupVersionKind().GroupVersion().String(),
 			Kind:       service.GetObjectKind().GroupVersionKind().Kind,
 			Name:       service.GetName(),
@@ -171,9 +173,9 @@ func (r *Reconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
 		},
 	)
 
-	workload.SetConditions(cpv1alpha1.ReconcileSuccess())
+	workload.SetConditions(condition.ReconcileSuccess())
 	if err := r.UpdateStatus(ctx, &workload); err != nil {
-		return ctrl.Result{}, util.EndReconcileWithNegativeCondition(ctx, r, &workload, cpv1alpha1.ReconcileError(err))
+		return ctrl.Result{}, util.EndReconcileWithNegativeCondition(ctx, r, &workload, condition.ReconcileError(err))
 	}
 	return ctrl.Result{}, nil
 }

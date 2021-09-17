@@ -44,7 +44,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
 
-var _ = Describe("Cloneset based rollout tests", func() {
+var _ = Describe("rollout related e2e-test,Cloneset based rollout tests", func() {
 	ctx := context.Background()
 	var namespaceName, appRolloutName string
 	var ns corev1.Namespace
@@ -117,6 +117,7 @@ var _ = Describe("Cloneset based rollout tests", func() {
 		By("Get Application latest status")
 		Eventually(
 			func() *oamcomm.Revision {
+				app = v1beta1.Application{}
 				k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: newApp.Name}, &app)
 				if app.Status.LatestRevision != nil {
 					return app.Status.LatestRevision
@@ -133,7 +134,8 @@ var _ = Describe("Cloneset based rollout tests", func() {
 
 		Eventually(
 			func() error {
-				err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: app.Name}, &app)
+				app = v1beta1.Application{}
+				err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: targetApp.Name}, &app)
 				if err != nil {
 					return err
 				}
@@ -213,6 +215,7 @@ var _ = Describe("Cloneset based rollout tests", func() {
 		Eventually(
 			func() error {
 				var clonesetOwner *metav1.OwnerReference
+				kc = kruise.CloneSet{}
 				err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: clonesetName}, &kc)
 				if err != nil {
 					return err
@@ -312,7 +315,7 @@ var _ = Describe("Cloneset based rollout tests", func() {
 			func() error {
 				k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: appRollout.Name}, &appRollout)
 				appRollout.Spec.SourceAppRevisionName = utils.ConstructRevisionName(app.GetName(), 2)
-				appRollout.Spec.TargetAppRevisionName = utils.ConstructRevisionName(app.GetName(), 3)
+				appRollout.Spec.TargetAppRevisionName = utils.ConstructRevisionName(app.GetName(), 1)
 				appRollout.Spec.RolloutPlan.BatchPartition = nil
 				return k8sClient.Update(ctx, &appRollout)
 			},
@@ -723,18 +726,18 @@ var _ = Describe("Cloneset based rollout tests", func() {
 		appRollout.Namespace = namespaceName
 		appRollout.Spec.SourceAppRevisionName = ""
 		appRollout.Spec.TargetAppRevisionName = utils.ConstructRevisionName(app.GetName(), 1)
-		appRollout.Spec.RolloutPlan.TargetSize = pointer.Int32Ptr(3)
+		appRollout.Spec.RolloutPlan.TargetSize = pointer.Int32Ptr(2)
 		appRollout.Spec.RolloutPlan.BatchPartition = nil
 		By("create appRollout initial targetSize is 3")
 		createAppRolling(&appRollout)
 		appRolloutName = appRollout.Name
 		verifyRolloutSucceeded(appRollout.Spec.TargetAppRevisionName)
-		By("modify appRollout targetSize to 5")
+		By("modify appRollout targetSize to 4")
 		Eventually(func() error {
 			if err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: appRolloutName}, &appRollout); err != nil {
 				return err
 			}
-			appRollout.Spec.RolloutPlan.TargetSize = pointer.Int32Ptr(5)
+			appRollout.Spec.RolloutPlan.TargetSize = pointer.Int32Ptr(4)
 			if err = k8sClient.Update(ctx, &appRollout); err != nil {
 				return err
 			}
@@ -748,18 +751,18 @@ var _ = Describe("Cloneset based rollout tests", func() {
 			if err != nil {
 				return err
 			}
-			if *kc.Spec.Replicas != 5 {
+			if *kc.Spec.Replicas != 4 {
 				return fmt.Errorf("pod replicas mismatch")
 			}
 			return nil
 		}, 30*time.Second, 300*time.Microsecond).Should(BeNil())
 		verifyRolloutSucceeded(appRollout.Spec.TargetAppRevisionName)
-		By("modify appRollout targetSize to 7")
+		By("modify appRollout targetSize to 6")
 		Eventually(func() error {
 			if err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: appRolloutName}, &appRollout); err != nil {
 				return err
 			}
-			appRollout.Spec.RolloutPlan.TargetSize = pointer.Int32Ptr(7)
+			appRollout.Spec.RolloutPlan.TargetSize = pointer.Int32Ptr(6)
 			if err = k8sClient.Update(ctx, &appRollout); err != nil {
 				return err
 			}
@@ -773,7 +776,7 @@ var _ = Describe("Cloneset based rollout tests", func() {
 			if err != nil {
 				return err
 			}
-			if *kc.Spec.Replicas != 7 {
+			if *kc.Spec.Replicas != 6 {
 				return fmt.Errorf("pod replicas mismatch")
 			}
 			return nil
@@ -781,30 +784,7 @@ var _ = Describe("Cloneset based rollout tests", func() {
 		verifyRolloutSucceeded(appRollout.Spec.TargetAppRevisionName)
 	})
 
-	PIt("Test rolling by changing the definition", func() {
-		CreateClonesetDef()
-		applySourceApp("app-source.yaml")
-		By("Apply the definition change")
-		var cd, newCD v1beta1.ComponentDefinition
-		Expect(common.ReadYamlToObject("testdata/rollout/cloneset/clonesetDefinitionModified.yaml.yaml", &newCD)).Should(BeNil())
-		Eventually(
-			func() error {
-				k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: newCD.Name}, &cd)
-				cd.Spec = newCD.Spec
-				return k8sClient.Update(ctx, &cd)
-			},
-			time.Second*3, time.Millisecond*300).Should(Succeed())
-		By("Apply the application rollout")
-		var newAppRollout v1beta1.AppRollout
-		Expect(common.ReadYamlToObject("testdata/rollout/cloneset/appRollout.yaml", &newAppRollout)).Should(BeNil())
-		Expect(common.ReadYamlToObject("testdata/rollout/cloneset/appRollout.yaml", &newAppRollout)).Should(BeNil())
-		newAppRollout.Namespace = namespaceName
-		newAppRollout.Spec.RolloutPlan.BatchPartition = pointer.Int32Ptr(int32(len(newAppRollout.Spec.RolloutPlan.
-			RolloutBatches) - 1))
-		createAppRolling(&newAppRollout)
-
-		verifyRolloutSucceeded(appRollout.Spec.TargetAppRevisionName)
-		// Clean up
-		k8sClient.Delete(ctx, &appRollout)
+	It("Test rolling by changing the definition", func() {
+		//TODO(@wonderflow): we should support rollout by changing definition
 	})
 })

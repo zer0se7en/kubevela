@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ghodss/yaml"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
@@ -33,7 +32,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/pkg/oam"
@@ -70,7 +71,6 @@ var _ = Describe("Test application controller clean up appRevision", func() {
 		k8sClient.DeleteAllOf(ctx, &v1beta1.ComponentDefinition{}, client.InNamespace(namespace))
 		k8sClient.DeleteAllOf(ctx, &v1beta1.WorkloadDefinition{}, client.InNamespace(namespace))
 		k8sClient.DeleteAllOf(ctx, &v1beta1.TraitDefinition{}, client.InNamespace(namespace))
-
 		Expect(k8sClient.Delete(ctx, &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}, client.PropagationPolicy(metav1.DeletePropagationForeground))).Should(Succeed())
 	})
 
@@ -99,6 +99,15 @@ var _ = Describe("Test application controller clean up appRevision", func() {
 				}
 				return nil
 			}, time.Second*10, time.Millisecond*500).Should(BeNil())
+			Eventually(func() error {
+				checkApp = new(v1beta1.Application)
+				Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
+				if checkApp.Status.ObservedGeneration == checkApp.Generation && checkApp.Status.Phase == common.ApplicationRunning {
+					return nil
+				}
+				return fmt.Errorf("application is not observed or status %s is not running", checkApp.Status.Phase)
+			}, time.Second*10, time.Millisecond*500).Should(BeNil())
+
 		}
 		listOpts := []client.ListOption{
 			client.InNamespace(namespace),
@@ -117,11 +126,17 @@ var _ = Describe("Test application controller clean up appRevision", func() {
 			}
 			return nil
 		}, time.Second*10, time.Millisecond*500).Should(BeNil())
-		By("create new appRevision will remove appRevison1")
-		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
-		property := fmt.Sprintf(`{"cmd":["sleep","1000"],"image":"busybox:%d"}`, 5)
-		checkApp.Spec.Components[0].Properties = runtime.RawExtension{Raw: []byte(property)}
-		Expect(k8sClient.Update(ctx, checkApp)).Should(BeNil())
+		By("create new appRevision will remove appRevision v1")
+		Eventually(func() error {
+			err := k8sClient.Get(ctx, appKey, checkApp)
+			if err != nil {
+				return err
+			}
+			property := fmt.Sprintf(`{"cmd":["sleep","1000"],"image":"busybox:%d"}`, 5)
+			checkApp.Spec.Components[0].Properties = runtime.RawExtension{Raw: []byte(property)}
+			return k8sClient.Update(ctx, checkApp)
+		}, time.Second*10, time.Millisecond*500).Should(BeNil())
+
 		deletedRevison := new(v1beta1.ApplicationRevision)
 		revKey := types.NamespacedName{Namespace: namespace, Name: appName + "-v1"}
 		Eventually(func() error {
@@ -147,7 +162,7 @@ var _ = Describe("Test application controller clean up appRevision", func() {
 			if err := k8sClient.Get(ctx, appKey, checkApp); err != nil {
 				return err
 			}
-			property = fmt.Sprintf(`{"cmd":["sleep","1000"],"image":"busybox:%d"}`, 6)
+			property := fmt.Sprintf(`{"cmd":["sleep","1000"],"image":"busybox:%d"}`, 6)
 			checkApp.Spec.Components[0].Properties = runtime.RawExtension{Raw: []byte(property)}
 			if err := k8sClient.Update(ctx, checkApp); err != nil {
 				return err
@@ -180,7 +195,10 @@ var _ = Describe("Test application controller clean up appRevision", func() {
 		app := getApp(appName, namespace, "normal-worker")
 		metav1.SetMetaDataAnnotation(&app.ObjectMeta, oam.AnnotationAppRollout, "true")
 		metav1.SetMetaDataAnnotation(&app.ObjectMeta, oam.AnnotationRollingComponent, "comp1")
-		Expect(k8sClient.Create(ctx, app)).Should(BeNil())
+		Eventually(func() error {
+			err := k8sClient.Create(ctx, app)
+			return err
+		}, 15*time.Second, 300*time.Millisecond).Should(BeNil())
 		checkApp := new(v1beta1.Application)
 		for i := 0; i < appRevisionLimit; i++ {
 			Eventually(func() error {
@@ -416,7 +434,7 @@ func getApp(appName, namespace, comptype string) *v1beta1.Application {
 			Namespace: namespace,
 		},
 		Spec: v1beta1.ApplicationSpec{
-			Components: []v1beta1.ApplicationComponent{
+			Components: []common.ApplicationComponent{
 				{
 					Name:       "comp1",
 					Type:       comptype,

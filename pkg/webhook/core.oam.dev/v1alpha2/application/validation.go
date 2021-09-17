@@ -20,11 +20,15 @@ import (
 	"context"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/util/validation/field"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/webhook/common/rollout"
 )
 
@@ -52,6 +56,7 @@ func (h *ValidatingHandler) ValidateCreate(ctx context.Context, app *v1beta1.App
 	if app.Spec.RolloutPlan != nil {
 		componentErrs = append(componentErrs, rollout.ValidateCreate(h.Client, app.Spec.RolloutPlan, field.NewPath("rolloutPlan"))...)
 	}
+	componentErrs = append(componentErrs, h.validateExternalRevisionName(ctx, app)...)
 	return componentErrs
 }
 
@@ -60,5 +65,54 @@ func (h *ValidatingHandler) ValidateUpdate(ctx context.Context, newApp, oldApp *
 	// check if the newApp is valid
 	componentErrs := h.ValidateCreate(ctx, newApp)
 	// TODO: add more validating
+	return componentErrs
+}
+
+func (h *ValidatingHandler) validateExternalRevisionName(ctx context.Context, app *v1beta1.Application) field.ErrorList {
+	var componentErrs field.ErrorList
+
+	for index, comp := range app.Spec.Components {
+		if len(comp.ExternalRevision) == 0 {
+			continue
+		}
+
+		revisionName := comp.ExternalRevision
+		cr := &appsv1.ControllerRevision{}
+		if err := h.Client.Get(ctx, client.ObjectKey{Namespace: app.Namespace, Name: revisionName}, cr); err != nil {
+			if !apierrors.IsNotFound(err) {
+				componentErrs = append(componentErrs, field.Invalid(field.NewPath(fmt.Sprintf("components[%d].externalRevision", index)), app, err.Error()))
+			}
+			continue
+		}
+
+		labeledControllerComponent := cr.GetLabels()[oam.LabelControllerRevisionComponent]
+		if labeledControllerComponent != comp.Name {
+			componentErrs = append(componentErrs, field.Invalid(field.NewPath(fmt.Sprintf("components[%d].externalRevision", index)), app, fmt.Sprintf("label:%s for revision:%s should be equal with component name", oam.LabelControllerRevisionComponent, revisionName)))
+			continue
+		}
+
+		comp, err := util.RawExtension2Component(cr.Data)
+		if err != nil {
+			componentErrs = append(componentErrs, field.Invalid(field.NewPath(fmt.Sprintf("components[%d].externalRevision", index)), app, "can't covert revision to component"))
+			continue
+		}
+		_, err = util.RawExtension2Unstructured(&comp.Spec.Workload)
+		if err != nil {
+			componentErrs = append(componentErrs, field.Invalid(field.NewPath(fmt.Sprintf("components[%d].externalRevision", index)), app, "can't extract workload"))
+			continue
+		}
+		if comp.Spec.Helm != nil {
+			_, err = util.RawExtension2Unstructured(&comp.Spec.Helm.Release)
+			if err != nil {
+				componentErrs = append(componentErrs, field.Invalid(field.NewPath(fmt.Sprintf("components[%d].externalRevision", index)), app, "can't extract helmRelease"))
+				continue
+			}
+			_, err = util.RawExtension2Unstructured(&comp.Spec.Helm.Repository)
+			if err != nil {
+				componentErrs = append(componentErrs, field.Invalid(field.NewPath(fmt.Sprintf("components[%d].externalRevision", index)), app, "can't extract helmRepository"))
+				continue
+			}
+		}
+	}
 	return componentErrs
 }

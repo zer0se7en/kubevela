@@ -20,16 +20,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"strconv"
 
 	"cuelang.org/go/cue"
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/fatih/color"
-	"github.com/ghodss/yaml"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/types"
 	common2 "github.com/oam-dev/kubevela/pkg/utils/common"
@@ -96,7 +96,7 @@ func NewInitCommand(c common2.Args, ioStreams cmdutil.IOStreams) *cobra.Command 
 			if err != nil {
 				return err
 			}
-			err = ioutil.WriteFile("./vela.yaml", b, 0600)
+			err = os.WriteFile("./vela.yaml", b, 0600)
 			if err != nil {
 				return err
 			}

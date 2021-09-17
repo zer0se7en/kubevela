@@ -28,6 +28,7 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/e2e"
+	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
 
 var (
@@ -53,7 +54,7 @@ var _ = ginkgo.Describe("Test Vela Application", func() {
 	ApplicationStatusContext("status", applicationName, workloadType)
 	ApplicationStatusDeeplyContext("status", applicationName, workloadType, envName)
 	ApplicationExecContext("exec -- COMMAND", applicationName)
-	ApplicationPortForwardContext("port-forward", applicationName)
+	// ApplicationPortForwardContext("port-forward", applicationName)
 	e2e.WorkloadDeleteContext("delete", applicationName)
 
 	ApplicationInitIntercativeCliContext("test vela init app", appNameForInit, workloadType)
@@ -76,7 +77,7 @@ var ApplicationStatusDeeplyContext = func(context string, applicationName, workl
 	return ginkgo.Context(context, func() {
 		ginkgo.It("should get status of the service", func() {
 			ginkgo.By("init new k8s client")
-			k8sclient, err := e2e.NewK8sClient()
+			k8sclient, err := common.NewK8sClient()
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 
 			ginkgo.By("check Application reconciled ready")
@@ -111,7 +112,7 @@ var ApplicationExecContext = func(context string, appName string) bool {
 var ApplicationPortForwardContext = func(context string, appName string) bool {
 	return ginkgo.Context(context, func() {
 		ginkgo.It("should get output of portward successfully", func() {
-			cli := fmt.Sprintf("vela port-forward %s 8080:8080 ", appName)
+			cli := fmt.Sprintf("vela port-forward %s 80:80 ", appName)
 			output, err := e2e.ExecAndTerminate(cli)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred())
 			gomega.Expect(output).To(gomega.ContainSubstring("Forward successfully"))
@@ -158,6 +159,10 @@ var ApplicationInitIntercativeCliContext = func(context string, appName string, 
 					{
 						q: "Which port do you want customer traffic sent to ",
 						a: "",
+					},
+					{
+						q: "Specify image pull policy for your service ",
+						a: "Always",
 					},
 					{
 						q: "Number of CPU units for the service, like `0.5` (0.5 CPU core), `1` (1 CPU core) (optional):",

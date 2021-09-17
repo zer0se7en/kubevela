@@ -21,7 +21,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -127,7 +126,7 @@ func (o *Options) GetStaticPath() error {
 	}
 	tgzpath := filepath.Join(o.staticPath, "frontend.tgz")
 	//nolint:gosec
-	err = ioutil.WriteFile(tgzpath, data, 0644)
+	err = os.WriteFile(tgzpath, data, 0644)
 	if err != nil {
 		return fmt.Errorf("write frontend.tgz to static path err %w", err)
 	}
@@ -139,7 +138,7 @@ func (o *Options) GetStaticPath() error {
 	if err = tgz.Unarchive(tgzpath, o.staticPath); err != nil {
 		return fmt.Errorf("write static files to fontend dir err %w", err)
 	}
-	files, err := ioutil.ReadDir(o.staticPath)
+	files, err := os.ReadDir(o.staticPath)
 	if err != nil {
 		return fmt.Errorf("read static file %s err %w", o.staticPath, err)
 	}
@@ -172,7 +171,7 @@ func SetupAPIServer(c common.Args, cmd *cobra.Command, o Options) error {
 	}
 	ctrl.SetLogger(zap.New(func(zo *zap.Options) {
 		zo.Development = o.development
-		zo.DestWritter = w
+		zo.DestWriter = w
 	}))
 
 	var err error
@@ -224,7 +223,7 @@ func CheckVelaRuntimeInstalledAndReady(ioStreams cmdutil.IOStreams, c client.Cli
 		ioStreams.Info(fmt.Sprintf("\n%s %s%s",
 			emojiLightBulb,
 			"Please use this command to install: ",
-			white.Sprint("helm repo add kubevela https://kubevelacharts.oss-cn-hangzhou.aliyuncs.com/core && "+
+			white.Sprint("helm repo add kubevela https://charts.kubevela.net/core && "+
 				"helm repo update \n kubectl create namespace vela-system \n "+
 				"helm install -n vela-system kubevela kubevela/vela-core"),
 		))

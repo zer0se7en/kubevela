@@ -49,10 +49,12 @@ type DefinitionRevisionSpec struct {
 // +kubebuilder:object:root=true
 
 // DefinitionRevision is the Schema for the DefinitionRevision API
-// +kubebuilder:resource:scope=Namespaced,categories={oam},shortName=comprev
+// +kubebuilder:resource:scope=Namespaced,categories={oam},shortName=defrev
 // +kubebuilder:printcolumn:name="REVISION",type=integer,JSONPath=".spec.revision"
 // +kubebuilder:printcolumn:name="HASH",type=string,JSONPath=".spec.revisionHash"
 // +kubebuilder:printcolumn:name="TYPE",type=string,JSONPath=".spec.definitionType"
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type DefinitionRevision struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -61,6 +63,7 @@ type DefinitionRevision struct {
 }
 
 // +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // DefinitionRevisionList contains a list of DefinitionRevision
 type DefinitionRevisionList struct {

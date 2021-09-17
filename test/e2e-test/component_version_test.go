@@ -163,7 +163,7 @@ var _ = Describe("Versioning mechanism of components", func() {
 	})
 
 	When("create or update a component", func() {
-		It("should create corresponding ControllerRevision", func() {
+		PIt("should create corresponding ControllerRevision", func() {
 			By("Create Component v1")
 			Expect(k8sClient.Create(ctx, &componentV1)).Should(Succeed())
 
@@ -215,7 +215,7 @@ var _ = Describe("Versioning mechanism of components", func() {
 	})
 
 	When("Components have revisionName in AppConfig", func() {
-		It("should NOT create NOR update workloads, when update components", func() {
+		PIt("should NOT create NOR update workloads, when update components", func() {
 			By("Create Component v1")
 			Expect(k8sClient.Create(ctx, &componentV1)).Should(Succeed())
 
@@ -262,7 +262,7 @@ var _ = Describe("Versioning mechanism of components", func() {
 	})
 
 	When("Components have componentName", func() {
-		It("should update workloads with new revision of components, when update components", func() {
+		PIt("should update workloads with new revision of components, when update components", func() {
 			By("Create Component v1")
 			Expect(k8sClient.Create(ctx, &componentV1)).Should(Succeed())
 
@@ -312,7 +312,7 @@ var _ = Describe("Versioning mechanism of components", func() {
 			By("Check ContainerizedWorkload workload's image field has been changed to v2")
 			cwWlV2 := &v1alpha2.ContainerizedWorkload{}
 			Eventually(func() string {
-				requestReconcileNow(ctx, &appConfigWithRevisionName)
+				RequestReconcileNow(ctx, &appConfigWithRevisionName)
 				k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: componentName}, cwWlV2)
 				return cwWlV2.Spec.Containers[0].Image
 			}, time.Second*60, time.Microsecond*500).Should(Equal(imageV2))
@@ -320,7 +320,7 @@ var _ = Describe("Versioning mechanism of components", func() {
 	})
 
 	When("Components have componentName and have revision-enabled trait", func() {
-		It("should create workloads with name of revision and keep the old revision", func() {
+		PIt("should create workloads with name of revision and keep the old revision", func() {
 
 			By("Create trait definition")
 			var td v1alpha2.TraitDefinition
@@ -363,7 +363,7 @@ var _ = Describe("Versioning mechanism of components", func() {
 			var w1 unstructured.Unstructured
 			Eventually(
 				func() error {
-					requestReconcileNow(ctx, &appconfig)
+					RequestReconcileNow(ctx, &appconfig)
 					w1.SetAPIVersion("example.com/v1")
 					w1.SetKind("Bar")
 					return k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: revisionNameV1}, &w1)
@@ -395,7 +395,7 @@ var _ = Describe("Versioning mechanism of components", func() {
 			var w2 unstructured.Unstructured
 			Eventually(
 				func() error {
-					requestReconcileNow(ctx, &appconfig)
+					RequestReconcileNow(ctx, &appconfig)
 					w2.SetAPIVersion("example.com/v1")
 					w2.SetKind("Bar")
 					return k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: revisionNameV2}, &w2)
@@ -431,7 +431,7 @@ var _ = Describe("Versioning mechanism of components", func() {
 	})
 
 	When("Components have componentName and without revision-enabled trait", func() {
-		It("should create workloads with name of component and replace the old revision", func() {
+		PIt("should create workloads with name of component and replace the old revision", func() {
 
 			By("Create trait definition")
 			var td v1alpha2.TraitDefinition
@@ -482,7 +482,7 @@ var _ = Describe("Versioning mechanism of components", func() {
 			var w2 unstructured.Unstructured
 			Eventually(
 				func() string {
-					requestReconcileNow(ctx, &appconfig)
+					RequestReconcileNow(ctx, &appconfig)
 					w2.SetAPIVersion("example.com/v1")
 					w2.SetKind("Bar")
 					err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: componentName}, &w2)

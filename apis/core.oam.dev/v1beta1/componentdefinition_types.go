@@ -17,9 +17,10 @@
 package v1beta1
 
 import (
-	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 )
@@ -59,7 +60,7 @@ type ComponentDefinitionSpec struct {
 // ComponentDefinitionStatus is the status of ComponentDefinition
 type ComponentDefinitionStatus struct {
 	// ConditionedStatus reflects the observed status of a resource
-	runtimev1alpha1.ConditionedStatus `json:",inline"`
+	condition.ConditionedStatus `json:",inline"`
 	// ConfigMapRef refer to a ConfigMap which contains OpenAPI V3 JSON schema of Component parameters.
 	ConfigMapRef string `json:"configMapRef,omitempty"`
 	// LatestRevision of the component definition
@@ -75,6 +76,8 @@ type ComponentDefinitionStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="WORKLOAD-KIND",type=string,JSONPath=".spec.workload.definition.kind"
 // +kubebuilder:printcolumn:name="DESCRIPTION",type=string,JSONPath=".metadata.annotations.definition\\.oam\\.dev/description"
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ComponentDefinition struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -84,16 +87,17 @@ type ComponentDefinition struct {
 }
 
 // SetConditions set condition for ComponentDefinition
-func (cd *ComponentDefinition) SetConditions(c ...runtimev1alpha1.Condition) {
+func (cd *ComponentDefinition) SetConditions(c ...condition.Condition) {
 	cd.Status.SetConditions(c...)
 }
 
 // GetCondition gets condition from ComponentDefinition
-func (cd *ComponentDefinition) GetCondition(conditionType runtimev1alpha1.ConditionType) runtimev1alpha1.Condition {
+func (cd *ComponentDefinition) GetCondition(conditionType condition.ConditionType) condition.Condition {
 	return cd.Status.GetCondition(conditionType)
 }
 
 // +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ComponentDefinitionList contains a list of ComponentDefinition
 type ComponentDefinitionList struct {

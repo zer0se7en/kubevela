@@ -21,10 +21,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
+
+	"cuelang.org/go/cue/parser"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/ast"
 	"cuelang.org/go/cue/format"
+	"cuelang.org/go/cue/literal"
 	"cuelang.org/go/cue/token"
 	"github.com/pkg/errors"
 )
@@ -68,6 +72,103 @@ func lookUp(node ast.Node, paths ...string) (ast.Node, error) {
 	return nil, notFoundErr
 }
 
+func lookUpAll(node ast.Node, paths ...string) []ast.Node {
+	if len(paths) == 0 {
+		return []ast.Node{node}
+	}
+	key := paths[0]
+	var nodes []ast.Node
+	switch x := node.(type) {
+	case *ast.File:
+		for _, decl := range x.Decls {
+			nnode := lookField(decl, key)
+			if nnode != nil {
+				nodes = append(nodes, lookUpAll(nnode, paths[1:]...)...)
+			}
+		}
+
+	case *ast.StructLit:
+		for _, elt := range x.Elts {
+			nnode := lookField(elt, key)
+			if nnode != nil {
+				nodes = append(nodes, lookUpAll(nnode, paths[1:]...)...)
+			}
+		}
+	case *ast.ListLit:
+		for index, elt := range x.Elts {
+			if strconv.Itoa(index) == key {
+				return lookUpAll(elt, paths[1:]...)
+			}
+		}
+	}
+	return nodes
+}
+
+// PreprocessBuiltinFunc preprocess builtin function in cue file.
+func PreprocessBuiltinFunc(root ast.Node, name string, process func(values []ast.Node) (ast.Expr, error)) error {
+	var gerr error
+	ast.Walk(root, func(node ast.Node) bool {
+		switch v := node.(type) {
+		case *ast.EmbedDecl:
+			if fname, args := extractFuncName(v.Expr); fname == name && len(args) > 0 {
+				expr, err := doBuiltinFunc(root, args[0], process)
+				if err != nil {
+					gerr = err
+					return false
+				}
+				v.Expr = expr
+			}
+		case *ast.Field:
+			if fname, args := extractFuncName(v.Value); fname == name && len(args) > 0 {
+				expr, err := doBuiltinFunc(root, args[0], process)
+				if err != nil {
+					gerr = err
+					return false
+				}
+				v.Value = expr
+			}
+		}
+		return true
+	}, nil)
+	return gerr
+}
+
+func doBuiltinFunc(root ast.Node, pathSel ast.Expr, do func(values []ast.Node) (ast.Expr, error)) (ast.Expr, error) {
+	paths := getPaths(pathSel)
+	if len(paths) == 0 {
+		return nil, errors.New("path resolve error")
+	}
+	values := lookUpAll(root, paths...)
+	return do(values)
+}
+
+func extractFuncName(expr ast.Expr) (string, []ast.Expr) {
+	if call, ok := expr.(*ast.CallExpr); ok && len(call.Args) > 0 {
+		if ident, ok := call.Fun.(*ast.Ident); ok {
+			return ident.Name, call.Args
+		}
+	}
+	return "", nil
+}
+
+func getPaths(node ast.Expr) []string {
+	switch v := node.(type) {
+	case *ast.SelectorExpr:
+		return append(getPaths(v.X), v.Sel.Name)
+	case *ast.Ident:
+		return []string{v.Name}
+	case *ast.BasicLit:
+		s, err := literal.Unquote(v.Value)
+		if err != nil {
+			return nil
+		}
+		return []string{s}
+	case *ast.IndexExpr:
+		return append(getPaths(v.X), getPaths(v.Index)...)
+	}
+	return nil
+}
+
 func peelCloseExpr(node ast.Node) ast.Node {
 	x, ok := node.(*ast.CallExpr)
 	if !ok {
@@ -98,7 +199,7 @@ func labelStr(label ast.Label) string {
 	return ""
 }
 
-func toString(v cue.Value) (string, error) {
+func toString(v cue.Value, opts ...func(node ast.Node) ast.Node) (string, error) {
 	v = v.Eval()
 	syopts := []cue.Option{cue.All(), cue.DisallowCycles(true), cue.ResolveReferences(true), cue.Docs(true)}
 
@@ -116,7 +217,11 @@ func toString(v cue.Value) (string, error) {
 		if err != nil {
 			return err
 		}
-		b, err := format.Node(f)
+		var node ast.Node = f
+		for _, opt := range opts {
+			node = opt(node)
+		}
+		b, err := format.Node(node)
 		if err != nil {
 			return err
 		}
@@ -131,6 +236,11 @@ func toString(v cue.Value) (string, error) {
 	return instStr, nil
 }
 
+// ToString convert cue.Value to string
+func ToString(v cue.Value, opts ...func(node ast.Node) ast.Node) (string, error) {
+	return toString(v, opts...)
+}
+
 // ToFile convert ast.Node to ast.File
 func ToFile(n ast.Node) (*ast.File, error) {
 	return toFile(n)
@@ -141,7 +251,14 @@ func toFile(n ast.Node) (*ast.File, error) {
 	case nil:
 		return nil, nil
 	case *ast.StructLit:
-		return &ast.File{Decls: x.Elts}, nil
+		decls := []ast.Decl{}
+		for _, elt := range x.Elts {
+			if _, ok := elt.(*ast.Ellipsis); ok {
+				continue
+			}
+			decls = append(decls, elt)
+		}
+		return &ast.File{Decls: decls}, nil
 	case ast.Expr:
 		ast.SetRelPos(x, token.NoSpace)
 		return &ast.File{Decls: []ast.Decl{&ast.EmbedDecl{Expr: x}}}, nil
@@ -150,4 +267,54 @@ func toFile(n ast.Node) (*ast.File, error) {
 	default:
 		return nil, errors.Errorf("Unsupported node type %T", x)
 	}
+}
+
+// OptBytesToString convert cue bytes to string.
+func OptBytesToString(node ast.Node) ast.Node {
+	ast.Walk(node, nil, func(node ast.Node) {
+		basic, ok := node.(*ast.BasicLit)
+		if ok {
+			if basic.Kind == token.STRING {
+				s := basic.Value
+				if strings.HasPrefix(s, "'") {
+					info, nStart, _, err := literal.ParseQuotes(s, s)
+					if err != nil {
+						return
+					}
+					if !info.IsDouble() {
+						s = s[nStart:]
+						s, err := info.Unquote(s)
+						if err == nil {
+							basic.Value = fmt.Sprintf(`"%s"`, s)
+						}
+					}
+				}
+			}
+		}
+	})
+	return node
+}
+
+// OpenBaiscLit make that the basicLit can be modified.
+func OpenBaiscLit(s string) (string, error) {
+	f, err := parser.ParseFile("-", s, parser.ParseComments)
+	if err != nil {
+		return "", err
+	}
+	openBaiscLit(f)
+	b, err := format.Node(f)
+	return string(b), err
+}
+
+func openBaiscLit(root ast.Node) {
+	ast.Walk(root, func(node ast.Node) bool {
+		field, ok := node.(*ast.Field)
+		if ok {
+			v := field.Value
+			if lit, ok := v.(*ast.BasicLit); ok {
+				field.Value = ast.NewBinExpr(token.OR, &ast.UnaryExpr{X: lit, Op: token.MUL}, ast.NewIdent("_"))
+			}
+		}
+		return true
+	}, nil)
 }

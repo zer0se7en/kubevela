@@ -21,7 +21,6 @@ import (
 	"context"
 	j "encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
@@ -29,13 +28,13 @@ import (
 	"time"
 
 	"github.com/AlecAivazis/survey/v2"
-	"github.com/ghodss/yaml"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	apitypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	corev1alpha2 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	corev1beta1 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
@@ -362,7 +361,7 @@ func saveAndLoadRemoteAppfile(url string) (*api.AppFile, error) {
 		return nil, err
 	}
 	//nolint:gosec
-	return af, ioutil.WriteFile(dest, body, 0644)
+	return af, os.WriteFile(dest, body, 0644)
 }
 
 // ExportFromAppFile exports Application from appfile object
@@ -450,7 +449,7 @@ func (o *AppfileOptions) BaseAppFileRun(result *BuildResult, data []byte, args c
 		return err
 	}
 
-	if err := ioutil.WriteFile(deployFilePath, data, 0600); err != nil {
+	if err := os.WriteFile(deployFilePath, data, 0600); err != nil {
 		return errors.Wrap(err, "write deploy config manifests failed")
 	}
 

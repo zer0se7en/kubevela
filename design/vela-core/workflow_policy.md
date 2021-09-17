@@ -18,7 +18,7 @@ Specifically, it has the following limitations:
 
 Here is an overview of the features we want to expose and the capabilities we want to plug in:
 
-![alt](../../docs/en/resources/workflow-feature.jpg)
+![alt](../../docs/resources/workflow-feature.jpg)
 
 ## Proposal
 
@@ -27,14 +27,14 @@ To resolve the aforementioned problems, we propose to add app-level policies and
 ```yaml
 kind: Application
 spec:
-  componnets: ...
+  components: ...
 
   # Policies are rendered after components are rendered but before workflow are started
   policies:
     - type: security
       name: my-rule
       properties:
-        rbac: ...
+        rbac: enabled
         audit: enabled
         secretBackend: vault
 
@@ -51,13 +51,13 @@ spec:
   # - will have a context in annotation.
   # - should mark "finish" phase in status.conditions.
   workflow:
-    
+
     # suspend can manually stop the workflow and resume. it will also allow suspend policy for workflow.
     suspend:
       manual: true
-    
+
     steps:
-  
+
     # blue-green rollout
     - type: blue-green-rollout
       stage: post-render # stage could be pre/post-render. Default is post-render.
@@ -71,51 +71,37 @@ spec:
 
     # promote/rollback
     - type: rollout-promotion
-      propertie:
+      properties:
         manualApproval: true
         rollbackIfNotApproved: true
 ```
 
 This also implicates we will add two Definition CRDs -- `PolicyDefinition` and `WorkflowStepDefinition`.
 
-```yaml
-apiVersion: core.oam.dev/v1beta1
-kind: WorkflowStepDefinition
-metadata:
-  name: rollout
-spec:
-  schematic:
-    cue:
-      template: |
-        parameters: {
-          partition: string
-        }
-        output: {
-          apiVersion: app.oam.dev/v1
-          kind: Rollout
-          spec:
-            partition: parameters.partition
-        }
-        continue: vela.#Continue & {
-          return: output.status.observedGeneration == output.metadata.generation
-        }
+PolicyDefinition looks like below:
 
----
+```yaml
 apiVersion: core.oam.dev/v1beta1
 kind: PolicyDefinition
 spec:
   schematic:
     cue:
-      template: ...
+      template: |
+        parameters: {
+          frequency: *"enabled" | "disabled"
+        }
+        output: {
+          apiVersion: app.oam.dev/v1
+          kind: Insight
+          spec:
+            frequency: parameters.frequency
+        }
 ```
 
 ### CUE-Based Workflow Task
 
-Outputing a CR object to complete a step in workflow requires users to implement an Operator.
-While this is flexible to handle complex operations, it incurs heavy overhead for simple operational tasks.
-To simplify it, especially for users with simple use cases, we also provide lightweight CUE based workflow task. 
-
-Here is an example:
+Outputing a CR object to complete a task in workflow requires users to implement an Operator which incurs heavy overhead.
+To simplify it, especially for users with simple use cases, we decide to provide lightweight CUE based workflow task.
 
 ```yaml
 apiVersion: core.oam.dev/v1beta1
@@ -126,33 +112,40 @@ spec:
   schematic:
     cue:
       template: |
+        import "vela/op"
+
         parameters: {
           image: string
         }
-        apply: vela.#Apply & {
-          context.workload
+
+        apply: op.#Apply & {
+          resource: context.workload
         }
-        continue: vela.#Continue & {
-          return: apply.status.ready == true
+
+        wait: op.#ConditionalWait & {
+          continue: apply.status.ready == true
         }
-        export: {
+
+        export: op.#Export & {
           secret: apply.status.secret
         }
 ```
 
-## Technical Details
+## Implementation
 
-In this section we will discuss the implementation details to support policies and workflow.
+In this section we will discuss the implementation details for supporting policies and workflow tasks.
 
 Here's a diagram of how workflow internals work:
 
-![alt](../../docs/en/resources/workflow-internals.jpg)
+![alt](../../docs/resources/workflow-internals.png)
 
+
+### 1. Application Controller
 
 Here are the steps in Application Controller:
 
-- Each Application event will trigger Application Controller to reconcile.
-- In reconcile, Application Controller will render out all resources from components, traits, workflow tasks, etc. It will also put rendered resources into a ConfigMap, and reference the ConfigMap name in AppRevision as below:
+- On reconciling an Application event, Application Controller will render out all resources from components, traits, policies.
+  It will also put rendered resources into a ConfigMap, and reference the ConfigMap name in AppRevision as below:
 
   ```yaml
   kind: ApplicationRevision
@@ -165,7 +158,7 @@ Here are the steps in Application Controller:
   kind: ConfigMap
   metadata:
     name: my-app-v1
-  data: 
+  data:
     mysvc: |
       {
         "apiVersion": "apps/v1",
@@ -181,59 +174,259 @@ Here are the steps in Application Controller:
   ```
 
 - After render, Application Controller will execute `spec.workflow`.
-  This will basically call Workflow Manager to do it.
+  This will basically call Workflow Manager to execute workflow tasks starting from scratch or last-run step on retry.
+
+
+### 2. Workflow Manager
 
 Here are the steps in Workflow Manager:
 
-- The Workflow Manager will reconcile the workflow step by step.
-- For each step, it will create a task for Task manager to handle.
-- It will then check the `observedAppGeneration` for this step.
-  This is to solve the [issue of passing data from the old generation][1].
-  - If the generation matches the current one, it will continue next step.
-  - Otherwise, it will retry reconcile later.
+- The Workflow Manager will get the current workflow step via `status.workflow.stepIndex`.
+- If stepIndex is equal to the length of the all steps, it indicates that workflow is all done and return immediately.
+- If there are workflow tasks left, they will be run step by step. For each step, Workflow Manager will call Task Manager to handle it.
+- On return from calling Task Manager, Workflow Manager checks the return result:
+  - If `status = completed`, Workflow Manager will increment `status.workflow.stepIndex`, and continue to run next step if any.
+  - Otherwise, it will retry later.
 
-  An example of the status:
-
-  ```yaml
-  kind: Application
-  metadata:
-    generation: 2
-  status:
-    workflow:
-      steps:
-      - name: ...
-        observedAppGeneration: 1
-  ```
+### 3. Task Manager
 
 Here are the steps in Task Manager:
 
-- Workflow Manager will call Task Manager to enqueue a task.
-  Note that if a task with the same name exists, it will append new one.
-- Task Manager will have another go routine to pop a task from the queue to execute.
-- Each task is a CUE graph that must have `continue` field:
+- A workflow task will be executed synchronously which requires that the steps of a task should be non-blocking.
+- A workflow task will be parsed with its properties first to retrieve the full CUE data.
+- Task manager will get all do-able steps from the CUE data. This is done by analyzing if the step has a `#do` field.
+  Here is an example:
 
-  ```yaml
-  continue: vela.#Continue & {
-    return: true # This will be used as the return of the CUE task
+  ```
+  apply: op.#Apply & {
+    resource: ...
   }
   ```
 
-- If `continue.return == true`, Task Manager will update the `observedAppGeneration` for this step in status.
+  The `op.#Apply` contains a [hidden field][2] `#do`:
+
+  ```yaml
+  #Apply: {
+    #do: "apply"
+    ...
+  }
+  ```
+
+  This will inject the `#do` field to the `apply` step.
+
+- All do-able steps will be executed one by one by Task Manager.
 
 
-### Operator Best Practice
+### 4. CUE Step Execution
 
-Each workflow task share the similar interactions with the Task Manager as follows:
+- Task Manager will keep a map of actions.
+  An action follows this interface:
+
+  ```go
+  type TaskAction interface {
+    // cueValue is the parsed CUE value for this action
+    Run(cueValue interface{}) (TaskStatus, error)
+  }
+  ```
+
+- Task Manager will use the `#do` field of the CUE step as the key to find an action to run.
+
+- An action returns a status indicating what to do next:
+  - continue: continue to run the next action.
+  - wait: makes the workflow manager to retry later.
+  - break: makes the workflow manager to stop the entire workflow.
+
+- Task Manager will change status as needed based on the returned TaskStatus, e.g. change to wait. 
+
+
+## Task Action
+
+These are the task actions to be supported in `vela/op` CUE lib:
+
+
+- Load: loads the rendered component resources
+
+  ```
+  #Load: {
+    #do: "load"
+    component?: string
+  }
+  ```
+
+- KubeRead: reads a k8s resource object
+
+  ```
+  #Read: {
+    #do: "read"
+    apiVersion: string
+    kind: string
+    namespace: string
+    name: string
+  }
+  ```
+
+- Apply: applies a k8s resource object
+
+  ```
+  #Apply: {
+    #do: "apply"
+    resource: string
+  }
+  ```
+
+- Wait: waits until the `continue` condition is ready, otherwise makes the controller to reconcile later.
+
+  ```
+  #Wait: {
+    #do: "wait"
+    continue: bool
+  }
+  ```
+
+- Break: breaks from the workflow, and reports reasoning message.
+
+  ```
+  #Break: {
+    #do: "break"
+    message: string
+  }
+  ```
+
+
+- Export: exports the data into context for other workflow tasks to reuse
+
+  ```
+  #Export: {
+    #do: "export"
+    type: "patch" | *"var"
+    if type == "patch" {
+      component: string
+    }
+    value: _
+  }
+  ```
+
+## Workflow Operation
+
+These are the operations that users can use to control the workflow at global level.
+
+### 1. Terminate Workflow
+
+If the execution of the workflow does not meet expectations, it may be necessary to terminate the workflow
+
+There are two ways to achieve that:
+
+1. Modify the `workflow.terminated` field in status
+
+```yaml
+  kind: Application
+  metadata:
+    name: foo
+  status:
+    phase: runningWorkflow
+    workflow:
+      stepIndex: 1
+      terminated: true
+      steps:
+      - name: ...
+```
+
+
+2. Use `op.#Break` in workflowStep definition. When the task is executed, the op.#Break can be captured and then report terminated status
+
+```yaml
+if job.status == "failed"{
+  break: op.#Break & {
+      message: "job failed: "+ job.status.message
+  }
+}
+```
+
+### 2. Pause Workflow
+
+1. Modify the value of the `workflow.suspend` field to true to pause the workflow
+
+```yaml
+kind: Application
+metadata:
+  name: foo
+status:
+  phase: runningWorkflow
+  workflow:
+    stepIndex: 1
+    suspend: true
+    steps:
+    - name: ...
+```
+
+2. The built-in suspend task support pause workflow, the example as follow
+
+```yaml
+kind: Application
+spec:
+  components: ...
+workflow:
+  steps:
+  - name: manual-approve
+    type: suspend
+```
+
+The `workflow.suspend` field will be set to true after the suspend-type task is started
+
+### 3. Resume Workflow
+
+Modify the value of the `workflow.suspend` field to false to resume the workflow
+
+```yaml
+kind: Application
+metadata:
+  name: foo
+status:
+  phase: runningWorkflow
+  workflow:
+    stepIndex: 1
+    suspend: false
+    steps:
+    - name: ...
+ ```
+
+### 4. Restart Workflow
+
+The workflow will be restarted in the following two cases:
+
+1. Modify the value of the `status.phase` field to "runningWorkflow" and clear the status of the workflow
+
+```yaml
+kind: Application
+metadata:
+  name: foo
+status:
+  phase: runningWorkflow
+  workflow: {}
+ ```
+
+
+2. The application spec changes
+
+The spec change also means that the application needs to be re-executed, and the application controller will clear the status of application includes workflow status.
+
+
+## Operator Best Practice
+
+Each workflow task has similar interactions with Task Manager as follows:
 
 - The Task Manager will apply the workflow object with annotation `app.oam.dev/workflow-context`. This annotation will pass in the context marshalled in json defined as the following:
   ```go
   type WorkflowContext struct {
     AppName string
     AppRevisionName string
-    WorkflowIndex int
+    StepIndex int
   }
   ```
-- The Task Manager will wait for the workflow object's workflow condition to be `True` status and `Succeeded` reason, and `observedGeneration` to match the resource's own.
+
+- The workflow object's status condition should turn to be `True` status and `Succeeded` reason, and `observedGeneration` to match the resource's generation per se.
+  This is to solve the [issue of passing data from the old generation][1].
+  We will provide CUE op library to check this condition to decide whether to wait.
 
   ```yaml
   kind: SomeTask
@@ -246,7 +439,6 @@ Each workflow task share the similar interactions with the Task Manager as follo
         status: 'True'
         reason: 'Succeeded'
   ```
-
 
 ## Use Cases
 
@@ -281,7 +473,7 @@ In this case, users want to rollout a new version of the application components 
 
 ```yaml
 workflow:
-  steps: 
+  steps:
   # blue-green rollout
   - type: blue-green-rollout
     properties:
@@ -294,7 +486,7 @@ workflow:
 
   # promote/rollback
   - type: rollout-promotion
-    propertie:
+    properties:
       manualApproval: true
       rollbackIfNotApproved: true
 ```
@@ -340,7 +532,7 @@ components:
 
 workflow:
   steps:
-  - type: apply-component 
+  - type: apply-component
     properties:
       name: my-db
 
@@ -357,7 +549,7 @@ workflow:
 
   # Patch my-app Deployment object's field with the secret name
   # emitted from MySQL object. And then apply my-app component.
-  - type: apply-component 
+  - type: apply-component
     properties:
       name: my-app
       patch:
@@ -387,7 +579,7 @@ workflow:
 
 The process goes as:
 
-- Everytime an Appliation event is triggered, the GitOps workflow controller will push the rendered resources to a Git repo. This will trigger ArgoCD/Flux to do continuous deployment.
+- Everytime an Application event is triggered, the GitOps workflow controller will push the rendered resources to a Git repo. This will trigger ArgoCD/Flux to do continuous deployment.
 
 ### Case 5: Template-based rollout
 
@@ -435,3 +627,4 @@ The workflow defined here are k8s resource based and very simple one direction w
 While Argo Workflow/Tekton shares similar idea to provide workflow functionalities, they are container based and provide more complex features like parameters sharing (using volumes and sidecars). More importantly, these projects couldn't satisfy our needs. Otherwise we can just use them in our implementation.
 
 [1]: https://github.com/crossplane/oam-kubernetes-runtime/issues/222
+[2]: https://cuetorials.com/overview/scope-and-visibility/#hidden-fields-and-values

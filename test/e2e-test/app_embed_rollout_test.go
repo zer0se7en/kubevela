@@ -33,15 +33,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	apicommon "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/pkg/controller/utils"
-
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
 
-var _ = Describe("Cloneset based app embed rollout tests", func() {
+var _ = Describe("rollout related e2e-test,Cloneset based app embed rollout tests", func() {
 	ctx := context.Background()
 	var namespaceName string
 	var ns corev1.Namespace
@@ -114,7 +113,7 @@ var _ = Describe("Cloneset based app embed rollout tests", func() {
 				Namespace: namespace,
 			},
 			Spec: v1beta1.ApplicationSpec{
-				Components: []v1beta1.ApplicationComponent{
+				Components: []apicommon.ApplicationComponent{
 					{
 						Name: appName,
 						Type: compType,
@@ -253,7 +252,8 @@ var _ = Describe("Cloneset based app embed rollout tests", func() {
 		verifyRolloutSucceeded(utils.ConstructRevisionName(appName, 3), "3")
 	})
 
-	It("Test application only upgrade batchPartition", func() {
+	// TODO(@wangyikewxgm): pending this test as it's flaky, will fix it soon
+	PIt("Test application only upgrade batchPartition", func() {
 		plan := &v1alpha1.RolloutPlan{
 			RolloutStrategy: v1alpha1.IncreaseFirstRolloutStrategyType,
 			RolloutBatches: []v1alpha1.RolloutBatch{
@@ -494,7 +494,7 @@ var _ = Describe("Cloneset based app embed rollout tests", func() {
 		appName = "app-rollout-5"
 		app := generateNewApp(appName, namespaceName, "clonesetservice", plan)
 		ingressProperties := `{"domain":"test-1.example.com","http":{"/":8080}}`
-		app.Spec.Components[0].Traits = []v1beta1.ApplicationTrait{{Type: "ingress", Properties: runtime.RawExtension{Raw: []byte(ingressProperties)}}}
+		app.Spec.Components[0].Traits = []apicommon.ApplicationTrait{{Type: "ingress", Properties: runtime.RawExtension{Raw: []byte(ingressProperties)}}}
 		Expect(k8sClient.Create(ctx, app)).Should(BeNil())
 		verifyRolloutSucceeded(utils.ConstructRevisionName(appName, 1), "1")
 		updateAppWithCpuAndPlan(app, "2", plan)
@@ -510,7 +510,8 @@ var _ = Describe("Cloneset based app embed rollout tests", func() {
 		Expect(checkApp.Status.LatestRevision.Name).Should(BeEquivalentTo(utils.ConstructRevisionName(appName, 3)))
 	})
 
-	It("Test rollout with another component only rollout first component", func() {
+	// TODO(@wangyikewxgm): pending this test as it's flaky, will fix it soon
+	PIt("Test rollout with another component only rollout first component", func() {
 		plan := &v1alpha1.RolloutPlan{
 			RolloutStrategy: v1alpha1.IncreaseFirstRolloutStrategyType,
 			RolloutBatches: []v1alpha1.RolloutBatch{
@@ -525,7 +526,7 @@ var _ = Describe("Cloneset based app embed rollout tests", func() {
 		}
 		appName = "app-rollout-6"
 		app := generateNewApp(appName, namespaceName, "clonesetservice", plan)
-		annotherComp := v1beta1.ApplicationComponent{
+		annotherComp := apicommon.ApplicationComponent{
 			Name: "another-comp",
 			Type: "clonesetservice",
 			Properties: runtime.RawExtension{

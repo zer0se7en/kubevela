@@ -18,8 +18,8 @@ package http
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
-	"io/ioutil"
 	"net/http"
 
 	"cuelang.org/go/cue"
@@ -37,7 +37,13 @@ type HTTPCmd struct {
 }
 
 func newHTTPCmd(v cue.Value) (registry.Runner, error) {
-	client := http.DefaultClient
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		},
+	}
 	return &HTTPCmd{client}, nil
 }
 
@@ -64,6 +70,7 @@ func (c *HTTPCmd) Run(meta *registry.Meta) (res interface{}, err error) {
 		}
 	}
 	if header == nil {
+		header = map[string][]string{}
 		header.Set("Content-Type", "application/json")
 	}
 	if meta.Err != nil {
@@ -76,14 +83,13 @@ func (c *HTTPCmd) Run(meta *registry.Meta) (res interface{}, err error) {
 	}
 	req.Header = header
 	req.Trailer = trailer
-
 	resp, err := c.Client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	//nolint:errcheck
 	defer resp.Body.Close()
-	b, err := ioutil.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
 	// parse response body and headers
 	return map[string]interface{}{
 		"body":    string(b),

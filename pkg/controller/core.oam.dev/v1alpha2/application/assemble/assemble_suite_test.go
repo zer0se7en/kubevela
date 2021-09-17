@@ -17,24 +17,17 @@ limitations under the License.
 package assemble
 
 import (
-	"io/ioutil"
-	"testing"
-
-	"github.com/ghodss/yaml"
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
-	"github.com/oam-dev/kubevela/pkg/oam"
+	"os"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-)
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/yaml"
 
-func TestAssemble(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "Assemble Suite")
-}
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/oam"
+)
 
 var _ = Describe("Test Assemble Options", func() {
 	It("test assemble", func() {
@@ -44,7 +37,7 @@ var _ = Describe("Test Assemble Options", func() {
 		)
 
 		appRev := &v1beta1.ApplicationRevision{}
-		b, err := ioutil.ReadFile("./testdata/apprevision.yaml")
+		b, err := os.ReadFile("./testdata/apprevision.yaml")
 		/* appRevision test data is generated based on below application
 		apiVersion: core.oam.dev/v1beta1
 		kind: Application
@@ -71,7 +64,7 @@ var _ = Describe("Test Assemble Options", func() {
 		err = yaml.Unmarshal(b, appRev)
 		Expect(err).Should(BeNil())
 
-		ao := NewAppManifests(appRev)
+		ao := NewAppManifests(appRev, appParser)
 		workloads, traits, _, err := ao.GroupAssembledManifests()
 		Expect(err).Should(BeNil())
 
@@ -157,7 +150,10 @@ var _ = Describe("Test Assemble Options", func() {
 			compName = "frontend"
 		)
 		appRev := &v1beta1.ApplicationRevision{}
-		b, err := ioutil.ReadFile("./testdata/filter_annotations.yaml")
+		b, err := os.ReadFile("./testdata/filter_annotations.yaml")
+		Expect(err).Should(BeNil())
+		err = yaml.Unmarshal(b, appRev)
+		Expect(err).Should(BeNil())
 		getKeys := func(m map[string]string) []string {
 			var keys []string
 			for k := range m {
@@ -186,11 +182,7 @@ var _ = Describe("Test Assemble Options", func() {
 			        image: nginx
 		*/
 
-		Expect(err).Should(BeNil())
-		err = yaml.Unmarshal(b, appRev)
-		Expect(err).Should(BeNil())
-
-		ao := NewAppManifests(appRev)
+		ao := NewAppManifests(appRev, appParser)
 		workloads, _, _, err := ao.GroupAssembledManifests()
 		Expect(err).Should(BeNil())
 

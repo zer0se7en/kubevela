@@ -30,6 +30,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -39,6 +40,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/appfile/helm"
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
+	"github.com/oam-dev/kubevela/pkg/cue/model"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
@@ -53,6 +55,12 @@ const (
 	TerraformVariableTuple  string = "tuple"
 	TerraformVariableMap    string = "map"
 	TerraformVariableObject string = "object"
+	TerraformVariableNull   string = ""
+
+	TerraformListTypePrefix   string = "list("
+	TerraformTupleTypePrefix  string = "tuple("
+	TerraformMapTypePrefix    string = "map("
+	TerraformObjectTypePrefix string = "object("
 )
 
 // ErrNoSectionParameterInCue means there is not parameter section in Cue template of a workload
@@ -140,6 +148,18 @@ func GetOpenAPISchemaFromTerraformComponentDefinition(configuration string) ([]b
 			schema = openapi3.NewArraySchema()
 		case TerraformVariableMap, TerraformVariableObject:
 			schema = openapi3.NewObjectSchema()
+		case TerraformVariableNull:
+			return nil, fmt.Errorf("null type variable is NOT supported, please specify a type for the variable: %s", v.Name)
+		}
+
+		// To identify unusual list type
+		if schema == nil {
+			switch {
+			case strings.HasPrefix(v.Type, TerraformListTypePrefix) || strings.HasPrefix(v.Type, TerraformTupleTypePrefix):
+				schema = openapi3.NewArraySchema()
+			case strings.HasPrefix(v.Type, TerraformMapTypePrefix) || strings.HasPrefix(v.Type, TerraformObjectTypePrefix):
+				schema = openapi3.NewObjectSchema()
+			}
 		}
 		schema.Title = k
 		required = append(required, k)
@@ -230,6 +250,19 @@ func (def *CapabilityComponentDefinition) StoreOpenAPISchema(ctx context.Context
 		return cmName, err
 	}
 
+	// Create a configmap to store parameter for each definitionRevision
+	defRev := new(v1beta1.DefinitionRevision)
+	if err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: revName}, defRev); err != nil {
+		return "", err
+	}
+	ownerReference = []metav1.OwnerReference{{
+		APIVersion:         defRev.APIVersion,
+		Kind:               defRev.Kind,
+		Name:               defRev.Name,
+		UID:                defRev.GetUID(),
+		Controller:         pointer.BoolPtr(true),
+		BlockOwnerDeletion: pointer.BoolPtr(true),
+	}}
 	_, err = def.CreateOrUpdateConfigMap(ctx, k8sClient, namespace, revName, jsonSchema, ownerReference)
 	if err != nil {
 		return cmName, err
@@ -297,8 +330,20 @@ func (def *CapabilityTraitDefinition) StoreOpenAPISchema(ctx context.Context, k8
 	if err != nil {
 		return cmName, err
 	}
-	def.TraitDefinition.Status.ConfigMapRef = cmName
 
+	// Create a configmap to store parameter for each definitionRevision
+	defRev := new(v1beta1.DefinitionRevision)
+	if err = k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: revName}, defRev); err != nil {
+		return "", err
+	}
+	ownerReference = []metav1.OwnerReference{{
+		APIVersion:         defRev.APIVersion,
+		Kind:               defRev.Kind,
+		Name:               defRev.Name,
+		UID:                defRev.GetUID(),
+		Controller:         pointer.BoolPtr(true),
+		BlockOwnerDeletion: pointer.BoolPtr(true),
+	}}
 	_, err = def.CreateOrUpdateConfigMap(ctx, k8sClient, namespace, revName, jsonSchema, ownerReference)
 	if err != nil {
 		return cmName, err
@@ -342,6 +387,7 @@ func (def *CapabilityBaseDefinition) CreateOrUpdateConfigMap(ctx context.Context
 		if err != nil {
 			return cmName, fmt.Errorf(util.ErrUpdateCapabilityInConfigMap, definitionName, err)
 		}
+		klog.InfoS("Successfully stored Capability Schema in ConfigMap", "configMap", klog.KRef(namespace, cmName))
 		return cmName, nil
 	}
 
@@ -349,6 +395,7 @@ func (def *CapabilityBaseDefinition) CreateOrUpdateConfigMap(ctx context.Context
 	if err = k8sClient.Update(ctx, &cm); err != nil {
 		return cmName, fmt.Errorf(util.ErrUpdateCapabilityInConfigMap, definitionName, err)
 	}
+	klog.InfoS("Successfully update Capability Schema in ConfigMap", "configMap", klog.KRef(namespace, cmName))
 	return cmName, nil
 }
 
@@ -448,7 +495,9 @@ func fixOpenAPISchema(name string, schema *openapi3.Schema) {
 			fixOpenAPISchema(k, s)
 		}
 	case "array":
-		fixOpenAPISchema("", schema.Items.Value)
+		if schema.Items != nil {
+			fixOpenAPISchema("", schema.Items.Value)
+		}
 	}
 	if name != "" {
 		schema.Title = name
@@ -472,7 +521,7 @@ func ConvertOpenAPISchema2SwaggerObject(data []byte) (*openapi3.Schema, error) {
 		return nil, err
 	}
 
-	schemaRef, ok := swagger.Components.Schemas[velacue.ParameterTag]
+	schemaRef, ok := swagger.Components.Schemas[model.ParameterFieldName]
 	if !ok {
 		return nil, errors.New(util.ErrGenerateOpenAPIV2JSONSchemaForCapability)
 	}

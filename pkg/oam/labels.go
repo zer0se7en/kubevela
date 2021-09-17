@@ -34,7 +34,7 @@ const (
 	// LabelAppRevisionHash records the Hash value of the application revision
 	LabelAppRevisionHash = "app.oam.dev/app-revision-hash"
 	// LabelAppNamespace records the namespace of Application
-	LabelAppNamespace = "app.oam.dev/namesapce"
+	LabelAppNamespace = "app.oam.dev/namespace"
 
 	// WorkloadTypeLabel indicates the type of the workloadDefinition
 	WorkloadTypeLabel = "workload.oam.dev/type"
@@ -47,6 +47,8 @@ const (
 	LabelComponentDefinitionName = "componentdefinition.oam.dev/name"
 	// LabelTraitDefinitionName records the name of TraitDefinition
 	LabelTraitDefinitionName = "trait.oam.dev/name"
+	// LabelManageWorkloadTrait indicates if the trait will manage the lifecycle of the workload
+	LabelManageWorkloadTrait = "trait.oam.dev/manage-workload"
 	// LabelPolicyDefinitionName records the name of PolicyDefinition
 	LabelPolicyDefinitionName = "policydefinition.oam.dev/name"
 	// LabelWorkflowStepDefinitionName records the name of WorkflowStepDefinition
@@ -56,6 +58,9 @@ const (
 	LabelControllerRevisionComponent = "controller.oam.dev/component"
 	// LabelComponentRevisionHash records the hash value of a component
 	LabelComponentRevisionHash = "app.oam.dev/component-revision-hash"
+
+	// LabelAddonsName records the name of initializer stored in configMap
+	LabelAddonsName = "addons.oam.dev/type"
 )
 
 const (
@@ -105,4 +110,13 @@ const (
 
 	// AnnotationFilterLabelKeys is used to filter labels passed to workload and trait, split by comma
 	AnnotationFilterLabelKeys = "filter.oam.dev/label-keys"
+
+	// AnnotationSkipGC is used to tell application to skip gc workload/trait
+	AnnotationSkipGC = "app.oam.dev/skipGC"
+
+	// AnnotationDefinitionRevisionName is used to specify the name of DefinitionRevision in component/trait definition
+	AnnotationDefinitionRevisionName = "definitionrevision.oam.dev/name"
+
+	// AnnotationAddonsName records the name of initializer stored in configMap
+	AnnotationAddonsName = "addons.oam.dev/name"
 )

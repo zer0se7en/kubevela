@@ -17,39 +17,25 @@
 package v1beta1
 
 import (
-	xpv1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+const (
+	// TypeHealthy application are believed to be determined as healthy by a health scope.
+	TypeHealthy condition.ConditionType = "Healthy"
+)
 
-// ApplicationTrait defines the trait of application
-type ApplicationTrait struct {
-	Type string `json:"type"`
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Properties runtime.RawExtension `json:"properties,omitempty"`
-}
-
-// ApplicationComponent describe the component of application
-type ApplicationComponent struct {
-	Name string `json:"name"`
-	Type string `json:"type"`
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Properties runtime.RawExtension `json:"properties,omitempty"`
-
-	// Traits define the trait of one component, the type must be array to keep the order.
-	Traits []ApplicationTrait `json:"traits,omitempty"`
-
-	// +kubebuilder:pruning:PreserveUnknownFields
-	// scopes in ApplicationComponent defines the component-level scopes
-	// the format is <scope-type:scope-instance-name> pairs, the key represents type of `ScopeDefinition` while the value represent the name of scope instance.
-	Scopes map[string]string `json:"scopes,omitempty"`
-}
+// Reasons an application is or is not healthy
+const (
+	ReasonHealthy        condition.ConditionReason = "AllComponentsHealthy"
+	ReasonUnhealthy      condition.ConditionReason = "UnhealthyOrUnknownComponents"
+	ReasonHealthCheckErr condition.ConditionReason = "HealthCheckeError"
+)
 
 // AppPolicy defines a global policy for all components in the app.
 type AppPolicy struct {
@@ -70,6 +56,10 @@ type WorkflowStep struct {
 
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Properties runtime.RawExtension `json:"properties,omitempty"`
+
+	Inputs common.StepInputs `json:"inputs,omitempty"`
+
+	Outputs common.StepOutputs `json:"outputs,omitempty"`
 }
 
 // Workflow defines workflow steps and other attributes
@@ -79,7 +69,7 @@ type Workflow struct {
 
 // ApplicationSpec is the spec of Application
 type ApplicationSpec struct {
-	Components []ApplicationComponent `json:"components"`
+	Components []common.ApplicationComponent `json:"components"`
 
 	// Policies defines the global policies for all components in the app, e.g. security, metrics, gitops,
 	// multi-cluster placement rules, etc.
@@ -113,6 +103,8 @@ type ApplicationSpec struct {
 // +kubebuilder:printcolumn:name="HEALTHY",type=boolean,JSONPath=`.status.services[*].healthy`
 // +kubebuilder:printcolumn:name="STATUS",type=string,JSONPath=`.status.services[*].message`
 // +kubebuilder:printcolumn:name="AGE",type=date,JSONPath=".metadata.creationTimestamp"
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type Application struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -124,6 +116,7 @@ type Application struct {
 // +kubebuilder:object:root=true
 
 // ApplicationList contains a list of Application
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ApplicationList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
@@ -131,17 +124,17 @@ type ApplicationList struct {
 }
 
 // SetConditions set condition to application
-func (app *Application) SetConditions(c ...xpv1alpha1.Condition) {
+func (app *Application) SetConditions(c ...condition.Condition) {
 	app.Status.SetConditions(c...)
 }
 
 // GetCondition get condition by given condition type
-func (app *Application) GetCondition(t xpv1alpha1.ConditionType) xpv1alpha1.Condition {
+func (app *Application) GetCondition(t condition.ConditionType) condition.Condition {
 	return app.Status.GetCondition(t)
 }
 
 // GetComponent get the component from the application based on its workload type
-func (app *Application) GetComponent(workloadType string) *ApplicationComponent {
+func (app *Application) GetComponent(workloadType string) *common.ApplicationComponent {
 	for _, c := range app.Spec.Components {
 		if c.Type == workloadType {
 			return &c

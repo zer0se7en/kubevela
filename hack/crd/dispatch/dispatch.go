@@ -18,7 +18,6 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -29,16 +28,20 @@ var (
 	common = map[string]bool{"workloaddefinitions": true, "traitdefinitions": true, "scopedefinitions": true, "healthscopes": true,
 		"manualscalertraits": true, "containerizedworkloads": true}
 	oldCRD = map[string]bool{"components": true, "applicationconfigurations": true}
+	// when controller need to run in runtime cluster, just add them in this map, key=crdName, value=subPath
+	runtimeCRD = map[string]string{"rollouts": "rollout"}
 )
 
 func main() {
 	var dir string
 	var oldDir string
 	var newDir string
+	var runtimeDir string
 	if len(os.Args) > 2 {
 		dir = os.Args[1]
 		newDir = os.Args[2]
 		oldDir = os.Args[3]
+		runtimeDir = os.Args[4]
 	} else {
 		log.Fatal(fmt.Errorf("not enough args"))
 	}
@@ -46,7 +49,7 @@ func main() {
 	writeOld := func(fileName string, data []byte) {
 		pathOld := fmt.Sprintf("%s/%s", oldDir, fileName)
 		/* #nosec */
-		if err := ioutil.WriteFile(pathOld, data, 0644); err != nil {
+		if err := os.WriteFile(pathOld, data, 0644); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -54,7 +57,15 @@ func main() {
 	writeNew := func(fileName string, data []byte) {
 		pathNew := fmt.Sprintf("%s/%s", newDir, fileName)
 		/* #nosec */
-		if err := ioutil.WriteFile(pathNew, data, 0644); err != nil {
+		if err := os.WriteFile(pathNew, data, 0644); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	writeRuntime := func(subPath, fileName string, data []byte) {
+		pathRuntime := fmt.Sprintf("%s/%s/charts/crds/%s", runtimeDir, subPath, fileName)
+		/* #nosec */
+		if err := os.WriteFile(pathRuntime, data, 0644); err != nil {
 			log.Fatal(err)
 		}
 	}
@@ -65,7 +76,7 @@ func main() {
 		}
 		resourceName := extractMainInfo(info.Name())
 		/* #nosec */
-		data, err := ioutil.ReadFile(path)
+		data, err := os.ReadFile(path)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "failed to read file", err)
 			return err
@@ -76,6 +87,9 @@ func main() {
 		}
 		if common[resourceName] {
 			writeOld(info.Name(), data)
+		}
+		if subPath, exist := runtimeCRD[resourceName]; exist {
+			writeRuntime(subPath, info.Name(), data)
 		}
 		writeNew(info.Name(), data)
 		return nil

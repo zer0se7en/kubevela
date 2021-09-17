@@ -50,6 +50,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
+	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
@@ -64,11 +65,10 @@ var k8sClient client.Client
 var testEnv *envtest.Environment
 var testScheme = runtime.NewScheme()
 var reconciler *Reconciler
-var stop = make(chan struct{})
-var ctlManager ctrl.Manager
+var appParser *appfile.Parser
+var controllerDone context.CancelFunc
+var mgr ctrl.Manager
 var appRevisionLimit = 5
-
-// TODO: create a mock client and add UT to cover all the failure cases
 
 func TestAPIs(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -82,7 +82,7 @@ type NoOpReconciler struct {
 	Log logr.Logger
 }
 
-func (r *NoOpReconciler) Reconcile(req ctrl.Request) (ctrl.Result, error) {
+func (r *NoOpReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	r.Log.Info("received a request", "object name", req.Name)
 	return ctrl.Result{}, nil
 }
@@ -99,8 +99,10 @@ var _ = BeforeSuite(func(done Done) {
 	}
 	logf.Log.Info("start application suit test", "yaml_path", yamlPath)
 	testEnv = &envtest.Environment{
-		UseExistingCluster: pointer.BoolPtr(false),
-		CRDDirectoryPaths:  []string{yamlPath, "./testdata/crds/terraform.core.oam.dev_configurations.yaml"},
+		ControlPlaneStartTimeout: time.Minute,
+		ControlPlaneStopTimeout:  time.Minute,
+		UseExistingCluster:       pointer.BoolPtr(false),
+		CRDDirectoryPaths:        []string{yamlPath, "./testdata/crds/terraform.core.oam.dev_configurations.yaml"},
 	}
 
 	var err error
@@ -132,6 +134,9 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(err).To(BeNil())
 	pd, err := packages.NewPackageDiscover(cfg)
 	Expect(err).To(BeNil())
+
+	appParser = appfile.NewApplicationParser(k8sClient, dm, pd)
+
 	reconciler = &Reconciler{
 		Client:           k8sClient,
 		Scheme:           testScheme,
@@ -142,9 +147,9 @@ var _ = BeforeSuite(func(done Done) {
 		applicator:       apply.NewAPIApplicator(k8sClient),
 	}
 	// setup the controller manager since we need the component handler to run in the background
-	ctlManager, err = ctrl.NewManager(cfg, ctrl.Options{
+	mgr, err = ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                  testScheme,
-		MetricsBindAddress:      ":8080",
+		MetricsBindAddress:      "0",
 		LeaderElection:          false,
 		LeaderElectionNamespace: "default",
 		LeaderElectionID:        "test",
@@ -152,19 +157,24 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(err).NotTo(HaveOccurred())
 	definitonNs := corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "vela-system"}}
 	Expect(k8sClient.Create(context.Background(), definitonNs.DeepCopy())).Should(BeNil())
+
+	var ctx context.Context
+	ctx, controllerDone = context.WithCancel(context.Background())
 	// start the controller in the background so that new componentRevisions are created
 	go func() {
-		err = ctlManager.Start(stop)
+		err = mgr.Start(ctx)
 		Expect(err).NotTo(HaveOccurred())
 	}()
 	close(done)
-}, 60)
+}, 120)
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")
+	if controllerDone != nil {
+		controllerDone()
+	}
 	err := testEnv.Stop()
 	Expect(err).ToNot(HaveOccurred())
-	close(stop)
 })
 
 type FakeRecorder struct {

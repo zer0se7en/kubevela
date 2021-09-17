@@ -1,5 +1,6 @@
-InsertConfigNotReady: false
+ExternalRevision: ""
 Name: myweb
+Namespace: default
 PackagedTraitResources: null
 PackagedWorkloadResources: null
 RevisionHash: ""
@@ -9,11 +10,15 @@ StandardWorkload:
   apiVersion: apps/v1
   kind: Deployment
   metadata:
+    annotations: {}
     labels:
       app.oam.dev/appRevision: ""
       app.oam.dev/component: myweb
       app.oam.dev/name: app-dryrun
       workload.oam.dev/type: myworker
+      app.oam.dev/resourceType: WORKLOAD
+    name: myweb
+    namespace: default
   spec:
     selector:
       matchLabels:
@@ -33,13 +38,16 @@ Traits:
 - apiVersion: v1
   kind: Service
   metadata:
+    annotations: {}
     labels:
       app.oam.dev/appRevision: ""
       app.oam.dev/component: myweb
       app.oam.dev/name: app-dryrun
       trait.oam.dev/resource: service
       trait.oam.dev/type: myingress
+      app.oam.dev/resourceType: TRAIT
     name: myweb
+    namespace: default
   spec:
     ports:
     - port: 80
@@ -49,13 +57,16 @@ Traits:
 - apiVersion: networking.k8s.io/v1beta1
   kind: Ingress
   metadata:
+    annotations: {}
     labels:
       app.oam.dev/appRevision: ""
       app.oam.dev/component: myweb
       app.oam.dev/name: app-dryrun
       trait.oam.dev/resource: ingress
       trait.oam.dev/type: myingress
+      app.oam.dev/resourceType: TRAIT
     name: myweb
+    namespace: default
   spec:
     rules:
     - host: www.example.com

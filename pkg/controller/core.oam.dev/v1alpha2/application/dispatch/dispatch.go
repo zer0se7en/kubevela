@@ -20,9 +20,8 @@ import (
 	"context"
 	"reflect"
 
-	v1 "k8s.io/api/core/v1"
-
 	"github.com/pkg/errors"
+	v1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -32,6 +31,7 @@ import (
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
@@ -63,6 +63,7 @@ type AppManifestsDispatcher struct {
 	namespace     string
 	currentRTName string
 	currentRT     *v1beta1.ResourceTracker
+	legacyRTs     []*v1beta1.ResourceTracker
 }
 
 // EndAndGC return an AppManifestsDispatcher that do GC after dispatching resources.
@@ -101,11 +102,14 @@ func (a *AppManifestsDispatcher) Dispatch(ctx context.Context, manifests []*unst
 	if err := a.createOrGetResourceTracker(ctx); err != nil {
 		return nil, err
 	}
+	if err := a.retrieveLegacyResourceTrackers(ctx); err != nil {
+		return nil, err
+	}
 	if err := a.applyAndRecordManifests(ctx, manifests); err != nil {
 		return nil, err
 	}
 	if !a.skipGC && a.previousRT != nil && a.previousRT.Name != a.currentRTName {
-		if err := a.gcHandler.GarbageCollect(ctx, a.previousRT, a.currentRT); err != nil {
+		if err := a.gcHandler.GarbageCollect(ctx, a.previousRT, a.currentRT, a.legacyRTs); err != nil {
 			return nil, errors.WithMessagef(err, "cannot do GC based on resource trackers %q and %q", a.previousRT.Name, a.currentRTName)
 		}
 	}
@@ -113,13 +117,13 @@ func (a *AppManifestsDispatcher) Dispatch(ctx context.Context, manifests []*unst
 }
 
 // ReferenceScopes add workload reference to scopes' workloadRefPath
-func (a *AppManifestsDispatcher) ReferenceScopes(ctx context.Context, wlRef *v1beta1.TypedReference, scopes []*v1beta1.TypedReference) error {
+func (a *AppManifestsDispatcher) ReferenceScopes(ctx context.Context, wlRef *v1.ObjectReference, scopes []*v1.ObjectReference) error {
 	// TODO handle scopes
 	return nil
 }
 
 // DereferenceScopes remove workload reference from scopes' workloadRefPath
-func (a *AppManifestsDispatcher) DereferenceScopes(ctx context.Context, wlRef *v1beta1.TypedReference, scopes []*v1beta1.TypedReference) error {
+func (a *AppManifestsDispatcher) DereferenceScopes(ctx context.Context, wlRef *v1.ObjectReference, scopes []*v1.ObjectReference) error {
 	// TODO handle scopes
 	return nil
 }
@@ -140,9 +144,13 @@ func (a *AppManifestsDispatcher) validateAndComplete(ctx context.Context) error 
 		klog.InfoS("Validate previous resource tracker exists", "previous", klog.KObj(a.previousRT))
 		gotPreviousRT := &v1beta1.ResourceTracker{}
 		if err := a.c.Get(ctx, client.ObjectKey{Name: a.previousRT.Name}, gotPreviousRT); err != nil {
-			return errors.Errorf("given resource tracker %q doesn't exist", a.previousRT.Name)
+			if !kerrors.IsNotFound(err) {
+				return errors.Wrapf(err, "failed to get previous resource tracker")
+			}
+			a.previousRT = nil // if resourcetracker has been removed, ignore it
+		} else {
+			a.previousRT = gotPreviousRT
 		}
-		a.previousRT = gotPreviousRT
 	}
 	klog.InfoS("Given previous resource tracker is nil or same as current one, so skip GC", "appRevision", klog.KObj(a.appRev))
 	return nil
@@ -176,6 +184,28 @@ func (a *AppManifestsDispatcher) createOrGetResourceTracker(ctx context.Context)
 	return nil
 }
 
+// Besides current and previous resource trackers, other resource trackers are regarded as legacy ones.
+// Legacy resource trackers come from unsuccessful dispatch, for example, error occrus in the middle of applying
+// resources. They may cause resources leak or race.
+// GarbageCollector should delete legacy resource trackers after dispatcher applies manifests successfully.
+func (a *AppManifestsDispatcher) retrieveLegacyResourceTrackers(ctx context.Context) error {
+	a.legacyRTs = []*v1beta1.ResourceTracker{}
+	rtList := &v1beta1.ResourceTrackerList{}
+	if err := a.c.List(ctx, rtList, client.MatchingLabels{
+		oam.LabelAppName:      ExtractAppName(a.currentRTName, a.namespace),
+		oam.LabelAppNamespace: a.namespace,
+	}); err != nil {
+		return errors.Wrap(err, "cannot retrieve legacy resource trackers")
+	}
+	for _, rt := range rtList.Items {
+		if rt.Name != a.currentRTName &&
+			(a.previousRT != nil && rt.Name != a.previousRT.Name) {
+			a.legacyRTs = append(a.legacyRTs, rt.DeepCopy())
+		}
+	}
+	return nil
+}
+
 func (a *AppManifestsDispatcher) applyAndRecordManifests(ctx context.Context, manifests []*unstructured.Unstructured) error {
 	ctrlUIDs := []types.UID{a.currentRT.UID}
 	if a.previousRT != nil && a.previousRT.Name != a.currentRTName {
@@ -186,6 +216,12 @@ func (a *AppManifestsDispatcher) applyAndRecordManifests(ctx context.Context, ma
 		// - set new resource tracker as their controller owner
 		ctrlUIDs = append(ctrlUIDs, a.previousRT.UID)
 	}
+
+	// allow to apply changes to resources owned by legacy RTs
+	for _, rt := range a.legacyRTs {
+		ctrlUIDs = append(ctrlUIDs, rt.UID)
+	}
+
 	applyOpts := []apply.ApplyOption{apply.MustBeControllableByAny(ctrlUIDs)}
 	ownerRef := metav1.OwnerReference{
 		APIVersion:         v1beta1.SchemeGroupVersion.String(),
@@ -196,6 +232,9 @@ func (a *AppManifestsDispatcher) applyAndRecordManifests(ctx context.Context, ma
 		BlockOwnerDeletion: pointer.BoolPtr(true),
 	}
 	for _, rsc := range manifests {
+		if rsc == nil {
+			continue
+		}
 
 		immutable, err := a.ImmutableResourcesUpdate(ctx, rsc, ownerRef, applyOpts)
 		if immutable {
@@ -209,7 +248,7 @@ func (a *AppManifestsDispatcher) applyAndRecordManifests(ctx context.Context, ma
 		}
 
 		// each resource applied by dispatcher MUST be controlled by resource tracker
-		setOrOverrideControllerOwner(rsc, ownerRef)
+		setOrOverrideOAMControllerOwner(rsc, ownerRef)
 		if err := a.applicator.Apply(ctx, rsc, applyOpts...); err != nil {
 			klog.ErrorS(err, "Failed to apply a resource", "object",
 				klog.KObj(rsc), "apiVersion", rsc.GetAPIVersion(), "kind", rsc.GetKind())
@@ -238,7 +277,7 @@ func (a *AppManifestsDispatcher) ImmutableResourcesUpdate(ctx context.Context, r
 		if err != nil {
 			return true, err
 		}
-		setOrOverrideControllerOwner(pv, ownerRef)
+		setOrOverrideOAMControllerOwner(pv, ownerRef)
 		pv.SetGroupVersionKind(v1.SchemeGroupVersion.WithKind(reflect.TypeOf(v1.PersistentVolume{}).Name()))
 		return true, a.applicator.Apply(ctx, pv, applyOpts...)
 	default:
@@ -249,10 +288,13 @@ func (a *AppManifestsDispatcher) ImmutableResourcesUpdate(ctx context.Context, r
 func (a *AppManifestsDispatcher) updateResourceTrackerStatus(ctx context.Context, appliedManifests []*unstructured.Unstructured) error {
 	// merge applied resources and already tracked ones
 	if a.currentRT.Status.TrackedResources == nil {
-		a.currentRT.Status.TrackedResources = make([]v1beta1.TypedReference, 0)
+		a.currentRT.Status.TrackedResources = make([]v1.ObjectReference, 0)
 	}
 	for _, rsc := range appliedManifests {
-		appliedRef := v1beta1.TypedReference{
+		if rsc == nil {
+			continue
+		}
+		appliedRef := v1.ObjectReference{
 			APIVersion: rsc.GetAPIVersion(),
 			Kind:       rsc.GetKind(),
 			Name:       rsc.GetName(),
@@ -295,14 +337,23 @@ type ObjectOwner interface {
 	SetOwnerReferences([]metav1.OwnerReference)
 }
 
-func setOrOverrideControllerOwner(obj ObjectOwner, controllerOwner metav1.OwnerReference) {
-	ownerRefs := []metav1.OwnerReference{controllerOwner}
+// setOrOverrideOAMControllerOwner will set the new owner and remove the legacy OAM owner
+func setOrOverrideOAMControllerOwner(obj ObjectOwner, controllerOwner metav1.OwnerReference) {
+	newOwnerRefs := []metav1.OwnerReference{controllerOwner}
 	for _, owner := range obj.GetOwnerReferences() {
+		// delete the old resourceTracker owner
+		if owner.Kind == v1beta1.ResourceTrackerKind && owner.APIVersion == v1beta1.SchemeGroupVersion.String() {
+			continue
+		}
+		// delete the old appContext owner
+		if owner.Kind == v1alpha2.ApplicationContextKind && owner.APIVersion == v1alpha2.SchemeGroupVersion.String() {
+			continue
+		}
 		if owner.Controller != nil && *owner.Controller &&
 			owner.UID != controllerOwner.UID {
 			owner.Controller = pointer.BoolPtr(false)
 		}
-		ownerRefs = append(ownerRefs, owner)
+		newOwnerRefs = append(newOwnerRefs, owner)
 	}
-	obj.SetOwnerReferences(ownerRefs)
+	obj.SetOwnerReferences(newOwnerRefs)
 }

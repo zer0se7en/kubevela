@@ -23,19 +23,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
-
 	"k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/ghodss/yaml"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	"github.com/oam-dev/kubevela/pkg/oam/testutil"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
@@ -139,17 +138,17 @@ spec:
 		By("Check workload created successfully")
 		Eventually(func() error {
 			By("Reconcile")
-			reconcileRetry(reconciler, req)
+			testutil.ReconcileRetry(reconciler, req)
 			return k8sClient.Get(ctx, workloadKey, &workload)
 		}, 5*time.Second, time.Second).Should(BeNil())
 
 		By("Check reconcile again and no error will happen")
-		reconcileRetry(reconciler, req)
+		testutil.ReconcileRetry(reconciler, req)
 
 		By("Check appConfig condition should not have error")
 		Eventually(func() string {
 			By("Reconcile again and should not have error")
-			reconcileRetry(reconciler, req)
+			testutil.ReconcileRetry(reconciler, req)
 			err := k8sClient.Get(ctx, appConfigKey, &appConfig)
 			if err != nil {
 				return err.Error()
@@ -192,7 +191,7 @@ spec:
 			},
 			Spec: v1alpha2.ManualScalerTraitSpec{
 				ReplicaCount: 3,
-				WorkloadReference: v1alpha1.TypedReference{
+				WorkloadReference: corev1.ObjectReference{
 					APIVersion: "core.oam.dev/v1alpha2",
 					Kind:       "ContainerizedWorkload",
 					Name:       componentName,
@@ -203,12 +202,12 @@ spec:
 		Expect(k8sClient.Update(ctx, &appConfig)).Should(BeNil())
 
 		By("Reconcile")
-		reconcileRetry(reconciler, req)
+		testutil.ReconcileRetry(reconciler, req)
 
 		By("Check again that appConfig condition should not have error")
 		Eventually(func() string {
 			By("Reconcile again and should not have error")
-			reconcileRetry(reconciler, req)
+			testutil.ReconcileRetry(reconciler, req)
 			err := k8sClient.Get(ctx, appConfigKey, &appConfig)
 			if err != nil {
 				return err.Error()
@@ -224,7 +223,7 @@ spec:
 		scaleKey := client.ObjectKey{Name: scaleName, Namespace: namespace}
 		Eventually(func() int32 {
 			By("Reconcile")
-			reconcileRetry(reconciler, req)
+			testutil.ReconcileRetry(reconciler, req)
 			if err := k8sClient.Get(ctx, scaleKey, &scale); err != nil {
 				return 0
 			}

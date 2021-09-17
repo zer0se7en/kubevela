@@ -27,7 +27,6 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	velacue "github.com/oam-dev/kubevela/pkg/cue"
 	"github.com/oam-dev/kubevela/pkg/cue/model"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/cue/process"
@@ -38,9 +37,9 @@ import (
 
 const (
 	// OutputFieldName is the name of the struct contains the CR data
-	OutputFieldName = process.OutputFieldName
+	OutputFieldName = model.OutputFieldName
 	// OutputsFieldName is the name of the struct contains the map[string]CR data
-	OutputsFieldName = process.OutputsFieldName
+	OutputsFieldName = model.OutputsFieldName
 	// PatchFieldName is the name of the struct contains the patch of CR data
 	PatchFieldName = "patch"
 	// CustomMessage defines the custom message in definition template
@@ -87,17 +86,17 @@ func (wd *workloadDef) Complete(ctx process.Context, abstractTemplate string, pa
 	if err := bi.AddFile("-", abstractTemplate); err != nil {
 		return errors.WithMessagef(err, "invalid cue template of workload %s", wd.name)
 	}
-	var paramFile = "parameter: {}"
+	var paramFile = model.ParameterFieldName + ": {}"
 	if params != nil {
 		bt, err := json.Marshal(params)
 		if err != nil {
 			return errors.WithMessagef(err, "marshal parameter of workload %s", wd.name)
 		}
 		if string(bt) != "null" {
-			paramFile = fmt.Sprintf("%s: %s", velacue.ParameterTag, string(bt))
+			paramFile = fmt.Sprintf("%s: %s", model.ParameterFieldName, string(bt))
 		}
 	}
-	if err := bi.AddFile("parameter", paramFile); err != nil {
+	if err := bi.AddFile(model.ParameterFieldName, paramFile); err != nil {
 		return errors.WithMessagef(err, "invalid parameter of workload %s", wd.name)
 	}
 
@@ -158,7 +157,7 @@ func (wd *workloadDef) getTemplateContext(ctx process.Context, cli client.Reader
 		return nil, err
 	}
 	// workload main resource will have a unique label("app.oam.dev/resourceType"="WORKLOAD") in per component/app level
-	object, err := getResourceFromObj(componentWorkload, cli, ns, util.MergeMapOverrideWithDst(map[string]string{
+	object, err := getResourceFromObj(ctx.GetCtx(), componentWorkload, cli, ns, util.MergeMapOverrideWithDst(map[string]string{
 		oam.LabelOAMResourceType: oam.ResourceTypeWorkload,
 	}, commonLabels), "")
 	if err != nil {
@@ -178,7 +177,7 @@ func (wd *workloadDef) getTemplateContext(ctx process.Context, cli client.Reader
 			return nil, err
 		}
 		// AuxiliaryWorkload will have a unique label("trait.oam.dev/resource"="name of outputs") in per component/app level
-		object, err := getResourceFromObj(traitRef, cli, ns, util.MergeMapOverrideWithDst(map[string]string{
+		object, err := getResourceFromObj(ctx.GetCtx(), traitRef, cli, ns, util.MergeMapOverrideWithDst(map[string]string{
 			oam.TraitTypeLabel: AuxiliaryWorkload,
 		}, commonLabels), assist.Name)
 		if err != nil {
@@ -286,17 +285,17 @@ func (td *traitDef) Complete(ctx process.Context, abstractTemplate string, param
 	if err := bi.AddFile("-", abstractTemplate); err != nil {
 		return errors.WithMessagef(err, "invalid template of trait %s", td.name)
 	}
-	var paramFile = "parameter: {}"
+	var paramFile = model.ParameterFieldName + ": {}"
 	if params != nil {
 		bt, err := json.Marshal(params)
 		if err != nil {
 			return errors.WithMessagef(err, "marshal parameter of trait %s", td.name)
 		}
 		if string(bt) != "null" {
-			paramFile = fmt.Sprintf("%s: %s", velacue.ParameterTag, string(bt))
+			paramFile = fmt.Sprintf("%s: %s", model.ParameterFieldName, string(bt))
 		}
 	}
-	if err := bi.AddFile("parameter", paramFile); err != nil {
+	if err := bi.AddFile(model.ParameterFieldName, paramFile); err != nil {
 		return errors.WithMessagef(err, "invalid parameter of trait %s", td.name)
 	}
 	if err := bi.AddFile("context", ctx.ExtendedContextFile()); err != nil {
@@ -350,7 +349,7 @@ func (td *traitDef) Complete(ctx process.Context, abstractTemplate string, param
 		}
 
 		for _, auxiliary := range auxiliaries {
-			target := patcher.Lookup("context", "outputs", auxiliary.Name)
+			target := patcher.Lookup("context", model.OutputsFieldName, auxiliary.Name)
 			if target.Exists() {
 				t, err := model.NewOther(target)
 				if err != nil {
@@ -371,11 +370,11 @@ func GetCommonLabels(contextLabels map[string]string) map[string]string {
 	var commonLabels = map[string]string{}
 	for k, v := range contextLabels {
 		switch k {
-		case process.ContextAppName:
+		case model.ContextAppName:
 			commonLabels[oam.LabelAppName] = v
-		case process.ContextName:
+		case model.ContextName:
 			commonLabels[oam.LabelAppComponent] = v
-		case process.ContextAppRevision:
+		case model.ContextAppRevision:
 			commonLabels[oam.LabelAppRevision] = v
 		}
 	}
@@ -404,7 +403,7 @@ func (td *traitDef) getTemplateContext(ctx process.Context, cli client.Reader, n
 		if err != nil {
 			return nil, err
 		}
-		object, err := getResourceFromObj(traitRef, cli, ns, util.MergeMapOverrideWithDst(map[string]string{
+		object, err := getResourceFromObj(ctx.GetCtx(), traitRef, cli, ns, util.MergeMapOverrideWithDst(map[string]string{
 			oam.TraitTypeLabel: assist.Type,
 		}, commonLabels), assist.Name)
 		if err != nil {
@@ -442,18 +441,18 @@ func (td *traitDef) HealthCheck(ctx process.Context, cli client.Client, ns strin
 	return checkHealth(templateContext, healthPolicyTemplate)
 }
 
-func getResourceFromObj(obj *unstructured.Unstructured, client client.Reader, namespace string, labels map[string]string, outputsResource string) (map[string]interface{}, error) {
+func getResourceFromObj(ctx context.Context, obj *unstructured.Unstructured, client client.Reader, namespace string, labels map[string]string, outputsResource string) (map[string]interface{}, error) {
 	if outputsResource != "" {
 		labels[oam.TraitResource] = outputsResource
 	}
 	if obj.GetName() != "" {
-		u, err := util.GetObjectGivenGVKAndName(context.Background(), client, obj.GroupVersionKind(), namespace, obj.GetName())
+		u, err := util.GetObjectGivenGVKAndName(ctx, client, obj.GroupVersionKind(), namespace, obj.GetName())
 		if err != nil {
 			return nil, err
 		}
 		return u.Object, nil
 	}
-	list, err := util.GetObjectsGivenGVKAndLabels(context.Background(), client, obj.GroupVersionKind(), namespace, labels)
+	list, err := util.GetObjectsGivenGVKAndLabels(ctx, client, obj.GroupVersionKind(), namespace, labels)
 	if err != nil {
 		return nil, err
 	}

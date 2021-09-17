@@ -26,6 +26,8 @@ import (
 	"strconv"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
@@ -113,7 +115,7 @@ func TestMakeHTTPRequest(t *testing.T) {
 	}
 	for testName, tt := range tests {
 		func(testName string) {
-			mockUrl := mockUrlBase + strconv.FormatInt(rand.Int63n(128)+1000, 10)
+			mockUrl := mockUrlBase + strconv.FormatInt(rand.Int63n(128)+2000, 10)
 			// generate a test server so we can capture and inspect the request
 			testServer := NewMock(tt.httpParameter.method, mockUrl, tt.httpParameter.statusCode, tt.httpParameter.body)
 			defer testServer.Close()
@@ -148,7 +150,7 @@ func TestMakeHTTPRequest(t *testing.T) {
 func TestCallWebhook(t *testing.T) {
 	ctx := context.TODO()
 	body := "all good"
-	res := v1alpha1.PodSpecWorkload{
+	res := appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "name",
 			Namespace: "namespace",
@@ -207,7 +209,7 @@ func TestCallWebhook(t *testing.T) {
 	}
 	for name, tt := range tests {
 		func(name string) {
-			url := mockUrlBase + strconv.FormatInt(rand.Int63n(4848)+1000, 10)
+			url := mockUrlBase + strconv.FormatInt(rand.Int63n(4848)+2000, 10)
 			tt.args.rw.URL = "http://" + url
 			// generate a test server so we can capture and inspect the request
 			testServer := NewMock(http.MethodPost, url, tt.returnedStatusCode, body)

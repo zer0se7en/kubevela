@@ -18,12 +18,11 @@ package appfile
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
-	"github.com/ghodss/yaml"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -37,6 +36,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest/printer"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/yaml"
 
 	coreoam "github.com/oam-dev/kubevela/apis/core.oam.dev"
 	corev1beta1 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
@@ -66,8 +66,10 @@ var _ = BeforeSuite(func(done Done) {
 	By("bootstrapping test environment")
 	useExistCluster := false
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:  []string{filepath.Join("..", "..", "charts", "vela-core", "crds")},
-		UseExistingCluster: &useExistCluster,
+		ControlPlaneStartTimeout: time.Minute,
+		ControlPlaneStopTimeout:  time.Minute,
+		CRDDirectoryPaths:        []string{filepath.Join("..", "..", "charts", "vela-core", "crds")},
+		UseExistingCluster:       &useExistCluster,
 	}
 
 	var err error
@@ -88,7 +90,7 @@ var _ = BeforeSuite(func(done Done) {
 
 	Expect(k8sClient.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: addonNamespace}})).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
 
-	workloadData, err := ioutil.ReadFile("testdata/workloadDef.yaml")
+	workloadData, err := os.ReadFile("testdata/workloadDef.yaml")
 	Expect(err).Should(BeNil())
 
 	Expect(yaml.Unmarshal(workloadData, &wd)).Should(BeNil())
@@ -97,7 +99,7 @@ var _ = BeforeSuite(func(done Done) {
 	logf.Log.Info("Creating workload definition", "data", wd)
 	Expect(k8sClient.Create(ctx, &wd)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
 
-	def, err := ioutil.ReadFile("testdata/terraform-aliyun-oss-workloadDefinition.yaml")
+	def, err := os.ReadFile("testdata/terraform-aliyun-oss-workloadDefinition.yaml")
 	Expect(err).Should(BeNil())
 	var terraformDefinition corev1beta1.WorkloadDefinition
 	Expect(yaml.Unmarshal(def, &terraformDefinition)).Should(BeNil())
@@ -106,7 +108,7 @@ var _ = BeforeSuite(func(done Done) {
 	Expect(k8sClient.Create(ctx, &terraformDefinition)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
 
 	close(done)
-}, 60)
+}, 120)
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")

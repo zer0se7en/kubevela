@@ -21,17 +21,18 @@ import (
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 
+	"github.com/oam-dev/kubevela/apis/types"
+
 	"github.com/google/go-github/v32/github"
 	"github.com/pkg/errors"
 	"golang.org/x/oauth2"
 
-	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
 
@@ -178,7 +179,7 @@ func (o OssRegistry) GetCap(addonName string) (types.Capability, []byte, error) 
 	if err != nil {
 		return types.Capability{}, nil, err
 	}
-	data, err := ioutil.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if err != nil {
 		return types.Capability{}, nil, err
@@ -223,7 +224,7 @@ func (o OssRegistry) getRegFiles() ([]RegistryFile, error) {
 	if err != nil {
 		return []RegistryFile{}, err
 	}
-	data, err := ioutil.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 	if err != nil {
 		return []RegistryFile{}, err
@@ -247,7 +248,7 @@ func (o OssRegistry) getRegFiles() ([]RegistryFile, error) {
 			fmt.Printf("[WARN] %s download fail\n", fileName)
 			continue
 		}
-		data, _ := ioutil.ReadAll(resp.Body)
+		data, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		rf := RegistryFile{
 			data: data,
@@ -290,7 +291,7 @@ func (l LocalRegistry) ListCaps() ([]types.Capability, error) {
 	capas := make([]types.Capability, 0)
 	for _, file := range files {
 		// nolint:gosec
-		data, err := ioutil.ReadFile(file)
+		data, err := os.ReadFile(file)
 		if err != nil {
 			return nil, err
 		}

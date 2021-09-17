@@ -18,7 +18,6 @@ package plugin
 
 import (
 	"context"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,9 +70,9 @@ var _ = BeforeSuite(func(done Done) {
 
 	err = os.MkdirAll("definitions", os.ModePerm)
 	Expect(err).NotTo(HaveOccurred())
-	err = ioutil.WriteFile("definitions/webservice.yaml", []byte(componentDef), 0644)
+	err = os.WriteFile("definitions/webservice.yaml", []byte(componentDef), 0644)
 	Expect(err).NotTo(HaveOccurred())
-	err = ioutil.WriteFile("definitions/ingress.yaml", []byte(traitDef), 0644)
+	err = os.WriteFile("definitions/ingress.yaml", []byte(traitDef), 0644)
 	Expect(err).NotTo(HaveOccurred())
 
 	By("apply test definitions")
@@ -123,6 +122,7 @@ var _ = BeforeSuite(func(done Done) {
 
 var _ = AfterSuite(func() {
 	By("delete application and definitions")
+
 	Expect(k8sClient.Delete(ctx, &app)).Should(BeNil())
 	Expect(k8sClient.Delete(ctx, &testCdDef)).Should(BeNil())
 	Expect(k8sClient.Delete(ctx, &testCdDefWithHelm)).Should(BeNil())
@@ -132,4 +132,8 @@ var _ = AfterSuite(func() {
 	Expect(k8sClient.Delete(ctx, &testTdDefWithKube)).Should(BeNil())
 	Expect(k8sClient.Delete(ctx, &testShowCdDef)).Should(BeNil())
 	Expect(k8sClient.Delete(ctx, &testShowTdDef)).Should(BeNil())
+
+	_ = os.RemoveAll("definitions/")
+	_ = os.Remove("dry-run-app.yaml")
+	_ = os.Remove("live-diff-app.yaml")
 })

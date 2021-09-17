@@ -25,21 +25,21 @@ import (
 
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
 	"github.com/crossplane/crossplane-runtime/pkg/event"
 	"github.com/crossplane/crossplane-runtime/pkg/fieldpath"
 	"github.com/crossplane/crossplane-runtime/pkg/test"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 
 	"github.com/oam-dev/kubevela/pkg/oam/mock"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
@@ -60,11 +60,11 @@ var _ = Describe("HealthScope Controller Reconcile Test", func() {
 		Client: &test.MockClient{},
 	}
 	MockHealthyChecker := WorkloadHealthCheckFn(
-		func(context.Context, client.Client, v1alpha1.TypedReference, string) *WorkloadHealthCondition {
+		func(context.Context, client.Client, corev1.ObjectReference, string) *WorkloadHealthCondition {
 			return &WorkloadHealthCondition{HealthStatus: StatusHealthy}
 		})
 	MockUnhealthyChecker := WorkloadHealthCheckFn(
-		func(context.Context, client.Client, v1alpha1.TypedReference, string) *WorkloadHealthCondition {
+		func(context.Context, client.Client, corev1.ObjectReference, string) *WorkloadHealthCondition {
 			return &WorkloadHealthCondition{HealthStatus: StatusUnhealthy}
 		})
 	reconciler := NewReconciler(mockMgr,
@@ -72,7 +72,7 @@ var _ = Describe("HealthScope Controller Reconcile Test", func() {
 		WithChecker(MockHealthyChecker),
 	)
 
-	hs := v1alpha2.HealthScope{Spec: v1alpha2.HealthScopeSpec{WorkloadReferences: []v1alpha1.TypedReference{
+	hs := v1alpha2.HealthScope{Spec: v1alpha2.HealthScopeSpec{WorkloadReferences: []corev1.ObjectReference{
 		// add one wlRef to trigger mockChecker
 		{
 			APIVersion: "mock",
@@ -93,11 +93,11 @@ var _ = Describe("HealthScope Controller Reconcile Test", func() {
 	It("Test HealthScope Not Found", func() {
 		reconciler.client = &test.MockClient{
 			MockGet: func(ctx context.Context,
-				key client.ObjectKey, obj runtime.Object) error {
+				key client.ObjectKey, obj client.Object) error {
 				return errNotFound
 			},
 		}
-		result, err := reconciler.Reconcile(reconcile.Request{})
+		result, err := reconciler.Reconcile(context.TODO(), reconcile.Request{})
 		Expect(result).Should(Equal(reconcile.Result{}))
 		Expect(err).Should(util.BeEquivalentToError(errors.Wrap(errNotFound, errGetHealthScope)))
 	})
@@ -105,51 +105,69 @@ var _ = Describe("HealthScope Controller Reconcile Test", func() {
 	It("Test Reconcile UpdateHealthStatus Error", func() {
 		reconciler.checkers = append(reconciler.checkers, MockHealthyChecker)
 		reconciler.client = &test.MockClient{
-			MockGet: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+			MockGet: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 				if o, ok := obj.(*v1alpha2.HealthScope); ok {
 					*o = hs
 				}
+				if o, ok := obj.(*v1beta1.Application); ok {
+					*o = v1beta1.Application{}
+				}
 				return nil
 			},
-			MockStatusUpdate: func(_ context.Context, obj runtime.Object, opts ...client.UpdateOption) error {
+			MockStatusUpdate: func(_ context.Context, obj client.Object, opts ...client.UpdateOption) error {
 				return errMockErr
 			},
+			MockStatusPatch: func(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				return nil
+			},
 		}
-		_, err := reconciler.Reconcile(reconcile.Request{})
+		_, err := reconciler.Reconcile(context.TODO(), reconcile.Request{})
 		Expect(err).Should(util.BeEquivalentToError(errors.Wrap(errMockErr, errUpdateHealthScopeStatus)))
 	})
 
 	It("Test Reconcile Success with healthy scope", func() {
 		reconciler.checkers = append(reconciler.checkers, MockHealthyChecker)
 		reconciler.client = &test.MockClient{
-			MockGet: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+			MockGet: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 				if o, ok := obj.(*v1alpha2.HealthScope); ok {
 					*o = hs
 				}
+				if o, ok := obj.(*v1beta1.Application); ok {
+					*o = v1beta1.Application{}
+				}
 				return nil
 			},
-			MockStatusUpdate: func(_ context.Context, obj runtime.Object, opts ...client.UpdateOption) error {
+			MockStatusUpdate: func(_ context.Context, obj client.Object, opts ...client.UpdateOption) error {
+				return nil
+			},
+			MockStatusPatch: func(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 				return nil
 			},
 		}
-		_, err := reconciler.Reconcile(reconcile.Request{})
+		_, err := reconciler.Reconcile(context.TODO(), reconcile.Request{})
 		Expect(err).Should(BeNil())
 	})
 
 	It("Test Reconcile Success with unhealthy scope", func() {
 		reconciler.checkers = append(reconciler.checkers, MockUnhealthyChecker)
 		reconciler.client = &test.MockClient{
-			MockGet: func(ctx context.Context, key client.ObjectKey, obj runtime.Object) error {
+			MockGet: func(ctx context.Context, key client.ObjectKey, obj client.Object) error {
 				if o, ok := obj.(*v1alpha2.HealthScope); ok {
 					*o = hs
 				}
+				if o, ok := obj.(*v1beta1.Application); ok {
+					*o = v1beta1.Application{}
+				}
 				return nil
 			},
-			MockStatusUpdate: func(_ context.Context, obj runtime.Object, opts ...client.UpdateOption) error {
+			MockStatusUpdate: func(_ context.Context, obj client.Object, opts ...client.UpdateOption) error {
+				return nil
+			},
+			MockStatusPatch: func(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 				return nil
 			},
 		}
-		_, err := reconciler.Reconcile(reconcile.Request{})
+		_, err := reconciler.Reconcile(context.TODO(), reconcile.Request{})
 		Expect(err).Should(BeNil())
 	})
 })
@@ -166,7 +184,7 @@ var _ = Describe("Test GetScopeHealthStatus", func() {
 
 	hs := v1alpha2.HealthScope{}
 
-	var cwRef, deployRef, svcRef v1alpha1.TypedReference
+	var cwRef, deployRef, svcRef corev1.ObjectReference
 	cwRef.SetGroupVersionKind(v1alpha2.SchemeGroupVersion.WithKind(kindContainerizedWorkload))
 	cwRef.Name = "cw"
 	deployRef.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind(kindDeployment))
@@ -175,7 +193,7 @@ var _ = Describe("Test GetScopeHealthStatus", func() {
 
 	cw := v1alpha2.ContainerizedWorkload{}
 	cw.SetGroupVersionKind(v1alpha2.SchemeGroupVersion.WithKind(kindContainerizedWorkload))
-	cw.Status.Resources = []v1alpha1.TypedReference{deployRef, svcRef}
+	cw.Status.Resources = []corev1.ObjectReference{deployRef, svcRef}
 
 	hDeploy := appsv1.Deployment{
 		Spec: appsv1.DeploymentSpec{
@@ -188,7 +206,7 @@ var _ = Describe("Test GetScopeHealthStatus", func() {
 	hDeploy.SetName("deploy")
 	hDeploy.SetGroupVersionKind(appsv1.SchemeGroupVersion.WithKind(kindDeployment))
 
-	uhGeneralRef := v1alpha1.TypedReference{
+	uhGeneralRef := corev1.ObjectReference{
 		APIVersion: "unknown",
 		Kind:       "unknown",
 		Name:       "unhealthyGeneral",
@@ -203,7 +221,7 @@ var _ = Describe("Test GetScopeHealthStatus", func() {
 
 	BeforeEach(func() {
 		logf.Log.Info("Set up resources before an unit test")
-		hs.Spec.WorkloadReferences = []v1alpha1.TypedReference{}
+		hs.Spec.WorkloadReferences = []corev1.ObjectReference{}
 	})
 
 	AfterEach(func() {
@@ -214,19 +232,31 @@ var _ = Describe("Test GetScopeHealthStatus", func() {
 	It("Test healthy scope", func() {
 		tests := []struct {
 			caseName           string
-			hsWorkloadRefs     []v1alpha1.TypedReference
+			hsWorkloadRefs     []corev1.ObjectReference
 			mockGetFn          test.MockGetFn
 			wantScopeCondition ScopeHealthCondition
 		}{
 			{
 				caseName:       "2 supportted workloads(cw,deploy)",
-				hsWorkloadRefs: []v1alpha1.TypedReference{cwRef, deployRef},
-				mockGetFn: func(ctx context.Context, key types.NamespacedName, obj runtime.Object) error {
-					if o, ok := obj.(*v1alpha2.ContainerizedWorkload); ok {
-						*o = cw
-					}
-					if o, ok := obj.(*appsv1.Deployment); ok {
-						*o = hDeploy
+				hsWorkloadRefs: []corev1.ObjectReference{cwRef, deployRef},
+				mockGetFn: func(ctx context.Context, key types.NamespacedName, obj client.Object) error {
+					switch o := obj.(type) {
+					case *unstructured.Unstructured:
+						if key.Name == "cw" {
+							cwObj, err := util.Object2Unstructured(cw)
+							if err != nil {
+								return err
+							}
+							*o = *cwObj
+						}
+						if key.Name == "deploy" {
+							deployObj, err := util.Object2Unstructured(hDeploy)
+							if err != nil {
+								return err
+							}
+							*o = *deployObj
+						}
+						return nil
 					}
 					return nil
 				},
@@ -256,22 +286,31 @@ var _ = Describe("Test GetScopeHealthStatus", func() {
 	It("Test unhealthy scope", func() {
 		tests := []struct {
 			caseName           string
-			hsWorkloadRefs     []v1alpha1.TypedReference
+			hsWorkloadRefs     []corev1.ObjectReference
 			mockGetFn          test.MockGetFn
 			wantScopeCondition ScopeHealthCondition
 		}{
 			{
 				caseName:       "2 supportted workloads but one is unhealthy",
-				hsWorkloadRefs: []v1alpha1.TypedReference{cwRef, deployRef},
-				mockGetFn: func(ctx context.Context, key types.NamespacedName, obj runtime.Object) error {
+				hsWorkloadRefs: []corev1.ObjectReference{cwRef, deployRef},
+				mockGetFn: func(ctx context.Context, key types.NamespacedName, obj client.Object) error {
 					switch o := obj.(type) {
-					case *v1alpha2.ContainerizedWorkload:
-						*o = cw
-					case *appsv1.Deployment:
-						*o = hDeploy
 					case *unstructured.Unstructured:
 						// return err when get svc of cw, then check fails
-						if key.Name == "cw" || key.Name == "deploy" {
+						if key.Name == "cw" {
+							cwObj, err := util.Object2Unstructured(cw)
+							if err != nil {
+								return err
+							}
+							*o = *cwObj
+							return nil
+						}
+						if key.Name == "deploy" {
+							deployObj, err := util.Object2Unstructured(hDeploy)
+							if err != nil {
+								return err
+							}
+							*o = *deployObj
 							return nil
 						}
 						return errMockErr
@@ -288,14 +327,26 @@ var _ = Describe("Test GetScopeHealthStatus", func() {
 			},
 			{
 				caseName:       "1 healthy supportted workload and 1 unsupportted workloads",
-				hsWorkloadRefs: []v1alpha1.TypedReference{cwRef, uhGeneralRef},
-				mockGetFn: func(ctx context.Context, key types.NamespacedName, obj runtime.Object) error {
+				hsWorkloadRefs: []corev1.ObjectReference{cwRef, uhGeneralRef},
+				mockGetFn: func(ctx context.Context, key types.NamespacedName, obj client.Object) error {
 					switch o := obj.(type) {
-					case *v1alpha2.ContainerizedWorkload:
-						*o = cw
-					case *appsv1.Deployment:
-						*o = hDeploy
 					case *unstructured.Unstructured:
+						if key.Name == "cw" {
+							cwObj, err := util.Object2Unstructured(cw)
+							if err != nil {
+								return err
+							}
+							*o = *cwObj
+							return nil
+						}
+						if key.Name == "deploy" {
+							deployObj, err := util.Object2Unstructured(hDeploy)
+							if err != nil {
+								return err
+							}
+							*o = *deployObj
+							return nil
+						}
 						*o = *unsupporttedWL
 					}
 					return nil

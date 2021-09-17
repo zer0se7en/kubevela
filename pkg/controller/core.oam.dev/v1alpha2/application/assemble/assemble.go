@@ -17,10 +17,6 @@ limitations under the License.
 package assemble
 
 import (
-	"strings"
-
-	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
-	"github.com/crossplane/crossplane-runtime/pkg/fieldpath"
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,22 +25,14 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
-// DefaultFilterAnnots are annotations won't pass to workload or trait
-var DefaultFilterAnnots = []string{
-	oam.AnnotationAppRollout,
-	oam.AnnotationRollingComponent,
-	oam.AnnotationInplaceUpgrade,
-	oam.AnnotationFilterLabelKeys,
-	oam.AnnotationFilterAnnotationKeys,
-}
-
 // NewAppManifests create a AppManifests
-func NewAppManifests(appRevision *v1beta1.ApplicationRevision) *AppManifests {
-	return &AppManifests{AppRevision: appRevision}
+func NewAppManifests(appRevision *v1beta1.ApplicationRevision, parser *appfile.Parser) *AppManifests {
+	return &AppManifests{AppRevision: appRevision, parser: parser}
 }
 
 // AppManifests contains configuration to assemble resources recorded in the ApplicationRevision.
@@ -64,10 +52,13 @@ type AppManifests struct {
 	assembledWorkloads map[string]*unstructured.Unstructured
 	assembledTraits    map[string][]*unstructured.Unstructured
 	// key is workload reference, values are the references of scopes the workload belongs to
-	referencedScopes map[corev1.ObjectReference][]corev1.ObjectReference
+	referencedScopes      map[corev1.ObjectReference][]corev1.ObjectReference
+	skipWorkloadApplyComp map[string]bool
 
 	finalized bool
 	err       error
+
+	parser *appfile.Parser
 }
 
 // WorkloadOption will be applied to each workloads AFTER it has been assembled by generic rules shown below:
@@ -95,6 +86,12 @@ func (am *AppManifests) WithWorkloadOption(wo WorkloadOption) *AppManifests {
 	return am
 }
 
+// WithComponentManifests set component manifests with the given one
+func (am *AppManifests) WithComponentManifests(componentManifests []*types.ComponentManifest) *AppManifests {
+	am.componentManifests = componentManifests
+	return am
+}
+
 // AssembledManifests do assemble and merge all assembled resources(except referenced scopes) into one array
 // The result guarantee the order of resources as defined in application originally.
 // If it contains more than one component, the resources are well-orderred and also grouped.
@@ -109,10 +106,19 @@ func (am *AppManifests) AssembledManifests() ([]*unstructured.Unstructured, erro
 	}
 	r := make([]*unstructured.Unstructured, 0)
 	for compName, wl := range am.assembledWorkloads {
-		r = append(r, wl.DeepCopy())
+		skipApplyWorkload := false
 		ts := am.assembledTraits[compName]
 		for _, t := range ts {
 			r = append(r, t.DeepCopy())
+			if v := t.GetLabels()[oam.LabelManageWorkloadTrait]; v == "true" {
+				skipApplyWorkload = true
+			}
+		}
+		if !skipApplyWorkload {
+			r = append(r, wl.DeepCopy())
+		} else {
+			klog.InfoS("assemble meet a managedByTrait workload, so skip apply it",
+				"namespace", am.AppRevision.Namespace, "appRev", am.AppRevision.Name)
 		}
 	}
 	return r, nil
@@ -172,45 +178,35 @@ func checkAutoDetectComponent(wl *unstructured.Unstructured) bool {
 }
 
 func (am *AppManifests) assemble() {
-	am.complete()
+	if err := am.complete(); err != nil {
+		am.finalizeAssemble(err)
+		return
+	}
+
 	klog.InfoS("Assemble manifests for application", "name", am.appName, "revision", am.AppRevision.GetName())
 	if err := am.validate(); err != nil {
 		am.finalizeAssemble(err)
 		return
 	}
 	for _, comp := range am.componentManifests {
-		if comp.InsertConfigNotReady {
-			continue
-		}
-		if checkAutoDetectComponent(comp.StandardWorkload) {
-			klog.Warningf("component without specify workloadDef can not attach traits currently")
-			continue
-		}
-		compRevisionName := comp.RevisionName
-		compName := comp.Name
-		commonLabels := am.generateAndFilterCommonLabels(compName, compRevisionName)
-		klog.InfoS("Assemble manifests for component", "name", compName)
-		wl, err := am.assembleWorkload(compName, comp.StandardWorkload, commonLabels, comp.PackagedWorkloadResources)
+		klog.InfoS("Assemble manifests for component", "name", comp.Name)
+		wl, traits, err := PrepareBeforeApply(comp, am.AppRevision, am.WorkloadOptions)
 		if err != nil {
 			am.finalizeAssemble(err)
 			return
 		}
-		am.assembledWorkloads[compName] = wl
+		if wl == nil {
+			klog.Warningf("component without specify workloadDef can not attach traits currently")
+			continue
+		}
+
+		am.assembledWorkloads[comp.Name] = wl
 		workloadRef := corev1.ObjectReference{
 			APIVersion: wl.GetAPIVersion(),
 			Kind:       wl.GetKind(),
 			Name:       wl.GetName(),
 		}
-		am.assembledTraits[compName] = make([]*unstructured.Unstructured, len(comp.Traits))
-		for i, trait := range comp.Traits {
-			trait := am.assembleTrait(trait, compName, commonLabels)
-			if err := am.setWorkloadRefToTrait(workloadRef, trait); err != nil {
-				am.finalizeAssemble(errors.WithMessagef(err, "cannot set workload reference to trait %q", trait.GetName()))
-				return
-			}
-			am.assembledTraits[compName][i] = trait
-		}
-
+		am.assembledTraits[comp.Name] = traits
 		am.referencedScopes[workloadRef] = make([]corev1.ObjectReference, len(comp.Scopes))
 		for i, scope := range comp.Scopes {
 			am.referencedScopes[workloadRef][i] = *scope
@@ -219,10 +215,42 @@ func (am *AppManifests) assemble() {
 	am.finalizeAssemble(nil)
 }
 
-func (am *AppManifests) complete() {
+// PrepareBeforeApply will prepare for some necessary info before apply
+func PrepareBeforeApply(comp *types.ComponentManifest, appRev *v1beta1.ApplicationRevision, workloadOpt []WorkloadOption) (*unstructured.Unstructured, []*unstructured.Unstructured, error) {
+	if checkAutoDetectComponent(comp.StandardWorkload) {
+		return nil, nil, nil
+	}
+	compRevisionName := comp.RevisionName
+	compName := comp.Name
+	additionalLabel := map[string]string{
+		oam.LabelAppComponentRevision: compRevisionName,
+		oam.LabelAppRevisionHash:      appRev.Labels[oam.LabelAppRevisionHash],
+	}
+	wl, err := assembleWorkload(compName, comp.StandardWorkload, additionalLabel, comp.PackagedWorkloadResources, appRev, workloadOpt)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	assembledTraits := make([]*unstructured.Unstructured, len(comp.Traits))
+	for i, trait := range comp.Traits {
+		setTraitLabels(trait, additionalLabel)
+		assembledTraits[i] = trait
+	}
+
+	return wl, assembledTraits, nil
+}
+
+func (am *AppManifests) complete() error {
 	if len(am.componentManifests) == 0 {
-		am.componentManifests, _ = util.AppConfig2ComponentManifests(am.AppRevision.Spec.ApplicationConfiguration,
-			am.AppRevision.Spec.Components)
+		var err error
+		af, err := am.parser.GenerateAppFileFromRevision(am.AppRevision)
+		if err != nil {
+			return errors.WithMessage(err, "fail to generate appfile from revision for app manifests complete")
+		}
+		am.componentManifests, err = af.GenerateComponentManifests()
+		if err != nil {
+			return errors.WithMessage(err, "fail to complete manifests as generate from app revision failed")
+		}
 	}
 	am.appNamespace = am.AppRevision.GetNamespace()
 	am.appLabels = am.AppRevision.GetLabels()
@@ -233,6 +261,8 @@ func (am *AppManifests) complete() {
 	am.assembledWorkloads = make(map[string]*unstructured.Unstructured)
 	am.assembledTraits = make(map[string][]*unstructured.Unstructured)
 	am.referencedScopes = make(map[corev1.ObjectReference][]corev1.ObjectReference)
+	am.skipWorkloadApplyComp = make(map[string]bool)
+	return nil
 }
 
 func (am *AppManifests) finalizeAssemble(err error) {
@@ -260,69 +290,20 @@ func (am *AppManifests) validate() error {
 	return nil
 }
 
-// workload and trait in the same component both have these labels
-func (am *AppManifests) generateAndFilterCommonLabels(compName, compRevisionName string) map[string]string {
-	filter := func(labels map[string]string, notAllowedKey []string) {
-		for _, l := range notAllowedKey {
-			delete(labels, strings.TrimSpace(l))
-		}
-	}
-	Labels := map[string]string{
-		oam.LabelAppName:              am.appName,
-		oam.LabelAppRevision:          am.AppRevision.Name,
-		oam.LabelAppRevisionHash:      am.AppRevision.Labels[oam.LabelAppRevisionHash],
-		oam.LabelAppComponent:         compName,
-		oam.LabelAppComponentRevision: compRevisionName,
-	}
-	// merge application's all labels
-	finalLabels := util.MergeMapOverrideWithDst(Labels, am.appLabels)
-	filterLabels, ok := am.appAnnotations[oam.AnnotationFilterLabelKeys]
-	if ok {
-		filter(finalLabels, strings.Split(filterLabels, ","))
-	}
-	return finalLabels
-}
-
-// workload and trait both have these annotations
-func (am *AppManifests) filterAndSetAnnotations(obj *unstructured.Unstructured) {
-	var allFilterAnnotation []string
-	allFilterAnnotation = append(allFilterAnnotation, DefaultFilterAnnots...)
-
-	passedFilterAnnotation, ok := am.appAnnotations[oam.AnnotationFilterAnnotationKeys]
-	if ok {
-		allFilterAnnotation = append(allFilterAnnotation, strings.Split(passedFilterAnnotation, ",")...)
-	}
-
-	// pass application's all annotations
-	util.AddAnnotations(obj, am.appAnnotations)
-	// remove useless annotations for workload/trait
-	util.RemoveAnnotations(obj, allFilterAnnotation)
-}
-
-func (am *AppManifests) setNamespace(obj *unstructured.Unstructured) {
-	// only set app's namespace when namespace is unspecified
-	// it's by design to set arbitrary namespace in render phase
-	if len(obj.GetNamespace()) == 0 {
-		obj.SetNamespace(am.appNamespace)
-	}
-}
-
-func (am *AppManifests) assembleWorkload(compName string, wl *unstructured.Unstructured,
-	labels map[string]string, resources []*unstructured.Unstructured) (*unstructured.Unstructured, error) {
+func assembleWorkload(compName string, wl *unstructured.Unstructured,
+	labels map[string]string, resources []*unstructured.Unstructured, appRev *v1beta1.ApplicationRevision, wop []WorkloadOption) (*unstructured.Unstructured, error) {
 	// use component name as workload name
 	// override the name set in render phase if exist
 	wl.SetName(compName)
-	am.setWorkloadLabels(wl, labels)
-	am.filterAndSetAnnotations(wl)
-	am.setNamespace(wl)
+	setWorkloadLabels(wl, labels)
 
 	workloadType := wl.GetLabels()[oam.WorkloadTypeLabel]
-	compDefinition := am.AppRevision.Spec.ComponentDefinitions[workloadType]
+	compDefinition := appRev.Spec.ComponentDefinitions[workloadType]
 	copyPackagedResources := make([]*unstructured.Unstructured, len(resources))
 	for i, v := range resources {
 		copyPackagedResources[i] = v.DeepCopy()
 	}
-	for _, wo := range am.WorkloadOptions {
+	for _, wo := range wop {
 		if err := wo.ApplyToWorkload(wl, compDefinition.DeepCopy(), copyPackagedResources); err != nil {
 			klog.ErrorS(err, "Failed applying a workload option", "workload", klog.KObj(wl), "name", wl.GetName())
 			return nil, errors.Wrapf(err, "cannot apply workload option for component %q", compName)
@@ -333,69 +314,16 @@ func (am *AppManifests) assembleWorkload(compName string, wl *unstructured.Unstr
 	return wl, nil
 }
 
-func (am *AppManifests) setWorkloadLabels(wl *unstructured.Unstructured, commonLabels map[string]string) {
+// component revision label added here
+// label key: app.oam.dev/revision
+func setWorkloadLabels(wl *unstructured.Unstructured, additionalLabels map[string]string) {
 	// add more workload-specific labels here
-	util.AddLabels(wl, map[string]string{oam.LabelOAMResourceType: oam.ResourceTypeWorkload})
-	util.AddLabels(wl, commonLabels)
-
-	/* NOTE a workload has these possible labels
-	   app.oam.dev/app-revision-hash: ce053923e2fb403f
-	   app.oam.dev/appRevision: myapp-v2
-	   app.oam.dev/component: mycomp
-	   app.oam.dev/name: myapp
-	   app.oam.dev/resourceType: WORKLOAD
-	   app.oam.dev/revision: mycomp-v2
-	   workload.oam.dev/type: kube-worker
-	*/
+	util.AddLabels(wl, additionalLabels)
 }
 
-func (am *AppManifests) assembleTrait(trait *unstructured.Unstructured, compName string, labels map[string]string) *unstructured.Unstructured {
-	traitType := trait.GetLabels()[oam.TraitTypeLabel]
-	// only set generated name when name is unspecified
-	// it's by design to set arbitrary name in render phase
-	if len(trait.GetName()) == 0 {
-		traitName := util.GenTraitNameCompatible(compName, trait, traitType)
-		trait.SetName(traitName)
-	}
-	am.setTraitLabels(trait, labels)
-	am.filterAndSetAnnotations(trait)
-	am.setNamespace(trait)
-	klog.InfoS("Successfully assemble a trait", "trait", klog.KObj(trait), "APIVersion", trait.GetAPIVersion(), "Kind", trait.GetKind())
-	return trait
-}
-
-func (am *AppManifests) setTraitLabels(trait *unstructured.Unstructured, commonLabels map[string]string) {
+// component revision label added here
+// label key: app.oam.dev/revision
+func setTraitLabels(trait *unstructured.Unstructured, additionalLabels map[string]string) {
 	// add more trait-specific labels here
-	util.AddLabels(trait, map[string]string{oam.LabelOAMResourceType: oam.ResourceTypeTrait})
-	util.AddLabels(trait, commonLabels)
-
-	/* NOTE a trait has these possible labels
-	   app.oam.dev/app-revision-hash: ce053923e2fb403f
-	   app.oam.dev/appRevision: myapp-v2
-	   app.oam.dev/component: mycomp
-	   app.oam.dev/name: myapp
-	   app.oam.dev/resourceType: TRAIT
-	   app.oam.dev/revision: mycomp-v2
-	   trait.oam.dev/resource: service
-	   trait.oam.dev/type: ingress // already added in render phase
-	*/
-}
-
-func (am *AppManifests) setWorkloadRefToTrait(wlRef corev1.ObjectReference, trait *unstructured.Unstructured) error {
-	traitType := trait.GetLabels()[oam.TraitTypeLabel]
-	traitDef := am.AppRevision.Spec.TraitDefinitions[traitType]
-	workloadRefPath := traitDef.Spec.WorkloadRefPath
-	// only add workload reference to the trait if it asks for it
-	if len(workloadRefPath) != 0 {
-		// TODO(roywang) this is for backward compatibility, remove crossplane/runtime/v1alpha1 in the future
-		tmpWLRef := runtimev1alpha1.TypedReference{
-			APIVersion: wlRef.APIVersion,
-			Kind:       wlRef.Kind,
-			Name:       wlRef.Name,
-		}
-		if err := fieldpath.Pave(trait.UnstructuredContent()).SetValue(workloadRefPath, tmpWLRef); err != nil {
-			return err
-		}
-	}
-	return nil
+	util.AddLabels(trait, additionalLabels)
 }

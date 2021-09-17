@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,11 +29,11 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/ghodss/yaml"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
@@ -108,7 +107,7 @@ func InstallCapability(client client.Client, mapper discoverymapper.DiscoveryMap
 		return err
 	}
 	defDir, _ := system.GetCapabilityDir()
-	fileContent, err := ioutil.ReadFile(filepath.Clean(filepath.Join(repoDir, tp.Name+".yaml")))
+	fileContent, err := os.ReadFile(filepath.Clean(filepath.Join(repoDir, tp.Name+".yaml")))
 	if err != nil {
 		return err
 	}
@@ -196,8 +195,11 @@ func InstallTraitDefinition(client client.Client, mapper discoverymapper.Discove
 		return err
 	}
 	cap.CrdInfo = &types.CRDInfo{
-		APIVersion: gvk.GroupVersion().String(),
-		Kind:       gvk.Kind,
+		APIVersion: v1.GroupVersion{
+			Group:   gvk.Group,
+			Version: gvk.Version,
+		}.String(),
+		Kind: gvk.Kind,
 	}
 	if err = client.Create(context.Background(), &td); err != nil && !apierrors.IsAlreadyExists(err) {
 		return err
@@ -320,10 +322,10 @@ func RemoveCapability(userNamespace string, c common.Args, client client.Client,
 	return errors.New(capabilityName + " not exist")
 }
 
-func uninstallCap(client client.Client, cap types.Capability, ioStreams cmdutil.IOStreams) error {
+func uninstallCap(cli client.Client, cap types.Capability, ioStreams cmdutil.IOStreams) error {
 	// 1. Remove WorkloadDefinition or TraitDefinition
 	ctx := context.Background()
-	var obj runtime.Object
+	var obj client.Object
 	switch cap.Type {
 	case types.TypeTrait:
 		obj = &v1beta1.TraitDefinition{ObjectMeta: v1.ObjectMeta{Name: cap.Name, Namespace: types.DefaultKubeVelaNS}}
@@ -336,7 +338,7 @@ func uninstallCap(client client.Client, cap types.Capability, ioStreams cmdutil.
 	default:
 		return fmt.Errorf("unsupported type: %v", cap.Type)
 	}
-	if err := client.Delete(ctx, obj); err != nil {
+	if err := cli.Delete(ctx, obj); err != nil {
 		return err
 	}
 
@@ -384,7 +386,7 @@ func ListCapabilities(userNamespace string, c common.Args, capabilityCenterName 
 	if capabilityCenterName != "" {
 		return listCenterCapabilities(userNamespace, c, filepath.Join(dir, capabilityCenterName))
 	}
-	dirs, err := ioutil.ReadDir(dir)
+	dirs, err := os.ReadDir(dir)
 	if err != nil {
 		return capabilityList, err
 	}
@@ -503,4 +505,16 @@ func GetCapabilityConfigMap(kubeClient client.Client, capabilityName string) (co
 	var cm corev1.ConfigMap
 	err := kubeClient.Get(context.Background(), client.ObjectKey{Namespace: types.DefaultKubeVelaNS, Name: cmName}, &cm)
 	return cm, err
+}
+
+// CheckLabelExistence checks whether a label `key=value` exists in definition labels
+func CheckLabelExistence(labels map[string]string, label string) bool {
+	splitLabel := strings.Split(label, "=")
+	k, v := splitLabel[0], splitLabel[1]
+	if labelValue, ok := labels[k]; ok {
+		if labelValue == v {
+			return true
+		}
+	}
+	return false
 }

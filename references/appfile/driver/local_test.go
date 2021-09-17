@@ -17,13 +17,13 @@ limitations under the License.
 package driver
 
 import (
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
-	"github.com/ghodss/yaml"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/references/appfile/api"
 )
@@ -47,7 +47,7 @@ func init() {
 	}
 	afile.Services = svcs
 	out, _ := yaml.Marshal(afile)
-	_ = ioutil.WriteFile(filepath.Join(dir, appName+".yaml"), out, 0644)
+	_ = os.WriteFile(filepath.Join(dir, appName+".yaml"), out, 0644)
 }
 
 func TestLocalDelete(t *testing.T) {

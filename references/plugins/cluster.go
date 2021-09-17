@@ -22,6 +22,8 @@ import (
 	"os"
 	"strings"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"github.com/pkg/errors"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/labels"
@@ -197,7 +199,7 @@ func validateCapabilities(tmp *types.Capability, dm discoverymapper.DiscoveryMap
 		return fmt.Errorf("installing capability '%s'... %w", definitionName, err)
 	}
 	tmp.CrdInfo = &types.CRDInfo{
-		APIVersion: gvk.GroupVersion().String(),
+		APIVersion: metav1.GroupVersion{Group: gvk.Group, Version: gvk.Version}.String(),
 		Kind:       gvk.Kind,
 	}
 
@@ -205,7 +207,8 @@ func validateCapabilities(tmp *types.Capability, dm discoverymapper.DiscoveryMap
 }
 
 // HandleDefinition will handle definition to capability
-func HandleDefinition(name, crdName string, annotation map[string]string, extension *runtime.RawExtension, tp types.CapType, applyTo []string, schematic *commontypes.Schematic) (types.Capability, error) {
+func HandleDefinition(name, crdName string, annotation, labels map[string]string, extension *runtime.RawExtension, tp types.CapType,
+	applyTo []string, schematic *commontypes.Schematic) (types.Capability, error) {
 	var tmp types.Capability
 	tmp, err := HandleTemplate(extension, schematic, name)
 	if err != nil {
@@ -217,6 +220,7 @@ func HandleDefinition(name, crdName string, annotation map[string]string, extens
 	}
 	tmp.CrdName = crdName
 	tmp.Description = GetDescription(annotation)
+	tmp.Labels = labels
 	return tmp, nil
 }
 
@@ -304,15 +308,25 @@ func GetCapabilityByName(ctx context.Context, c common.Args, capabilityName stri
 	}
 
 	if foundCapability {
-		dm, err := c.GetDiscoveryMapper()
-		if err != nil {
-			return nil, err
+		var refName string
+
+		// if workload type of ComponentDefinition is unclear,
+		// set the DefinitionReference's Name to AutoDetectWorkloadDefinition
+		if componentDef.Spec.Workload.Type == types.AutoDetectWorkloadDefinition {
+			refName = types.AutoDetectWorkloadDefinition
+		} else {
+			dm, err := c.GetDiscoveryMapper()
+			if err != nil {
+				return nil, err
+			}
+			ref, err := util.ConvertWorkloadGVK2Definition(dm, componentDef.Spec.Workload.Definition)
+			if err != nil {
+				return nil, err
+			}
+			refName = ref.Name
 		}
-		ref, err := util.ConvertWorkloadGVK2Definition(dm, componentDef.Spec.Workload.Definition)
-		if err != nil {
-			return nil, err
-		}
-		capability, err = GetCapabilityByComponentDefinitionObject(componentDef, ref.Name)
+
+		capability, err = GetCapabilityByComponentDefinitionObject(componentDef, refName)
 		if err != nil {
 			return nil, err
 		}
@@ -342,8 +356,8 @@ func GetCapabilityByName(ctx context.Context, c common.Args, capabilityName stri
 
 // GetCapabilityByComponentDefinitionObject gets capability by ComponentDefinition object
 func GetCapabilityByComponentDefinitionObject(componentDef v1beta1.ComponentDefinition, referenceName string) (*types.Capability, error) {
-	capability, err := HandleDefinition(componentDef.Name, referenceName,
-		componentDef.Annotations, componentDef.Spec.Extension, types.TypeComponentDefinition, nil, componentDef.Spec.Schematic)
+	capability, err := HandleDefinition(componentDef.Name, referenceName, componentDef.Annotations, componentDef.Labels,
+		componentDef.Spec.Extension, types.TypeComponentDefinition, nil, componentDef.Spec.Schematic)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to handle ComponentDefinition")
 	}
@@ -357,8 +371,8 @@ func GetCapabilityByTraitDefinitionObject(traitDef v1beta1.TraitDefinition) (*ty
 		capability types.Capability
 		err        error
 	)
-	capability, err = HandleDefinition(traitDef.Name, traitDef.Spec.Reference.Name,
-		traitDef.Annotations, traitDef.Spec.Extension, types.TypeTrait, nil, traitDef.Spec.Schematic)
+	capability, err = HandleDefinition(traitDef.Name, traitDef.Spec.Reference.Name, traitDef.Annotations, traitDef.Labels,
+		traitDef.Spec.Extension, types.TypeTrait, nil, traitDef.Spec.Schematic)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed to handle TraitDefinition")
 	}

@@ -18,7 +18,8 @@
 package utils
 
 import (
-	"io/ioutil"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,7 +32,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/appfile"
-	"github.com/oam-dev/kubevela/pkg/cue"
+	"github.com/oam-dev/kubevela/pkg/cue/model"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
 
@@ -205,15 +206,19 @@ func TestFixOpenAPISchema(t *testing.T) {
 			inputFile: "shortTagSchema.json",
 			fixedFile: "shortTagSchemaFixed.json",
 		},
+		"EmptyArrayJson": {
+			inputFile: "arrayWithoutItemsSchema.json",
+			fixedFile: "arrayWithoutItemsSchemaFixed.json",
+		},
 	}
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			swagger, _ := openapi3.NewSwaggerLoader().LoadSwaggerFromFile(filepath.Join(TestDir, tc.inputFile))
-			schema := swagger.Components.Schemas[cue.ParameterTag].Value
+			schema := swagger.Components.Schemas[model.ParameterFieldName].Value
 			fixOpenAPISchema("", schema)
 			fixedSchema, _ := schema.MarshalJSON()
-			expectedSchema, _ := ioutil.ReadFile(filepath.Join(TestDir, tc.fixedFile))
+			expectedSchema, _ := os.ReadFile(filepath.Join(TestDir, tc.fixedFile))
 			assert.Equal(t, string(fixedSchema), string(expectedSchema))
 		})
 	}
@@ -236,7 +241,16 @@ func TestNewCapabilityComponentDef(t *testing.T) {
 }
 
 func TestGetOpenAPISchemaFromTerraformComponentDefinition(t *testing.T) {
-	configuration := `
+	type want struct {
+		subStr string
+		err    error
+	}
+	cases := map[string]struct {
+		configuration string
+		want          want
+	}{
+		"valid": {
+			configuration: `
 module "rds" {
   source = "terraform-alicloud-modules/rds/alicloud"
   engine = "MySQL"
@@ -296,11 +310,64 @@ variable "listVar" {
 
 variable "mapVar" {
   type = "map"
-}`
+}`,
+			want: want{
+				subStr: "account_name",
+				err:    nil,
+			},
+		},
+		"null type variable": {
+			configuration: `
+variable "name" {
+  default = "abc"
+}`,
+			want: want{
+				subStr: "",
+				err:    errors.New("null type variable is NOT supported, please specify a type for the variable: name"),
+			},
+		},
+		"complicated list variable": {
+			configuration: `
+variable "aaa" {
+  type = list(object({
+    type = string
+    sourceArn = string
+    config = string
+  }))
+  default = []
+}`,
+			want: want{
+				subStr: "aaa",
+				err:    nil,
+			},
+		},
+		"complicated map variable": {
+			configuration: `
+variable "bbb" {
+  type = map({
+    type = string
+    sourceArn = string
+    config = string
+  })
+  default = []
+}`,
+			want: want{
+				subStr: "bbb",
+				err:    nil,
+			},
+		},
+	}
 
-	schema, err := GetOpenAPISchemaFromTerraformComponentDefinition(configuration)
-	assert.NilError(t, err)
-	data := string(schema)
-	assert.Equal(t, strings.Contains(data, "account_name"), true)
-	assert.Equal(t, strings.Contains(data, "intVar"), true)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			schema, err := GetOpenAPISchemaFromTerraformComponentDefinition(tc.configuration)
+			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
+				t.Errorf("\n%s\nGetOpenAPISchemaFromTerraformComponentDefinition(...): -want error, +got error:\n%s", name, diff)
+			}
+			if tc.want.err == nil {
+				data := string(schema)
+				assert.Equal(t, strings.Contains(data, tc.want.subStr), true)
+			}
+		})
+	}
 }

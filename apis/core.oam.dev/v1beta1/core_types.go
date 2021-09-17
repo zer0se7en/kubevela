@@ -17,10 +17,11 @@
 package v1beta1
 
 import (
-	runtimev1alpha1 "github.com/crossplane/crossplane-runtime/apis/core/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 )
@@ -59,7 +60,7 @@ type WorkloadDefinitionSpec struct {
 
 // WorkloadDefinitionStatus is the status of WorkloadDefinition
 type WorkloadDefinitionStatus struct {
-	runtimev1alpha1.ConditionedStatus `json:",inline"`
+	condition.ConditionedStatus `json:",inline"`
 }
 
 // +kubebuilder:object:root=true
@@ -72,6 +73,8 @@ type WorkloadDefinitionStatus struct {
 // +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="DEFINITION-NAME",type=string,JSONPath=".spec.definitionRef.name"
 // +kubebuilder:printcolumn:name="DESCRIPTION",type=string,JSONPath=".metadata.annotations.definition\\.oam\\.dev/description"
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type WorkloadDefinition struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -81,18 +84,19 @@ type WorkloadDefinition struct {
 }
 
 // SetConditions set condition for WorkloadDefinition
-func (wd *WorkloadDefinition) SetConditions(c ...runtimev1alpha1.Condition) {
+func (wd *WorkloadDefinition) SetConditions(c ...condition.Condition) {
 	wd.Status.SetConditions(c...)
 }
 
 // GetCondition gets condition from WorkloadDefinition
-func (wd *WorkloadDefinition) GetCondition(conditionType runtimev1alpha1.ConditionType) runtimev1alpha1.Condition {
+func (wd *WorkloadDefinition) GetCondition(conditionType condition.ConditionType) condition.Condition {
 	return wd.Status.GetCondition(conditionType)
 }
 
 // +kubebuilder:object:root=true
 
 // WorkloadDefinitionList contains a list of WorkloadDefinition.
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type WorkloadDefinitionList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
@@ -147,12 +151,19 @@ type TraitDefinitionSpec struct {
 	// +optional
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Extension *runtime.RawExtension `json:"extension,omitempty"`
+
+	// ManageWorkload defines the trait would be responsible for creating the workload
+	// +optional
+	ManageWorkload bool `json:"manageWorkload,omitempty"`
+	// SkipRevisionAffect defines the update this trait will not generate a new application Revision
+	// +optional
+	SkipRevisionAffect bool `json:"skipRevisionAffect,omitempty"`
 }
 
 // TraitDefinitionStatus is the status of TraitDefinition
 type TraitDefinitionStatus struct {
 	// ConditionedStatus reflects the observed status of a resource
-	runtimev1alpha1.ConditionedStatus `json:",inline"`
+	condition.ConditionedStatus `json:",inline"`
 	// ConfigMapRef refer to a ConfigMap which contains OpenAPI V3 JSON schema of Component parameters.
 	ConfigMapRef string `json:"configMapRef,omitempty"`
 	// LatestRevision of the component definition
@@ -171,6 +182,8 @@ type TraitDefinitionStatus struct {
 // +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="APPLIES-TO",type=string,JSONPath=".spec.appliesToWorkloads"
 // +kubebuilder:printcolumn:name="DESCRIPTION",type=string,JSONPath=".metadata.annotations.definition\\.oam\\.dev/description"
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type TraitDefinition struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -180,16 +193,17 @@ type TraitDefinition struct {
 }
 
 // SetConditions set condition for TraitDefinition
-func (td *TraitDefinition) SetConditions(c ...runtimev1alpha1.Condition) {
+func (td *TraitDefinition) SetConditions(c ...condition.Condition) {
 	td.Status.SetConditions(c...)
 }
 
 // GetCondition gets condition from TraitDefinition
-func (td *TraitDefinition) GetCondition(conditionType runtimev1alpha1.ConditionType) runtimev1alpha1.Condition {
+func (td *TraitDefinition) GetCondition(conditionType condition.ConditionType) condition.Condition {
 	return td.Status.GetCondition(conditionType)
 }
 
 // +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // TraitDefinitionList contains a list of TraitDefinition.
 type TraitDefinitionList struct {
@@ -225,6 +239,8 @@ type ScopeDefinitionSpec struct {
 // +kubebuilder:printcolumn:JSONPath=".spec.definitionRef.name",name=DEFINITION-NAME,type=string
 // +kubebuilder:resource:scope=Namespaced,categories={oam},shortName=scope
 // +kubebuilder:storageversion
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 type ScopeDefinition struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -233,6 +249,7 @@ type ScopeDefinition struct {
 }
 
 // +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ScopeDefinitionList contains a list of ScopeDefinition.
 type ScopeDefinitionList struct {
@@ -243,6 +260,8 @@ type ScopeDefinitionList struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +genclient
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // An ResourceTracker represents a tracker for track cross namespace resources
 // +kubebuilder:resource:scope=Cluster,categories={oam},shortName=tracker
@@ -255,31 +274,11 @@ type ResourceTracker struct {
 
 // ResourceTrackerStatus define the status of resourceTracker
 type ResourceTrackerStatus struct {
-	TrackedResources []TypedReference `json:"trackedResources,omitempty"`
-}
-
-// A TypedReference refers to an object by Name, Kind, and APIVersion. It is
-// commonly used to reference across-namespace objects
-type TypedReference struct {
-	// APIVersion of the referenced object.
-	APIVersion string `json:"apiVersion"`
-
-	// Kind of the referenced object.
-	Kind string `json:"kind"`
-
-	// Name of the referenced object.
-	Name string `json:"name"`
-
-	// Namespace of the objects outside the application namespace.
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
-
-	// UID of the referenced object.
-	// +optional
-	UID types.UID `json:"uid,omitempty"`
+	TrackedResources []corev1.ObjectReference `json:"trackedResources,omitempty"`
 }
 
 // +kubebuilder:object:root=true
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // ResourceTrackerList contains a list of ResourceTracker
 type ResourceTrackerList struct {

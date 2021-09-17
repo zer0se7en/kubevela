@@ -336,27 +336,40 @@ func (r *Controller) GetWorkloadController() (workloads.WorkloadController, erro
 	}
 
 	if r.targetWorkload.GroupVersionKind().Group == kruisev1.GroupVersion.Group {
+		// check if the target workload is CloneSet
 		if r.targetWorkload.GetKind() == reflect.TypeOf(kruisev1.CloneSet{}).Name() {
 			// check whether current rollout plan is for workload rolling or scaling
 			if r.sourceWorkload != nil {
+				klog.InfoS("using cloneset rollout controller for this rolloutplan", "source workload name", source.Name, "namespace",
+					source.Namespace, "target workload name", target.Name, "namespace",
+					target.Namespace)
 				return workloads.NewCloneSetRolloutController(r.client, r.recorder, r.parentController,
 					r.rolloutSpec, r.rolloutStatus, target), nil
 			}
+			klog.InfoS("using cloneset scale controller for this rolloutplan", "target workload name", target.Name, "namespace",
+				target.Namespace)
 			return workloads.NewCloneSetScaleController(r.client, r.recorder, r.parentController,
 				r.rolloutSpec, r.rolloutStatus, target), nil
 		}
 	}
 
 	if r.targetWorkload.GroupVersionKind().Group == apps.GroupName {
+		// check if the target workload is Deployment
 		if r.targetWorkload.GetKind() == reflect.TypeOf(apps.Deployment{}).Name() {
 			// check whether current rollout plan is for workload rolling or scaling
 			if r.sourceWorkload != nil {
+				klog.InfoS("using deployment rollout controller for this rolloutplan", "source workload name", source.Name, "namespace",
+					source.Namespace, "target workload name", target.Name, "namespace",
+					target.Namespace)
 				return workloads.NewDeploymentRolloutController(r.client, r.recorder, r.parentController,
 					r.rolloutSpec, r.rolloutStatus, source, target), nil
 			}
+			klog.InfoS("using deployment scale controller for this rolloutplan", "target workload name", target.Name, "namespace",
+				target.Namespace)
 			return workloads.NewDeploymentScaleController(r.client, r.recorder, r.parentController,
 				r.rolloutSpec, r.rolloutStatus, target), nil
 		}
 	}
+
 	return nil, fmt.Errorf("the workload kind `%s` is not supported", kind)
 }

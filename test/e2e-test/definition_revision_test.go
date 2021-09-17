@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ghodss/yaml"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/pkg/errors"
@@ -32,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
@@ -102,6 +102,15 @@ var _ = Describe("Test application of the specified definition version", func() 
 		Eventually(func() error {
 			return k8sClient.Get(ctx, client.ObjectKey{Name: "webservice-v2", Namespace: namespace}, webserviceV2DefRev)
 		}, 15*time.Second, time.Second).Should(BeNil())
+
+		jobV1 := jobComponentDef.DeepCopy()
+		jobV1.SetNamespace(namespace)
+		Expect(k8sClient.Create(ctx, jobV1)).Should(Succeed())
+
+		jobV1Rev := new(v1beta1.DefinitionRevision)
+		Eventually(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{Name: "job-v1.2.1", Namespace: namespace}, jobV1Rev)
+		}, 15*time.Second, time.Second).Should(BeNil())
 	})
 
 	AfterEach(func() {
@@ -166,14 +175,14 @@ var _ = Describe("Test application of the specified definition version", func() 
 				Namespace: namespace,
 			},
 			Spec: v1beta1.ApplicationSpec{
-				Components: []v1beta1.ApplicationComponent{
+				Components: []common.ApplicationComponent{
 					{
 						Name: comp1Name,
 						Type: "webservice",
 						Properties: util.Object2RawExtension(map[string]interface{}{
 							"image": "nginx",
 						}),
-						Traits: []v1beta1.ApplicationTrait{
+						Traits: []common.ApplicationTrait{
 							{
 								Type: "label",
 								Properties: util.Object2RawExtension(map[string]interface{}{
@@ -225,14 +234,14 @@ var _ = Describe("Test application of the specified definition version", func() 
 				Namespace: namespace,
 			},
 			Spec: v1beta1.ApplicationSpec{
-				Components: []v1beta1.ApplicationComponent{
+				Components: []common.ApplicationComponent{
 					{
 						Name: comp1Name,
 						Type: "webservice@v1",
 						Properties: util.Object2RawExtension(map[string]interface{}{
 							"image": "nginx",
 						}),
-						Traits: []v1beta1.ApplicationTrait{
+						Traits: []common.ApplicationTrait{
 							{
 								Type: "label@v1",
 								Properties: util.Object2RawExtension(map[string]interface{}{
@@ -258,7 +267,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 
 		By("Wait for dispatching v2 resources successfully")
 		Eventually(func() error {
-			requestReconcileNow(ctx, &app)
+			RequestReconcileNow(ctx, &app)
 			rt := &v1beta1.ResourceTracker{}
 			if err := k8sClient.Get(ctx, client.ObjectKey{Name: fmt.Sprintf("%s-v2-%s", appName, namespace)}, rt); err != nil {
 				return err
@@ -298,18 +307,49 @@ var _ = Describe("Test application of the specified definition version", func() 
 				Namespace: namespace,
 			},
 			Spec: v1beta1.ApplicationSpec{
-				Components: []v1beta1.ApplicationComponent{
+				Components: []common.ApplicationComponent{
 					{
 						Name: comp1Name,
 						Type: "webservice@v10",
 						Properties: util.Object2RawExtension(map[string]interface{}{
 							"image": "nginx",
+							"cmd":   []string{"sleep", "1000"},
 						}),
 					},
 				},
 			},
 		}
 		Expect(k8sClient.Patch(ctx, &app, client.Merge)).Should(HaveOccurred())
+	})
+
+	It("Test deploy application which specify the name of component", func() {
+		compName := "job"
+		app := v1beta1.Application{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-defrevision-app-with-job",
+				Namespace: namespace,
+			},
+			Spec: v1beta1.ApplicationSpec{
+				Components: []common.ApplicationComponent{
+					{
+						Name: compName,
+						Type: "job@v1.2.1",
+						Properties: util.Object2RawExtension(map[string]interface{}{
+							"image": "busybox",
+							"cmd":   []string{"sleep", "1000"},
+						}),
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, &app)).Should(Succeed())
+
+		By("Verify the workload(job) is created successfully")
+		busyBoxJob := &batchv1.Job{}
+		jobName := compName
+		Eventually(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{Name: jobName, Namespace: namespace}, busyBoxJob)
+		}, 30*time.Second, 3*time.Second).Should(Succeed())
 	})
 
 	It("Test deploy application which containing helm module", func() {
@@ -386,7 +426,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 				Namespace: namespace,
 			},
 			Spec: v1beta1.ApplicationSpec{
-				Components: []v1beta1.ApplicationComponent{
+				Components: []common.ApplicationComponent{
 					{
 						Name: compName,
 						Type: "helm-worker",
@@ -395,7 +435,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 								"tag": "5.1.2",
 							},
 						}),
-						Traits: []v1beta1.ApplicationTrait{
+						Traits: []common.ApplicationTrait{
 							{
 								Type: "label",
 								Properties: util.Object2RawExtension(map[string]interface{}{
@@ -435,7 +475,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 			}
 			By("Verify patch trait is applied")
 			templateLabels := deploy.GetLabels()
-			return templateLabels["hello"] != "world"
+			return templateLabels["hello"] == "world"
 		}, 120*time.Second, 10*time.Second).Should(BeTrue())
 
 		app = v1beta1.Application{
@@ -444,7 +484,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 				Namespace: namespace,
 			},
 			Spec: v1beta1.ApplicationSpec{
-				Components: []v1beta1.ApplicationComponent{
+				Components: []common.ApplicationComponent{
 					{
 						Name: compName,
 						Type: "helm-worker@v1",
@@ -545,14 +585,14 @@ var _ = Describe("Test application of the specified definition version", func() 
 				Namespace: namespace,
 			},
 			Spec: v1beta1.ApplicationSpec{
-				Components: []v1beta1.ApplicationComponent{
+				Components: []common.ApplicationComponent{
 					{
 						Name: compName,
 						Type: "kube-worker",
 						Properties: util.Object2RawExtension(map[string]interface{}{
 							"image": "busybox",
 						}),
-						Traits: []v1beta1.ApplicationTrait{
+						Traits: []common.ApplicationTrait{
 							{
 								Type: "label",
 								Properties: util.Object2RawExtension(map[string]interface{}{
@@ -590,14 +630,14 @@ var _ = Describe("Test application of the specified definition version", func() 
 				Namespace: namespace,
 			},
 			Spec: v1beta1.ApplicationSpec{
-				Components: []v1beta1.ApplicationComponent{
+				Components: []common.ApplicationComponent{
 					{
 						Name: compName,
 						Type: "kube-worker@v1",
 						Properties: util.Object2RawExtension(map[string]interface{}{
 							"image": "nginx",
 						}),
-						Traits: []v1beta1.ApplicationTrait{
+						Traits: []common.ApplicationTrait{
 							{
 								Type: "label",
 								Properties: util.Object2RawExtension(map[string]interface{}{
@@ -631,7 +671,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 				Namespace: namespace,
 			},
 			Spec: v1beta1.ApplicationSpec{
-				Components: []v1beta1.ApplicationComponent{
+				Components: []common.ApplicationComponent{
 					{
 						Name: compName,
 						Type: "kube-worker@a1",
@@ -668,7 +708,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 			if err != nil {
 				return err
 			}
-			exposeV2.Spec.Schematic.CUE.Template = exposeV2Templae
+			exposeV2.Spec.Schematic.CUE.Template = exposeV2Template
 			return k8sClient.Update(ctx, exposeV2)
 		}, 15*time.Second, time.Second).Should(BeNil())
 
@@ -683,7 +723,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 				Namespace: namespace,
 			},
 			Spec: v1beta1.ApplicationSpec{
-				Components: []v1beta1.ApplicationComponent{
+				Components: []common.ApplicationComponent{
 					{
 						Name: compName,
 						Type: "webservice@v1",
@@ -691,7 +731,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 							"image": "crccheck/hello-world",
 							"port":  8000,
 						}),
-						Traits: []v1beta1.ApplicationTrait{
+						Traits: []common.ApplicationTrait{
 							{
 								Type: "expose@v1",
 								Properties: util.Object2RawExtension(map[string]interface{}{
@@ -720,7 +760,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 		workloadLabel := webServiceDeploy.GetLabels()[oam.WorkloadTypeLabel]
 		Expect(workloadLabel).Should(Equal("webservice-v1"))
 
-		By("Verify the trait(service) is created successfully")
+		By("Verify the traPIt(service) is created successfully")
 		exposeSVC := &corev1.Service{}
 		Eventually(func() error {
 			return k8sClient.Get(ctx, client.ObjectKey{Name: compName, Namespace: namespace}, exposeSVC)
@@ -767,6 +807,32 @@ var workerWithNoTemplate = &v1beta1.ComponentDefinition{
 		Schematic: &common.Schematic{
 			CUE: &common.CUE{
 				Template: "",
+			},
+		},
+	},
+}
+
+var jobComponentDef = &v1beta1.ComponentDefinition{
+	TypeMeta: metav1.TypeMeta{
+		Kind:       "ComponentDefinition",
+		APIVersion: "core.oam.dev/v1beta1",
+	},
+	ObjectMeta: metav1.ObjectMeta{
+		Name: "job",
+		Annotations: map[string]string{
+			oam.AnnotationDefinitionRevisionName: "1.2.1",
+		},
+	},
+	Spec: v1beta1.ComponentDefinitionSpec{
+		Workload: common.WorkloadTypeDescriptor{
+			Definition: common.WorkloadGVK{
+				APIVersion: "batch/v1",
+				Kind:       "Job",
+			},
+		},
+		Schematic: &common.Schematic{
+			CUE: &common.CUE{
+				Template: workerV1Template,
 			},
 		},
 	},
@@ -898,9 +964,6 @@ var webServiceV2Template = `output: {
     spec: {
         selector: matchLabels: {
             "app.oam.dev/component": context.name
-            if parameter.addRevisionLabel {
-                "app.oam.dev/appRevision": context.appRevision
-            }
         }
         template: {
             metadata: labels: {
@@ -1094,7 +1157,7 @@ parameter: {
 }
 `
 
-var exposeV2Templae = `
+var exposeV2Template = `
 outputs: service: {
 	apiVersion: "v1"
 	kind:       "Service"
