@@ -117,7 +117,7 @@ var _ = Describe("rollout related e2e-test,Cloneset based app embed rollout test
 					{
 						Name: appName,
 						Type: compType,
-						Properties: runtime.RawExtension{
+						Properties: &runtime.RawExtension{
 							Raw: []byte(initialProperty),
 						},
 					},
@@ -154,6 +154,12 @@ var _ = Describe("rollout related e2e-test,Cloneset based app embed rollout test
 				app = v1beta1.Application{}
 				if err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: appName}, &app); err != nil {
 					return err
+				}
+				if app.Status.Rollout == nil {
+					return fmt.Errorf("application is under creating, app status rollout is nil, %v", app.Status)
+				}
+				if app.Status.Rollout.LastUpgradedTargetAppRevision != app.Status.LatestRevision.Name {
+					return fmt.Errorf("rollout controller haven't handle this change, targetRevision isn't right")
 				}
 				if app.Status.Rollout.RollingState != v1alpha1.RolloutSucceedState {
 					return fmt.Errorf("app status rollingStatus not succeed acctually %s", app.Status.Rollout.RollingState)
@@ -252,8 +258,7 @@ var _ = Describe("rollout related e2e-test,Cloneset based app embed rollout test
 		verifyRolloutSucceeded(utils.ConstructRevisionName(appName, 3), "3")
 	})
 
-	// TODO(@wangyikewxgm): pending this test as it's flaky, will fix it soon
-	PIt("Test application only upgrade batchPartition", func() {
+	It("Test application only upgrade batchPartition", func() {
 		plan := &v1alpha1.RolloutPlan{
 			RolloutStrategy: v1alpha1.IncreaseFirstRolloutStrategyType,
 			RolloutBatches: []v1alpha1.RolloutBatch{
@@ -494,7 +499,7 @@ var _ = Describe("rollout related e2e-test,Cloneset based app embed rollout test
 		appName = "app-rollout-5"
 		app := generateNewApp(appName, namespaceName, "clonesetservice", plan)
 		ingressProperties := `{"domain":"test-1.example.com","http":{"/":8080}}`
-		app.Spec.Components[0].Traits = []apicommon.ApplicationTrait{{Type: "ingress", Properties: runtime.RawExtension{Raw: []byte(ingressProperties)}}}
+		app.Spec.Components[0].Traits = []apicommon.ApplicationTrait{{Type: "ingress", Properties: &runtime.RawExtension{Raw: []byte(ingressProperties)}}}
 		Expect(k8sClient.Create(ctx, app)).Should(BeNil())
 		verifyRolloutSucceeded(utils.ConstructRevisionName(appName, 1), "1")
 		updateAppWithCpuAndPlan(app, "2", plan)
@@ -510,8 +515,7 @@ var _ = Describe("rollout related e2e-test,Cloneset based app embed rollout test
 		Expect(checkApp.Status.LatestRevision.Name).Should(BeEquivalentTo(utils.ConstructRevisionName(appName, 3)))
 	})
 
-	// TODO(@wangyikewxgm): pending this test as it's flaky, will fix it soon
-	PIt("Test rollout with another component only rollout first component", func() {
+	It("Test rollout with another component only rollout first component", func() {
 		plan := &v1alpha1.RolloutPlan{
 			RolloutStrategy: v1alpha1.IncreaseFirstRolloutStrategyType,
 			RolloutBatches: []v1alpha1.RolloutBatch{
@@ -529,7 +533,7 @@ var _ = Describe("rollout related e2e-test,Cloneset based app embed rollout test
 		annotherComp := apicommon.ApplicationComponent{
 			Name: "another-comp",
 			Type: "clonesetservice",
-			Properties: runtime.RawExtension{
+			Properties: &runtime.RawExtension{
 				Raw: []byte(initialProperty),
 			},
 		}

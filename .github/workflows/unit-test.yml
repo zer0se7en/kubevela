@@ -72,7 +72,7 @@ jobs:
           version: 3.1.0
           kubebuilderOnly: false
           kubernetesVersion: v1.21.2
-
+      
       - name: Run Make test
         run: make test
 
@@ -81,5 +81,5 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           file: ./coverage.txt
-          flags: unittests
+          flags: core-unittests
           name: codecov-umbrella

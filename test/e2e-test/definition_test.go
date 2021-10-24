@@ -65,7 +65,7 @@ var _ = Describe("ComponentDefinition Normal tests", func() {
 		It("Test componentDefinition which only set type field", func() {
 			workDef := &v1beta1.WorkloadDefinition{
 				TypeMeta: metav1.TypeMeta{
-					Kind:       "ComponentDefinition",
+					Kind:       "WorkloadDefinition",
 					APIVersion: "core.oam.dev/v1beta1",
 				},
 				ObjectMeta: metav1.ObjectMeta{
@@ -80,6 +80,10 @@ var _ = Describe("ComponentDefinition Normal tests", func() {
 			}
 			workDef.SetNamespace(namespace)
 			Expect(k8sClient.Create(ctx, workDef)).Should(BeNil())
+			getWd := new(v1beta1.WorkloadDefinition)
+			Eventually(func() error {
+				return k8sClient.Get(ctx, client.ObjectKey{Name: workDef.Name, Namespace: namespace}, getWd)
+			}, 15*time.Second, time.Second).Should(BeNil())
 
 			cd := webServiceWithNoTemplate.DeepCopy()
 			cd.Spec.Workload.Definition = common.WorkloadGVK{}
@@ -87,7 +91,10 @@ var _ = Describe("ComponentDefinition Normal tests", func() {
 			cd.SetNamespace(namespace)
 			cd.SetName("test-componentdef")
 			cd.Spec.Schematic.CUE.Template = webServiceV1Template
-			Expect(k8sClient.Create(ctx, cd)).Should(Succeed())
+
+			Eventually(func() error {
+				return k8sClient.Create(ctx, cd)
+			}, 5*time.Second, time.Second).Should(BeNil())
 
 			defRev := new(v1beta1.DefinitionRevision)
 			Eventually(func() error {

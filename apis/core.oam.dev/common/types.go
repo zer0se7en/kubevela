@@ -17,8 +17,13 @@ limitations under the License.
 package common
 
 import (
+	"encoding/json"
+
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	types "github.com/oam-dev/terraform-controller/api/types/crossplane-runtime"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 
@@ -107,8 +112,14 @@ type Terraform struct {
 
 	// Type specifies which Terraform configuration it is, HCL or JSON syntax
 	// +kubebuilder:default:=hcl
-	// +kubebuilder:validation:Enum:=hcl;json
+	// +kubebuilder:validation:Enum:=hcl;json;remote
 	Type string `json:"type,omitempty"`
+
+	// Path is the sub-directory of remote git repository. It's valid when remote is set
+	Path string `json:"path,omitempty"`
+
+	// ProviderReference specifies the reference to Provider
+	ProviderReference *types.Reference `json:"providerRef,omitempty"`
 }
 
 // A WorkloadTypeDescriptor refer to a Workload Type
@@ -191,7 +202,9 @@ const (
 	WorkflowStateTerminated WorkflowState = "terminated"
 	// WorkflowStateSuspended means workflow is suspended manually, and it can be resumed.
 	WorkflowStateSuspended WorkflowState = "suspended"
-	// WorkflowStateFinished means workflow is running successfully, all steps finished.
+	// WorkflowStateSucceeded means workflow is running successfully, all steps finished.
+	WorkflowStateSucceeded WorkflowState = "Succeeded"
+	// WorkflowStateFinished means workflow is end.
 	WorkflowStateFinished WorkflowState = "finished"
 	// WorkflowStateExecuting means workflow is still running or waiting some steps.
 	WorkflowStateExecuting WorkflowState = "executing"
@@ -243,6 +256,10 @@ type WorkflowStepStatus struct {
 	// A brief CamelCase message indicating details about why the workflowStep is in this state.
 	Reason   string          `json:"reason,omitempty"`
 	SubSteps *SubStepsStatus `json:"subSteps,omitempty"`
+	// FirstExecuteTime is the first time this step execution.
+	FirstExecuteTime metav1.Time `json:"firstExecuteTime,omitempty"`
+	// LastExecuteTime is the last time this step execution.
+	LastExecuteTime metav1.Time `json:"lastExecuteTime,omitempty"`
 }
 
 // WorkflowSubStepStatus record the status of a workflow step
@@ -267,7 +284,7 @@ type AppStatus struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	Rollout AppRolloutStatus `json:"rollout,omitempty"`
+	Rollout *AppRolloutStatus `json:"rollout,omitempty"`
 
 	Phase ApplicationPhase `json:"status,omitempty"`
 
@@ -298,9 +315,12 @@ type WorkflowStatus struct {
 
 	Suspend    bool `json:"suspend"`
 	Terminated bool `json:"terminated"`
+	Finished   bool `json:"finished"`
 
 	ContextBackend *corev1.ObjectReference `json:"contextBackend,omitempty"`
 	Steps          []WorkflowStepStatus    `json:"steps,omitempty"`
+
+	StartTime metav1.Time `json:"startTime,omitempty"`
 }
 
 // SubStepsStatus record the status of workflow steps.
@@ -369,7 +389,7 @@ type AppRolloutStatus struct {
 type ApplicationTrait struct {
 	Type string `json:"type"`
 	// +kubebuilder:pruning:PreserveUnknownFields
-	Properties runtime.RawExtension `json:"properties,omitempty"`
+	Properties *runtime.RawExtension `json:"properties,omitempty"`
 }
 
 // ApplicationComponent describe the component of application
@@ -379,10 +399,11 @@ type ApplicationComponent struct {
 	// ExternalRevision specified the component revisionName
 	ExternalRevision string `json:"externalRevision,omitempty"`
 	// +kubebuilder:pruning:PreserveUnknownFields
-	Properties runtime.RawExtension `json:"properties,omitempty"`
+	Properties *runtime.RawExtension `json:"properties,omitempty"`
 
-	Inputs  StepInputs  `json:"inputs,omitempty"`
-	Outputs StepOutputs `json:"outputs,omitempty"`
+	DependsOn []string    `json:"dependsOn,omitempty"`
+	Inputs    StepInputs  `json:"inputs,omitempty"`
+	Outputs   StepOutputs `json:"outputs,omitempty"`
 
 	// Traits define the trait of one component, the type must be array to keep the order.
 	Traits []ApplicationTrait `json:"traits,omitempty"`
@@ -450,4 +471,30 @@ type ClusterObjectReference struct {
 	Cluster                string              `json:"cluster,omitempty"`
 	Creator                ResourceCreatorRole `json:"creator,omitempty"`
 	corev1.ObjectReference `json:",inline"`
+}
+
+// RawExtensionPointer is the pointer of raw extension
+type RawExtensionPointer struct {
+	RawExtension *runtime.RawExtension
+}
+
+// MarshalJSON may get called on pointers or values, so implement MarshalJSON on value.
+// http://stackoverflow.com/questions/21390979/custom-marshaljson-never-gets-called-in-go
+func (re RawExtensionPointer) MarshalJSON() ([]byte, error) {
+	if re.RawExtension == nil {
+		return nil, nil
+	}
+	if re.RawExtension.Raw == nil {
+		// TODO: this is to support legacy behavior of JSONPrinter and YAMLPrinter, which
+		// expect to call json.Marshal on arbitrary versioned objects (even those not in
+		// the scheme). pkg/kubectl/resource#AsVersionedObjects and its interaction with
+		// kubectl get on objects not in the scheme needs to be updated to ensure that the
+		// objects that are not part of the scheme are correctly put into the right form.
+		if re.RawExtension.Object != nil {
+			return json.Marshal(re.RawExtension.Object)
+		}
+		return []byte("null"), nil
+	}
+	// TODO: Check whether ContentType is actually JSON before returning it.
+	return re.RawExtension.Raw, nil
 }

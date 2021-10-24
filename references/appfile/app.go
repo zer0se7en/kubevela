@@ -84,16 +84,6 @@ func LoadApplication(namespace, appName string, c common.Args) (*v1beta1.Applica
 	return app, nil
 }
 
-// Delete will delete an app along with it's appfile.
-func Delete(envName, appName string) error {
-	return GetStorage().Delete(envName, appName)
-}
-
-// Save will save appfile into default dir.
-func Save(app *api.Application, envName string) error {
-	return GetStorage().Save(app, envName)
-}
-
 // GetComponents will get oam components from Appfile.
 func GetComponents(app *v1beta1.Application) []string {
 	var components []string
@@ -118,7 +108,9 @@ func GetApplicationSettings(app *v1beta1.Application, componentName string) (str
 	for _, comp := range app.Spec.Components {
 		if comp.Name == componentName {
 			data := map[string]interface{}{}
-			_ = json.Unmarshal(comp.Properties.Raw, &data)
+			if comp.Properties != nil {
+				_ = json.Unmarshal(comp.Properties.Raw, &data)
+			}
 			return comp.Type, data
 		}
 	}

@@ -44,7 +44,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
-	"github.com/oam-dev/kubevela/references/apiserver/apis"
+	"github.com/oam-dev/kubevela/references/apis"
 	"github.com/oam-dev/kubevela/references/appfile"
 	"github.com/oam-dev/kubevela/references/appfile/api"
 	"github.com/oam-dev/kubevela/references/appfile/template"
@@ -209,9 +209,6 @@ func RetrieveApplicationStatusByName(ctx context.Context, c client.Reader, appli
 
 // DeleteApp will delete app including server side
 func (o *DeleteOptions) DeleteApp() (string, error) {
-	if err := appfile.Delete(o.Env.Name, o.AppName); err != nil && !os.IsNotExist(err) {
-		return "", err
-	}
 	ctx := context.Background()
 	var app = new(corev1beta1.Application)
 	err := o.Client.Get(ctx, client.ObjectKey{Name: o.AppName, Namespace: o.Env.Namespace}, app)
@@ -434,28 +431,15 @@ func (o *AppfileOptions) Export(filePath, namespace string, quiet bool, c common
 
 // Run starts an application according to Appfile
 func (o *AppfileOptions) Run(filePath, namespace string, c common.Args) error {
-	result, data, err := o.Export(filePath, namespace, false, c)
+	result, _, err := o.Export(filePath, namespace, false, c)
 	if err != nil {
 		return err
 	}
-	return o.BaseAppFileRun(result, data, c)
+	return o.BaseAppFileRun(result, c)
 }
 
 // BaseAppFileRun starts an application according to Appfile
-func (o *AppfileOptions) BaseAppFileRun(result *BuildResult, data []byte, args common.Args) error {
-	deployFilePath := ".vela/deploy.yaml"
-	o.IO.Infof("Writing deploy config to (%s)\n", deployFilePath)
-	if err := os.MkdirAll(filepath.Dir(deployFilePath), 0700); err != nil {
-		return err
-	}
-
-	if err := os.WriteFile(deployFilePath, data, 0600); err != nil {
-		return errors.Wrap(err, "write deploy config manifests failed")
-	}
-
-	if err := o.saveToAppDir(result.appFile); err != nil {
-		return errors.Wrap(err, "save to app dir failed")
-	}
+func (o *AppfileOptions) BaseAppFileRun(result *BuildResult, args common.Args) error {
 
 	kubernetesComponent, err := appfile.ApplyTerraform(result.application, o.Kubecli, o.IO, o.Env.Namespace, args)
 	if err != nil {
@@ -465,11 +449,6 @@ func (o *AppfileOptions) BaseAppFileRun(result *BuildResult, data []byte, args c
 
 	o.IO.Infof("\nApplying application ...\n")
 	return o.ApplyApp(result.application, result.scopes)
-}
-
-func (o *AppfileOptions) saveToAppDir(f *api.AppFile) error {
-	app := &api.Application{AppFile: f}
-	return appfile.Save(app, o.Env.Name)
 }
 
 // ApplyApp applys config resources for the app.

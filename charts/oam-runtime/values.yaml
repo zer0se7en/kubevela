@@ -68,13 +68,14 @@ admissionWebhooks:
   patch:
     enabled: true
     image:
-      repository: wonderflow/kube-webhook-certgen
-      tag: v2.1
+      repository: oamdev/kube-webhook-certgen
+      tag: v2.3
       pullPolicy: IfNotPresent
     affinity: {}
     tolerations: []
   certManager:
     enabled: false
+    revisionHistoryLimit: 3
   # If autoGenWorkloadDefinition is true, webhook will auto generated workloadDefinition which componentDefinition refers to
   autoGenWorkloadDefinition: true
 

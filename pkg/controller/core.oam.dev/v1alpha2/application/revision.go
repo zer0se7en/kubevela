@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	ktypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -150,7 +151,7 @@ func (h *AppHandler) PrepareCurrentAppRevision(ctx context.Context, af *appfile.
 	return nil
 }
 
-// gatherRevisionSpec will gather all revision spec withouth metadata and rendered result.
+// gatherRevisionSpec will gather all revision spec without metadata and rendered result.
 // the gathered Revision spec will be enough to calculate the hash and compare with the old revision
 func (h *AppHandler) gatherRevisionSpec(af *appfile.Appfile) (*v1beta1.ApplicationRevision, string, error) {
 	copiedApp := h.app.DeepCopy()
@@ -581,6 +582,27 @@ func ComputeComponentRevisionHash(comp *types.ComponentManifest) (string, error)
 	return utils.ComputeSpecHash(&compRevisionHash)
 }
 
+// createOrGetResourceTracker create or get a resource tracker to manage all componentRevisions
+func (h *AppHandler) createOrGetResourceTracker(ctx context.Context) (*v1beta1.ResourceTracker, error) {
+	rt := &v1beta1.ResourceTracker{}
+	rtName := h.app.Name + "-" + h.app.Namespace
+	if err := h.r.Get(ctx, ktypes.NamespacedName{Name: rtName}, rt); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		rt.SetName(rtName)
+		rt.SetLabels(map[string]string{
+			oam.LabelAppName:      h.app.Name,
+			oam.LabelAppNamespace: h.app.Namespace,
+		})
+		rt.SetAnnotations(map[string]string{oam.AnnotationResourceTrackerLifeLong: "true"})
+		if err = h.r.Create(ctx, rt); err != nil {
+			return nil, err
+		}
+	}
+	return rt, nil
+}
+
 // createControllerRevision records snapshot of a component
 func (h *AppHandler) createControllerRevision(ctx context.Context, cm *types.ComponentManifest) error {
 	comp, err := componentManifest2Component(cm)
@@ -588,6 +610,10 @@ func (h *AppHandler) createControllerRevision(ctx context.Context, cm *types.Com
 		return err
 	}
 	revision, _ := utils.ExtractRevision(cm.RevisionName)
+	rt, err := h.createOrGetResourceTracker(ctx)
+	if err != nil {
+		return err
+	}
 	cr := &appsv1.ControllerRevision{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      cm.RevisionName,
@@ -595,9 +621,9 @@ func (h *AppHandler) createControllerRevision(ctx context.Context, cm *types.Com
 			OwnerReferences: []metav1.OwnerReference{
 				{
 					APIVersion: v1beta1.SchemeGroupVersion.String(),
-					Kind:       v1beta1.ApplicationKind,
-					Name:       h.app.Name,
-					UID:        h.app.UID,
+					Kind:       v1beta1.ResourceTrackerKind,
+					Name:       rt.GetName(),
+					UID:        rt.GetUID(),
 					Controller: pointer.BoolPtr(true),
 				},
 			},
@@ -607,7 +633,7 @@ func (h *AppHandler) createControllerRevision(ctx context.Context, cm *types.Com
 			},
 		},
 		Revision: int64(revision),
-		Data:     util.Object2RawExtension(comp),
+		Data:     *util.Object2RawExtension(comp),
 	}
 	return h.r.Create(ctx, cr)
 }
@@ -625,15 +651,15 @@ func componentManifest2Component(cm *types.ComponentManifest) (*v1alpha2.Compone
 		wl = cm.StandardWorkload.DeepCopy()
 		util.RemoveLabels(wl, []string{oam.LabelAppRevision})
 	}
-	component.Spec.Workload = util.Object2RawExtension(wl)
+	component.Spec.Workload = *util.Object2RawExtension(wl)
 	if len(cm.PackagedWorkloadResources) > 0 {
 		helm := &common.Helm{}
 		for _, helmResource := range cm.PackagedWorkloadResources {
 			if helmResource.GetKind() == helmapi.HelmReleaseGVK.Kind {
-				helm.Release = util.Object2RawExtension(helmResource)
+				helm.Release = *util.Object2RawExtension(helmResource)
 			}
 			if helmResource.GetKind() == helmapi.HelmRepositoryGVK.Kind {
-				helm.Repository = util.Object2RawExtension(helmResource)
+				helm.Repository = *util.Object2RawExtension(helmResource)
 			}
 		}
 		component.Spec.Helm = helm
@@ -756,6 +782,9 @@ func gatherUsingAppRevision(ctx context.Context, h *AppHandler) (map[string]bool
 		return nil, err
 	}
 	for _, rt := range rtList.Items {
+		if dispatch.IsLifeLongResourceTracker(rt) {
+			continue
+		}
 		appRev := dispatch.ExtractAppRevisionName(rt.Name, ns)
 		usingRevision[appRev] = true
 	}
@@ -816,6 +845,64 @@ func (h historiesByRevision) Less(i, j int) bool {
 }
 
 func cleanUpComponentRevision(ctx context.Context, h *AppHandler) error {
+	if appWillRollout(h.app) {
+		return cleanUpRollOutComponentRevision(ctx, h)
+	}
+	return cleanUpWorkflowComponentRevision(ctx, h)
+}
+
+func cleanUpWorkflowComponentRevision(ctx context.Context, h *AppHandler) error {
+	// collect component revision in use
+	compRevisionInUse := map[string]map[string]struct{}{}
+	for _, resource := range h.app.Status.AppliedResources {
+		compName := resource.Name
+		ns := resource.Namespace
+		r := &unstructured.Unstructured{}
+		r.GetObjectKind().SetGroupVersionKind(resource.GroupVersionKind())
+		err := h.r.Get(ctx, ktypes.NamespacedName{Name: compName, Namespace: ns}, r)
+		if err != nil {
+			return err
+		}
+		if compRevisionInUse[compName] == nil {
+			compRevisionInUse[compName] = map[string]struct{}{}
+		}
+		compRevision, ok := r.GetLabels()[oam.LabelAppComponentRevision]
+		if ok {
+			compRevisionInUse[compName][compRevision] = struct{}{}
+		}
+	}
+
+	for _, curComp := range h.app.Status.AppliedResources {
+		crList := &appsv1.ControllerRevisionList{}
+		listOpts := []client.ListOption{client.MatchingLabels{
+			oam.LabelControllerRevisionComponent: curComp.Name,
+		}, client.InNamespace(h.app.Namespace)}
+		if err := h.r.List(ctx, crList, listOpts...); err != nil {
+			return err
+		}
+		needKill := len(crList.Items) - h.r.appRevisionLimit - len(compRevisionInUse[curComp.Name])
+		if needKill < 1 {
+			continue
+		}
+		sortedRevision := crList.Items
+		sort.Sort(historiesByComponentRevision(sortedRevision))
+		for _, rev := range sortedRevision {
+			if needKill <= 0 {
+				break
+			}
+			if _, inUse := compRevisionInUse[curComp.Name][rev.Name]; inUse {
+				continue
+			}
+			if err := h.r.Delete(ctx, rev.DeepCopy()); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+			needKill--
+		}
+	}
+	return nil
+}
+
+func cleanUpRollOutComponentRevision(ctx context.Context, h *AppHandler) error {
 	appRevInUse, err := gatherUsingAppRevision(ctx, h)
 	if err != nil {
 		return err

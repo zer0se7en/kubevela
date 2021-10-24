@@ -26,7 +26,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/oam-dev/kubevela/pkg/oam/testutil"
+	"k8s.io/utils/pointer"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -52,8 +52,10 @@ import (
 	velatypes "github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/controller/utils"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	"github.com/oam-dev/kubevela/pkg/oam/testutil"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	common2 "github.com/oam-dev/kubevela/pkg/utils/common"
+	wfTypes "github.com/oam-dev/kubevela/pkg/workflow/types"
 )
 
 // TODO: Refactor the tests to not copy and paste duplicated code 10 times
@@ -73,7 +75,7 @@ var _ = Describe("Test Application Controller", func() {
 				{
 					Name:       "myweb1",
 					Type:       "worker",
-					Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox","config":"myconfig"}`)},
+					Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox","config":"myconfig"}`)},
 				},
 			},
 		},
@@ -91,7 +93,7 @@ var _ = Describe("Test Application Controller", func() {
 				{
 					Name:       "myweb2",
 					Type:       "worker",
-					Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+					Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
 				},
 			},
 		},
@@ -103,7 +105,7 @@ var _ = Describe("Test Application Controller", func() {
 
 	appFailRender := appwithNoTrait.DeepCopy()
 	appFailRender.SetName("app-fail-to-render")
-	appFailRender.Spec.Components[0].Properties = runtime.RawExtension{
+	appFailRender.Spec.Components[0].Properties = &runtime.RawExtension{
 		Raw: []byte(`{"cmd1":["sleep","1000"],"image1":"busybox"}`),
 	}
 
@@ -120,11 +122,11 @@ var _ = Describe("Test Application Controller", func() {
 				{
 					Name:       "myweb",
 					Type:       "worker-import",
-					Properties: runtime.RawExtension{Raw: []byte("{\"cmd\":[\"sleep\",\"1000\"],\"image\":\"busybox\"}")},
+					Properties: &runtime.RawExtension{Raw: []byte("{\"cmd\":[\"sleep\",\"1000\"],\"image\":\"busybox\"}")},
 					Traits: []common.ApplicationTrait{
 						{
 							Type:       "ingress-import",
-							Properties: runtime.RawExtension{Raw: []byte("{\"http\":{\"/\":80},\"domain\":\"abc.com\"}")},
+							Properties: &runtime.RawExtension{Raw: []byte("{\"http\":{\"/\":80},\"domain\":\"abc.com\"}")},
 						},
 					},
 				},
@@ -176,7 +178,7 @@ var _ = Describe("Test Application Controller", func() {
 	appWithTrait.Spec.Components[0].Traits = []common.ApplicationTrait{
 		{
 			Type:       "scaler",
-			Properties: runtime.RawExtension{Raw: []byte(`{"replicas":2}`)},
+			Properties: &runtime.RawExtension{Raw: []byte(`{"replicas":2}`)},
 		},
 	}
 	appWithTrait.Spec.Components[0].Name = "myweb3"
@@ -220,7 +222,7 @@ var _ = Describe("Test Application Controller", func() {
 	appWithTwoComp.Spec.Components = append(appWithTwoComp.Spec.Components, common.ApplicationComponent{
 		Name:       "myweb6",
 		Type:       "worker",
-		Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox2","config":"myconfig"}`)},
+		Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox2","config":"myconfig"}`)},
 		Scopes:     map[string]string{"healthscopes.core.oam.dev": "app-with-two-comp-default-health"},
 	})
 
@@ -457,7 +459,7 @@ var _ = Describe("Test Application Controller", func() {
 		appWithComposedWorkload.Spec.Components[0].Traits = []common.ApplicationTrait{
 			{
 				Type:       "scaler",
-				Properties: runtime.RawExtension{Raw: []byte(`{"replicas":2}`)},
+				Properties: &runtime.RawExtension{Raw: []byte(`{"replicas":2}`)},
 			},
 		}
 		appWithComposedWorkload.Spec.Components[0].Name = compName
@@ -702,13 +704,13 @@ var _ = Describe("Test Application Controller", func() {
 		curApp.Spec.Components[0] = common.ApplicationComponent{
 			Name:       "myweb5",
 			Type:       "worker",
-			Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox3"}`)},
+			Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox3"}`)},
 			Scopes:     map[string]string{"healthscopes.core.oam.dev": "app-with-two-comp-default-health"},
 		}
 		curApp.Spec.Components[1] = common.ApplicationComponent{
 			Name:       "myweb7",
 			Type:       "worker",
-			Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+			Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
 			Scopes:     map[string]string{"healthscopes.core.oam.dev": "app-with-two-comp-default-health"},
 		}
 		Expect(k8sClient.Update(ctx, curApp)).Should(BeNil())
@@ -1029,9 +1031,9 @@ var _ = Describe("Test Application Controller", func() {
 		app := appWithTraitHealthStatus.DeepCopy()
 		app.Spec.Components[0].Name = compName
 		app.Spec.Components[0].Type = "nworker"
-		app.Spec.Components[0].Properties = runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox3","lives":"3","enemies":"alien"}`)}
+		app.Spec.Components[0].Properties = &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox3","lives":"3","enemies":"alien"}`)}
 		app.Spec.Components[0].Traits[0].Type = "ingress"
-		app.Spec.Components[0].Traits[0].Properties = runtime.RawExtension{Raw: []byte(`{"domain":"example.com","http":{"/":80}}`)}
+		app.Spec.Components[0].Traits[0].Properties = &runtime.RawExtension{Raw: []byte(`{"domain":"example.com","http":{"/":80}}`)}
 
 		expDeployment.Name = app.Name
 		expDeployment.Namespace = ns.Name
@@ -1098,7 +1100,7 @@ var _ = Describe("Test Application Controller", func() {
 				},
 			},
 			"spec": map[string]interface{}{
-				"clusterIP": "10.0.0.4",
+				"clusterIP": "10.0.0.64",
 				"ports": []interface{}{
 					map[string]interface{}{
 						"port": 80,
@@ -1154,7 +1156,7 @@ var _ = Describe("Test Application Controller", func() {
 					{
 						Type:    "ingress",
 						Healthy: true,
-						Message: "type: ClusterIP,\t clusterIP:10.0.0.4,\t ports:80,\t domainexample.com",
+						Message: "type: ClusterIP,\t clusterIP:10.0.0.64,\t ports:80,\t domainexample.com",
 					},
 				},
 			},
@@ -1167,7 +1169,7 @@ var _ = Describe("Test Application Controller", func() {
 		appRefertoWd.Spec.Components[0] = common.ApplicationComponent{
 			Name:       "mytask",
 			Type:       "task",
-			Properties: runtime.RawExtension{Raw: []byte(`{"image":"busybox", "cmd":["sleep","1000"]}`)},
+			Properties: &runtime.RawExtension{Raw: []byte(`{"image":"busybox", "cmd":["sleep","1000"]}`)},
 		}
 		ns := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1217,7 +1219,7 @@ var _ = Describe("Test Application Controller", func() {
 		appMix.Spec.Components[1] = common.ApplicationComponent{
 			Name:       "mytask",
 			Type:       "task",
-			Properties: runtime.RawExtension{Raw: []byte(`{"image":"busybox", "cmd":["sleep","1000"]}`)},
+			Properties: &runtime.RawExtension{Raw: []byte(`{"image":"busybox", "cmd":["sleep","1000"]}`)},
 		}
 		ns := &corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1438,11 +1440,10 @@ var _ = Describe("Test Application Controller", func() {
 					{
 						Name:       "myweb1",
 						Type:       "worker",
-						Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
 						Traits: []common.ApplicationTrait{
 							{
-								Type:       "rollout",
-								Properties: runtime.RawExtension{Raw: []byte(`{}`)},
+								Type: "rollout",
 							},
 						},
 					},
@@ -1463,8 +1464,9 @@ var _ = Describe("Test Application Controller", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "myweb1", Namespace: ns.Name}, deploy)).Should(util.NotFoundMatcher{})
 
 		By("update component targetComponentRev will change")
-		checkApp.Spec.Components[0].Properties = runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","2000"],"image":"nginx"}`)}
+		checkApp.Spec.Components[0].Properties = &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","2000"],"image":"nginx"}`)}
 		Expect(k8sClient.Update(ctx, checkApp)).Should(BeNil())
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		checkApp = &v1beta1.Application{}
 		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
@@ -1478,8 +1480,9 @@ var _ = Describe("Test Application Controller", func() {
 
 		By("check update rollout trait won't generate new appRevision")
 		appRevName := checkApp.Status.LatestRevision.Name
-		checkApp.Spec.Components[0].Traits[0].Properties.Raw = []byte(`{"targetRevision":"myweb1-v3"}`)
+		checkApp.Spec.Components[0].Traits[0].Properties = &runtime.RawExtension{Raw: []byte(`{"targetRevision":"myweb1-v3"}`)}
 		Expect(k8sClient.Update(ctx, checkApp)).Should(BeNil())
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		checkApp = &v1beta1.Application{}
 		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
@@ -1518,11 +1521,10 @@ var _ = Describe("Test Application Controller", func() {
 						Name:             "myweb1",
 						Type:             "worker",
 						ExternalRevision: externalRevision,
-						Properties:       runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+						Properties:       &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
 						Traits: []common.ApplicationTrait{
 							{
-								Type:       "rollout",
-								Properties: runtime.RawExtension{Raw: []byte(`{}`)},
+								Type: "rollout",
 							},
 						},
 					},
@@ -1534,6 +1536,7 @@ var _ = Describe("Test Application Controller", func() {
 		// first reconcile handle finalizer
 		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		// second reconcile apply all resources
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		checkApp := &v1beta1.Application{}
 		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
@@ -1570,7 +1573,7 @@ var _ = Describe("Test Application Controller", func() {
 					{
 						Name:       "myweb1",
 						Type:       "worker-revision",
-						Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
 					},
 				},
 			},
@@ -1580,6 +1583,7 @@ var _ = Describe("Test Application Controller", func() {
 		// first reconcile handle finalizer
 		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		// second reconcile apply all resources
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		checkApp := &v1beta1.Application{}
 		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
@@ -1619,7 +1623,7 @@ var _ = Describe("Test Application Controller", func() {
 						Name:             "myweb1",
 						Type:             "worker-revision",
 						ExternalRevision: externalRevision,
-						Properties:       runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+						Properties:       &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
 					},
 				},
 			},
@@ -1629,6 +1633,7 @@ var _ = Describe("Test Application Controller", func() {
 		// first reconcile handle finalizer
 		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		// second reconcile apply all resources
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		checkApp := &v1beta1.Application{}
 		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
@@ -1676,11 +1681,10 @@ var _ = Describe("Test Application Controller", func() {
 					{
 						Name:       "myweb1",
 						Type:       "worker",
-						Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
 						Traits: []common.ApplicationTrait{
 							{
-								Type:       "rollout",
-								Properties: runtime.RawExtension{Raw: []byte(`{}`)},
+								Type: "rollout",
 							},
 						},
 					},
@@ -1690,7 +1694,7 @@ var _ = Describe("Test Application Controller", func() {
 						{
 							Name:       "apply",
 							Type:       "apply-component",
-							Properties: runtime.RawExtension{Raw: []byte(`{"component" : "myweb1"}`)},
+							Properties: &runtime.RawExtension{Raw: []byte(`{"component" : "myweb1"}`)},
 						},
 					},
 				},
@@ -1742,7 +1746,7 @@ var _ = Describe("Test Application Controller", func() {
 					{
 						Name:       "myweb1",
 						Type:       "worker-with-health",
-						Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep"],"image":"busybox"}`)},
 						Inputs: common.StepInputs{
 							{
 								From:         "message",
@@ -1752,14 +1756,19 @@ var _ = Describe("Test Application Controller", func() {
 								From:         "message",
 								ParameterKey: "properties.lives",
 							},
+							{
+								From:         "sleepTime",
+								ParameterKey: "properties.cmd[1]",
+							},
 						},
 					},
 					{
 						Name:       "myweb2",
 						Type:       "worker-with-health",
-						Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox","lives": "i am lives","enemies": "empty"}`)},
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox","lives": "i am lives","enemies": "empty"}`)},
 						Outputs: common.StepOutputs{
 							{Name: "message", ValueFrom: "output.status.conditions[0].message+\",\"+outputs.gameconfig.data.lives"},
+							{Name: "sleepTime", ValueFrom: "\"100\""},
 						},
 					},
 				},
@@ -1768,6 +1777,90 @@ var _ = Describe("Test Application Controller", func() {
 
 		Expect(k8sClient.Create(context.Background(), appwithInputOutput)).Should(BeNil())
 		appKey := types.NamespacedName{Namespace: ns.Name, Name: appwithInputOutput.Name}
+		testutil.ReconcileOnceAfterFinalizer(reconciler, reconcile.Request{NamespacedName: appKey})
+
+		expDeployment := &v1.Deployment{}
+		web1Key := types.NamespacedName{Namespace: ns.Name, Name: "myweb1"}
+		web2Key := types.NamespacedName{Namespace: ns.Name, Name: "myweb2"}
+		Expect(k8sClient.Get(ctx, web1Key, expDeployment)).Should(util.NotFoundMatcher{})
+
+		checkApp := &v1beta1.Application{}
+		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
+		Expect(k8sClient.Get(ctx, web2Key, expDeployment)).Should(BeNil())
+
+		expDeployment.Status.Replicas = 1
+		expDeployment.Status.ReadyReplicas = 1
+		expDeployment.Status.Conditions = []v1.DeploymentCondition{{
+			Message: "hello",
+		}}
+		Expect(k8sClient.Status().Update(ctx, expDeployment)).Should(BeNil())
+
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+		expDeployment = &v1.Deployment{}
+		Expect(k8sClient.Get(ctx, web1Key, expDeployment)).Should(BeNil())
+		expDeployment.Status.Replicas = 1
+		expDeployment.Status.ReadyReplicas = 1
+		Expect(k8sClient.Status().Update(ctx, expDeployment)).Should(BeNil())
+		Expect(expDeployment.Spec.Template.Spec.Containers[0].Command).Should(BeEquivalentTo([]string{"sleep", "100"}))
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+		checkApp = &v1beta1.Application{}
+		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
+		Expect(checkApp.Status.Phase).Should(BeEquivalentTo(common.ApplicationRunning))
+
+		checkCM := &corev1.ConfigMap{}
+		cmKey := types.NamespacedName{
+			Name:      "myweb1game-config",
+			Namespace: ns.Name,
+		}
+		Expect(k8sClient.Get(ctx, cmKey, checkCM)).Should(BeNil())
+		Expect(checkCM.Data["enemies"]).Should(BeEquivalentTo("hello,i am lives"))
+		Expect(checkCM.Data["lives"]).Should(BeEquivalentTo("hello,i am lives"))
+	})
+
+	It("application with depends on run as dag workflow", func() {
+		ns := corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "app-with-depends-on",
+			},
+		}
+		Expect(k8sClient.Create(ctx, &ns)).Should(BeNil())
+		healthComponentDef := &v1beta1.ComponentDefinition{}
+		hCDefJson, _ := yaml.YAMLToJSON([]byte(cdDefWithHealthStatusYaml))
+		Expect(json.Unmarshal(hCDefJson, healthComponentDef)).Should(BeNil())
+		healthComponentDef.Name = "worker-with-health"
+		healthComponentDef.Namespace = "app-with-depends-on"
+		Expect(k8sClient.Create(ctx, healthComponentDef)).Should(BeNil())
+		appwithDependsOn := &v1beta1.Application{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "Application",
+				APIVersion: "core.oam.dev/v1beta1",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "app-with-depends-on",
+				Namespace: "app-with-depends-on",
+			},
+			Spec: v1beta1.ApplicationSpec{
+				Components: []common.ApplicationComponent{
+					{
+						Name:       "myweb1",
+						Type:       "worker",
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+						DependsOn:  []string{"myweb2"},
+					},
+					{
+						Name:       "myweb2",
+						Type:       "worker-with-health",
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox","lives": "i am lives","enemies": "empty"}`)},
+					},
+				},
+			},
+		}
+
+		Expect(k8sClient.Create(context.Background(), appwithDependsOn)).Should(BeNil())
+		appKey := types.NamespacedName{Namespace: ns.Name, Name: appwithDependsOn.Name}
 		testutil.ReconcileOnceAfterFinalizer(reconciler, reconcile.Request{NamespacedName: appKey})
 
 		expDeployment := &v1.Deployment{}
@@ -1797,6 +1890,96 @@ var _ = Describe("Test Application Controller", func() {
 
 		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+		checkApp = &v1beta1.Application{}
+		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
+		Expect(checkApp.Status.Phase).Should(BeEquivalentTo(common.ApplicationRunning))
+	})
+
+	It("application with input/output and depends on", func() {
+		ns := corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "app-with-input-output-depends-on",
+			},
+		}
+		Expect(k8sClient.Create(ctx, &ns)).Should(BeNil())
+		healthComponentDef := &v1beta1.ComponentDefinition{}
+		hCDefJson, _ := yaml.YAMLToJSON([]byte(cdDefWithHealthStatusYaml))
+		Expect(json.Unmarshal(hCDefJson, healthComponentDef)).Should(BeNil())
+		healthComponentDef.Name = "worker-with-health"
+		healthComponentDef.Namespace = "app-with-input-output-depends-on"
+		Expect(k8sClient.Create(ctx, healthComponentDef)).Should(BeNil())
+		appwithInputOutputDependsOn := &v1beta1.Application{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "Application",
+				APIVersion: "core.oam.dev/v1beta1",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "app-with-input-output-depends-on",
+				Namespace: "app-with-input-output-depends-on",
+			},
+			Spec: v1beta1.ApplicationSpec{
+				Components: []common.ApplicationComponent{
+					{
+						Name:       "myweb1",
+						Type:       "worker-with-health",
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+						DependsOn:  []string{"myweb2"},
+						Inputs: common.StepInputs{
+							{
+								From:         "message",
+								ParameterKey: "properties.enemies",
+							},
+							{
+								From:         "message",
+								ParameterKey: "properties.lives",
+							},
+						},
+					},
+					{
+						Name:       "myweb2",
+						Type:       "worker-with-health",
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox","lives": "i am lives","enemies": "empty"}`)},
+						Outputs: common.StepOutputs{
+							{Name: "message", ValueFrom: "output.status.conditions[0].message+\",\"+outputs.gameconfig.data.lives"},
+						},
+					},
+				},
+			},
+		}
+
+		Expect(k8sClient.Create(context.Background(), appwithInputOutputDependsOn)).Should(BeNil())
+		appKey := types.NamespacedName{Namespace: ns.Name, Name: appwithInputOutputDependsOn.Name}
+		testutil.ReconcileOnceAfterFinalizer(reconciler, reconcile.Request{NamespacedName: appKey})
+
+		expDeployment := &v1.Deployment{}
+		web1Key := types.NamespacedName{Namespace: ns.Name, Name: "myweb1"}
+		web2Key := types.NamespacedName{Namespace: ns.Name, Name: "myweb2"}
+		Expect(k8sClient.Get(ctx, web1Key, expDeployment)).Should(util.NotFoundMatcher{})
+
+		checkApp := &v1beta1.Application{}
+		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
+		Expect(k8sClient.Get(ctx, web2Key, expDeployment)).Should(BeNil())
+
+		expDeployment.Status.Replicas = 1
+		expDeployment.Status.ReadyReplicas = 1
+		expDeployment.Status.Conditions = []v1.DeploymentCondition{{
+			Message: "hello",
+		}}
+		Expect(k8sClient.Status().Update(ctx, expDeployment)).Should(BeNil())
+
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+
+		expDeployment = &v1.Deployment{}
+		Expect(k8sClient.Get(ctx, web1Key, expDeployment)).Should(BeNil())
+		expDeployment.Status.Replicas = 1
+		expDeployment.Status.ReadyReplicas = 1
+		Expect(k8sClient.Status().Update(ctx, expDeployment)).Should(BeNil())
+
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
+		testutil.ReconcileOnce(reconciler, reconcile.Request{NamespacedName: appKey})
 		checkApp = &v1beta1.Application{}
 		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
 		Expect(checkApp.Status.Phase).Should(BeEquivalentTo(common.ApplicationRunning))
@@ -1810,7 +1993,8 @@ var _ = Describe("Test Application Controller", func() {
 		Expect(checkCM.Data["enemies"]).Should(BeEquivalentTo("hello,i am lives"))
 		Expect(checkCM.Data["lives"]).Should(BeEquivalentTo("hello,i am lives"))
 	})
-	It("test applicaiton applied resource in workflow step status", func() {
+
+	It("test application applied resource in workflow step status", func() {
 		ns := corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "app-applied-resources",
@@ -1839,12 +2023,12 @@ var _ = Describe("Test Application Controller", func() {
 					{
 						Name:       "myweb1",
 						Type:       "worker-with-health",
-						Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox","lives": "i am lives","enemies": "empty"}`)},
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox","lives": "i am lives","enemies": "empty"}`)},
 					},
 					{
 						Name:       "myweb2",
 						Type:       "worker-with-health",
-						Properties: runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox","lives": "i am lives","enemies": "empty"}`)},
+						Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox","lives": "i am lives","enemies": "empty"}`)},
 					},
 				},
 			},
@@ -1895,6 +2079,62 @@ var _ = Describe("Test Application Controller", func() {
 		}))
 	})
 
+	It("app record execution state with controllerRevision", func() {
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "vela-test-app-trace",
+			},
+		}
+
+		app := appwithNoTrait.DeepCopy()
+		app.Name = "vela-test-app-trace"
+		app.SetNamespace(ns.Name)
+		app.Annotations = map[string]string{wfTypes.AnnotationPublishVersion: "v134"}
+		Expect(k8sClient.Create(ctx, ns)).Should(BeNil())
+		Expect(k8sClient.Create(ctx, app)).Should(BeNil())
+
+		appKey := client.ObjectKey{
+			Name:      app.Name,
+			Namespace: app.Namespace,
+		}
+
+		testutil.ReconcileOnceAfterFinalizer(reconciler, reconcile.Request{NamespacedName: appKey})
+		checkApp := &v1beta1.Application{}
+		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
+		Expect(checkApp.Status.Phase).Should(BeEquivalentTo(common.ApplicationRunning))
+		recorder := &v1.ControllerRevision{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      fmt.Sprintf("record-%s-v134", app.Name),
+			Namespace: app.Namespace,
+		}, recorder)).Should(BeNil())
+
+		web := &v1.Deployment{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      "myweb2",
+			Namespace: app.Namespace,
+		}, web)).Should(BeNil())
+		web.Spec.Replicas = pointer.Int32(0)
+		Expect(k8sClient.Update(ctx, web)).Should(BeNil())
+
+		checkApp.Annotations[wfTypes.AnnotationPublishVersion] = "v135"
+		Expect(k8sClient.Update(ctx, checkApp)).Should(BeNil())
+		testutil.ReconcileOnceAfterFinalizer(reconciler, reconcile.Request{NamespacedName: appKey})
+		checkApp = &v1beta1.Application{}
+		Expect(k8sClient.Get(ctx, appKey, checkApp)).Should(BeNil())
+		Expect(checkApp.Status.Phase).Should(BeEquivalentTo(common.ApplicationRunning))
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      fmt.Sprintf("record-%s-v135", app.Name),
+			Namespace: app.Namespace,
+		}, recorder)).Should(BeNil())
+
+		checkWeb := &v1.Deployment{}
+		Expect(k8sClient.Get(ctx, client.ObjectKey{
+			Name:      "myweb2",
+			Namespace: app.Namespace,
+		}, checkWeb)).Should(BeNil())
+		Expect(*(checkWeb.Spec.Replicas)).Should(BeEquivalentTo(int32(0)))
+
+	})
 })
 
 const (

@@ -122,8 +122,8 @@ func (t *TaskLoader) makeTaskGenerator(templ string) (wfTypes.TaskGenerator, err
 
 		params := map[string]interface{}{}
 
-		if len(wfStep.Properties.Raw) > 0 {
-			bt, err := wfStep.Properties.MarshalJSON()
+		if wfStep.Properties != nil && len(wfStep.Properties.Raw) > 0 {
+			bt, err := common.RawExtensionPointer{RawExtension: wfStep.Properties}.MarshalJSON()
 			if err != nil {
 				return nil, err
 			}
@@ -135,6 +135,11 @@ func (t *TaskLoader) makeTaskGenerator(templ string) (wfTypes.TaskGenerator, err
 		tRunner := new(taskRunner)
 		tRunner.name = wfStep.Name
 		tRunner.checkPending = func(ctx wfContext.Context) bool {
+			for _, depend := range wfStep.DependsOn {
+				if _, err := ctx.GetVar(hooks.ReadyComponent, depend); err != nil {
+					return true
+				}
+			}
 			for _, input := range wfStep.Inputs {
 				if _, err := ctx.GetVar(strings.Split(input.From, ".")...); err != nil {
 					return true
@@ -153,7 +158,7 @@ func (t *TaskLoader) makeTaskGenerator(templ string) (wfTypes.TaskGenerator, err
 
 			for _, hook := range options.PreStartHooks {
 				if err := hook(ctx, paramsValue, wfStep); err != nil {
-					return common.WorkflowStepStatus{}, nil, err
+					return common.WorkflowStepStatus{}, nil, errors.WithMessage(err, "do preStartHook")
 				}
 			}
 

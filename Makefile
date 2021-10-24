@@ -39,14 +39,21 @@ endif
 VELA_CORE_IMAGE      ?= vela-core:latest
 VELA_CORE_TEST_IMAGE ?= vela-core-test:$(GIT_COMMIT)
 VELA_RUNTIME_ROLLOUT_IMAGE       ?= vela-runtime-rollout:latest
+VELA_RUNTIME_ROLLOUT_TEST_IMAGE  ?= vela-runtime-rollout-test:$(GIT_COMMIT)
+RUNTIME_CLUSTER_CONFIG ?= /tmp/worker.kubeconfig
+RUNTIME_CLUSTER_NAME ?= worker
 
 all: build
 
 # Run tests
-test: vet lint staticcheck
-	go test -coverprofile=coverage.txt ./pkg/... ./cmd/...
-	go test ./references/appfile/... ./references/cli/... ./references/common/... ./references/plugins/...
+test: vet lint staticcheck unit-test-core
 	@$(OK) unit-tests pass
+
+unit-test-core:
+	go test -coverprofile=coverage.txt $(shell go list ./pkg/... ./cmd/... | grep -v apiserver)
+	go test $(shell go list ./references/... | grep -v apiserver)
+unit-test-apiserver:
+	go test -coverprofile=coverage.txt $(shell go list ./pkg/... ./cmd/...  | grep apiserver)
 
 # Build vela cli binary
 build: fmt vet lint staticcheck vela-cli kubectl-vela
@@ -58,14 +65,10 @@ vela-cli:
 kubectl-vela:
 	$(GOBUILD_ENV) go build -o bin/kubectl-vela -a -ldflags $(LDFLAGS) ./cmd/plugin/main.go
 
-dashboard-build:
-	cd references/dashboard && npm install && cd ..
-
 doc-gen:
 	rm -r docs/en/cli/*
 	go run hack/docgen/gen.go
 
-PWD := $(shell pwd)	
 cross-build:
 	rm -rf _bin
 	go get github.com/mitchellh/gox@v0.4.0
@@ -97,6 +100,9 @@ compress:
 # Run against the configured Kubernetes cluster in ~/.kube/config
 run:
 	go run ./cmd/core/main.go --application-revision-limit 5
+
+run-apiserver:
+	go run ./cmd/apiserver/main.go
 
 # Run go fmt against code
 fmt: goimports installcue
@@ -138,12 +144,21 @@ docker-build-runtime-rollout:
 docker-push:
 	docker push $(VELA_CORE_IMAGE)
 
+e2e-setup-core:
+	sh ./hack/e2e/modify_charts.sh
+	helm upgrade --install --create-namespace --namespace vela-system --set image.pullPolicy=IfNotPresent --set image.repository=vela-core-test --set applicationRevisionLimit=5 --set dependCheckWait=10s --set image.tag=$(GIT_COMMIT) --set multicluster.enabled=true --wait kubevela ./charts/vela-core
+	kubectl wait --for=condition=Available deployment/kubevela-vela-core -n vela-system --timeout=180s
+
+setup-runtime-e2e-cluster:
+	helm upgrade --install --create-namespace --namespace vela-system --kubeconfig=$(RUNTIME_CLUSTER_CONFIG) --set image.pullPolicy=IfNotPresent --set image.repository=vela-runtime-rollout-test --set image.tag=$(GIT_COMMIT) --wait vela-rollout ./runtime/rollout/charts
+
 e2e-setup:
 	helm install kruise https://github.com/openkruise/kruise/releases/download/v0.9.0/kruise-chart.tgz --set featureGates="PreDownloadImageForInPlaceUpdate=true"
 	sh ./hack/e2e/modify_charts.sh
 	helm upgrade --install --create-namespace --namespace vela-system --set image.pullPolicy=IfNotPresent --set image.repository=vela-core-test --set applicationRevisionLimit=5 --set dependCheckWait=10s --set image.tag=$(GIT_COMMIT) --wait kubevela ./charts/vela-core
 	helm upgrade --install --create-namespace --namespace oam-runtime-system --set image.pullPolicy=IfNotPresent --set image.repository=vela-core-test --set dependCheckWait=10s --set image.tag=$(GIT_COMMIT) --wait oam-runtime ./charts/oam-runtime
-	bin/vela addon enable ocm-cluster-manager
+	bin/vela addon enable fluxcd
+	bin/vela addon enable terraform
 	ginkgo version
 	ginkgo -v -r e2e/setup
 
@@ -151,14 +166,15 @@ e2e-setup:
 	kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=vela-core,app.kubernetes.io/instance=kubevela -n vela-system --timeout=600s
 	kubectl wait --for=condition=Ready pod -l app=source-controller -n flux-system --timeout=600s
 	kubectl wait --for=condition=Ready pod -l app=helm-controller -n flux-system --timeout=600s
-	kubectl wait --for=condition=Ready pod -l app=cluster-manager -n open-cluster-management --timeout=600s
-	bin/vela dashboard &
 
 e2e-api-test:
 	# Run e2e test
-	ginkgo -v -skipPackage capability,setup,apiserver,application -r e2e
-	ginkgo -v -r e2e/apiserver
+	ginkgo -v -skipPackage capability,setup,application -r e2e
 	ginkgo -v -r e2e/application
+
+e2e-apiserver-test:
+	go test -v -coverpkg=./... -coverprofile=/tmp/e2e_apiserver_test.out ./test/e2e-apiserver-test
+	@$(OK) tests pass
 
 e2e-test:
 	# Run e2e test
@@ -169,9 +185,13 @@ e2e-rollout-test:
 	ginkgo -v  --focus="rollout related e2e-test." ./test/e2e-test
 	@$(OK) tests pass
 
+e2e-multicluster-test:
+	go test -v -coverpkg=./... -coverprofile=/tmp/e2e_multicluster_test.out ./test/e2e-multicluster-test
+	@$(OK) tests pass
+
 compatibility-test: vet lint staticcheck generate-compatibility-testdata
 	# Run compatibility test with old crd
-	COMPATIBILITY_TEST=TRUE go test -race ./pkg/...
+	COMPATIBILITY_TEST=TRUE go test -race $(shell go list ./pkg/...  | grep -v apiserver)
 	@$(OK) compatibility-test pass
 
 generate-compatibility-testdata:
@@ -191,6 +211,9 @@ ifneq ($(shell docker images -q $(VELA_CORE_TEST_IMAGE)),)
 	docker rmi -f $(VELA_CORE_TEST_IMAGE)
 endif
 
+end-e2e-core:
+	sh ./hack/e2e/end_e2e_core.sh
+
 end-e2e:
 	sh ./hack/e2e/end_e2e.sh
 
@@ -198,6 +221,12 @@ end-e2e:
 kind-load:
 	docker build -t $(VELA_CORE_TEST_IMAGE) -f Dockerfile.e2e .
 	kind load docker-image $(VELA_CORE_TEST_IMAGE) || { echo >&2 "kind not installed or error loading image: $(VELA_CORE_TEST_IMAGE)"; exit 1; }
+
+kind-load-runtime-cluster:
+	/bin/sh hack/e2e/build_runtime_rollout.sh
+	docker build -t $(VELA_RUNTIME_ROLLOUT_TEST_IMAGE) -f runtime/rollout/e2e/Dockerfile.e2e runtime/rollout/e2e/
+	rm -rf runtime/rollout/e2e/tmp
+	kind load docker-image $(VELA_RUNTIME_ROLLOUT_TEST_IMAGE) --name=$(RUNTIME_CLUSTER_NAME)  || { echo >&2 "kind not installed or error loading image: $(VELA_RUNTIME_ROLLOUT_TEST_IMAGE)"; exit 1; }
 
 # Run tests
 core-test: fmt vet manifests
@@ -235,12 +264,12 @@ manifests: installcue kustomize
 	# TODO(yangsoon): kustomize will merge all CRD into a whole file, it may not work if we want patch more than one CRD in this way
 	$(KUSTOMIZE) build config/crd -o config/crd/base/core.oam.dev_applications.yaml
 	./hack/crd/cleanup.sh
-	go run ./hack/crd/dispatch/dispatch.go config/crd/base charts/vela-core/crds charts/oam-runtime/crds runtime/
+	go run ./hack/crd/dispatch/dispatch.go config/crd/base charts/vela-core/crds charts/oam-runtime/crds runtime/ charts/vela-minimal/crds
 	rm -f config/crd/base/*
 	./vela-templates/gen_definitions.sh
 	go run ./vela-templates/gen_addons.go
 
-GOLANGCILINT_VERSION ?= v1.31.0
+GOLANGCILINT_VERSION ?= v1.38.0
 HOSTOS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 HOSTARCH := $(shell uname -m)
 ifeq ($(HOSTARCH),x86_64)
@@ -303,9 +332,9 @@ KUSTOMIZE_VERSION ?= 3.8.2
 kustomize:
 ifeq (, $(shell kustomize version | grep $(KUSTOMIZE_VERSION)))
 	@{ \
-	set -e ;\
+	set -eo pipefail ;\
 	echo 'installing kustomize-v$(KUSTOMIZE_VERSION) into $(GOBIN)' ;\
-	curl -s https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh | bash -s $(KUSTOMIZE_VERSION) $(GOBIN);\
+	curl -sS https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh | bash -s $(KUSTOMIZE_VERSION) $(GOBIN);\
 	echo 'Install succeed' ;\
 	}
 KUSTOMIZE=$(GOBIN)/kustomize

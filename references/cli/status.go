@@ -106,7 +106,7 @@ func NewAppStatusCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Comm
 				os.Exit(1)
 			}
 			appName := args[0]
-			env, err := GetEnv(cmd)
+			env, err := GetFlagEnvOrCurrent(cmd, c)
 			if err != nil {
 				ioStreams.Errorf("Error: failed to get Env: %s", err)
 				return err
@@ -193,7 +193,7 @@ func loopCheckStatus(ctx context.Context, c client.Client, ioStreams cmdutil.IOS
 			var message string
 			for _, v := range comp.Traits {
 				if v.Type == tr.Type {
-					traitData, _ := util.RawExtension2Map(&v.Properties)
+					traitData, _ := util.RawExtension2Map(v.Properties)
 					for k, v := range traitData {
 						message += fmt.Sprintf("%v=%v\n\t\t", k, v)
 					}

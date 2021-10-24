@@ -173,20 +173,6 @@ func LocateParentAppConfig(ctx context.Context, client client.Client, oamObject 
 				return eventObj, nil
 			}
 		}
-		if o.Kind == v1alpha2.ApplicationContextKind {
-			var eventObj = &v1alpha2.ApplicationContext{}
-			appName := o.Name
-			if len(appName) > 0 {
-				nn := types.NamespacedName{
-					Name:      appName,
-					Namespace: oamObject.GetNamespace(),
-				}
-				if err := client.Get(ctx, nn, eventObj); err != nil {
-					return nil, err
-				}
-				return eventObj, nil
-			}
-		}
 	}
 	return nil, errors.Errorf(ErrLocateAppConfig)
 }
@@ -741,9 +727,9 @@ func Object2Map(obj interface{}) (map[string]interface{}, error) {
 }
 
 // Object2RawExtension converts an object to a rawExtension
-func Object2RawExtension(obj interface{}) runtime.RawExtension {
+func Object2RawExtension(obj interface{}) *runtime.RawExtension {
 	bts := MustJSONMarshal(obj)
-	return runtime.RawExtension{
+	return &runtime.RawExtension{
 		Raw: bts,
 	}
 }
@@ -788,7 +774,7 @@ func GenTraitName(componentName string, ct *v1alpha2.ComponentTrait, traitType s
 // compatibility
 func GenTraitNameCompatible(componentName string, trait *unstructured.Unstructured, traitType string) string {
 	ct := &v1alpha2.ComponentTrait{
-		Trait: Object2RawExtension(trait),
+		Trait: *Object2RawExtension(trait),
 	}
 	return GenTraitName(componentName, ct, traitType)
 }

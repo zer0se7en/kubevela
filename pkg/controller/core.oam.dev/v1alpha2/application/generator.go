@@ -31,6 +31,7 @@ import (
 	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/application/assemble"
 	"github.com/oam-dev/kubevela/pkg/cue/model/value"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
+	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils"
@@ -91,7 +92,7 @@ func convertStepProperties(step *v1beta1.WorkflowStep, app *v1beta1.Application)
 	o := struct {
 		Component string `json:"component"`
 	}{}
-	js, err := step.Properties.MarshalJSON()
+	js, err := common.RawExtensionPointer{RawExtension: step.Properties}.MarshalJSON()
 	if err != nil {
 		return err
 	}
@@ -104,14 +105,16 @@ func convertStepProperties(step *v1beta1.WorkflowStep, app *v1beta1.Application)
 			step.Inputs = append(step.Inputs, c.Inputs...)
 			for index := range step.Inputs {
 				parameterKey := strings.TrimSpace(step.Inputs[index].ParameterKey)
-				if !strings.HasPrefix(parameterKey, "properties") {
+				if !strings.HasPrefix(parameterKey, "properties") && !strings.HasPrefix(parameterKey, "traits[") {
 					parameterKey = "properties." + parameterKey
 				}
 				step.Inputs[index].ParameterKey = parameterKey
 			}
 			step.Outputs = append(step.Outputs, c.Outputs...)
+			step.DependsOn = append(step.DependsOn, c.DependsOn...)
 			c.Inputs = nil
 			c.Outputs = nil
+			c.DependsOn = nil
 			step.Properties = util.Object2RawExtension(c)
 			return nil
 		}
@@ -121,7 +124,8 @@ func convertStepProperties(step *v1beta1.WorkflowStep, app *v1beta1.Application)
 }
 
 func (h *AppHandler) applyComponentFunc(appParser *appfile.Parser, appRev *v1beta1.ApplicationRevision, af *appfile.Appfile, cli client.Client) oamProvider.ComponentApply {
-	return func(comp common.ApplicationComponent, patcher *value.Value) (*unstructured.Unstructured, []*unstructured.Unstructured, bool, error) {
+	return func(comp common.ApplicationComponent, patcher *value.Value, clusterName string, overrideNamespace string) (*unstructured.Unstructured, []*unstructured.Unstructured, bool, error) {
+		ctx := multicluster.ContextWithClusterName(context.Background(), clusterName)
 
 		wl, err := appParser.ParseWorkloadFromRevision(comp, appRev)
 		if err != nil {
@@ -135,11 +139,11 @@ func (h *AppHandler) applyComponentFunc(appParser *appfile.Parser, appRev *v1bet
 		if err := af.SetOAMContract(manifest); err != nil {
 			return nil, nil, false, errors.WithMessage(err, "SetOAMContract")
 		}
-		if err := h.HandleComponentsRevision(context.TODO(), []*types.ComponentManifest{manifest}); err != nil {
+		if err := h.HandleComponentsRevision(ctx, []*types.ComponentManifest{manifest}); err != nil {
 			return nil, nil, false, errors.WithMessage(err, "HandleComponentsRevision")
 		}
 		if len(manifest.PackagedWorkloadResources) != 0 {
-			if err := h.Dispatch(context.TODO(), "", common.WorkflowResourceCreator, manifest.PackagedWorkloadResources...); err != nil {
+			if err := h.Dispatch(ctx, clusterName, common.WorkflowResourceCreator, manifest.PackagedWorkloadResources...); err != nil {
 				return nil, nil, false, errors.WithMessage(err, "cannot dispatch packaged workload resources")
 			}
 		}
@@ -147,15 +151,20 @@ func (h *AppHandler) applyComponentFunc(appParser *appfile.Parser, appRev *v1bet
 		if err != nil {
 			return nil, nil, false, errors.WithMessage(err, "assemble resources before apply fail")
 		}
-
+		if overrideNamespace != "" {
+			readyWorkload.SetNamespace(overrideNamespace)
+			for _, readyTrait := range readyTraits {
+				readyTrait.SetNamespace(overrideNamespace)
+			}
+		}
 		skipStandardWorkload := skipApplyWorkload(wl)
 		if !skipStandardWorkload {
-			if err := h.Dispatch(context.TODO(), "", common.WorkflowResourceCreator, readyWorkload); err != nil {
+			if err := h.Dispatch(ctx, clusterName, common.WorkflowResourceCreator, readyWorkload); err != nil {
 				return nil, nil, false, errors.WithMessage(err, "DispatchStandardWorkload")
 			}
 		}
 
-		if err := h.Dispatch(context.TODO(), "", common.WorkflowResourceCreator, readyTraits...); err != nil {
+		if err := h.Dispatch(ctx, clusterName, common.WorkflowResourceCreator, readyTraits...); err != nil {
 			return nil, nil, false, errors.WithMessage(err, "DispatchTraits")
 		}
 
@@ -167,7 +176,7 @@ func (h *AppHandler) applyComponentFunc(appParser *appfile.Parser, appRev *v1bet
 		if !isHealth {
 			return nil, nil, false, nil
 		}
-		workload, traits, err := getComponentResources(manifest, skipStandardWorkload, cli)
+		workload, traits, err := getComponentResources(ctx, manifest, skipStandardWorkload, cli)
 		return workload, traits, true, err
 	}
 }
@@ -181,14 +190,14 @@ func skipApplyWorkload(wl *appfile.Workload) bool {
 	return false
 }
 
-func getComponentResources(manifest *types.ComponentManifest, skipStandardWorkload bool, cli client.Client) (*unstructured.Unstructured, []*unstructured.Unstructured, error) {
+func getComponentResources(ctx context.Context, manifest *types.ComponentManifest, skipStandardWorkload bool, cli client.Client) (*unstructured.Unstructured, []*unstructured.Unstructured, error) {
 	var (
 		workload *unstructured.Unstructured
 		traits   []*unstructured.Unstructured
 	)
 	if !skipStandardWorkload {
 		v := manifest.StandardWorkload.DeepCopy()
-		if err := cli.Get(context.Background(), client.ObjectKeyFromObject(manifest.StandardWorkload), v); err != nil {
+		if err := cli.Get(ctx, client.ObjectKeyFromObject(manifest.StandardWorkload), v); err != nil {
 			return nil, nil, err
 		}
 		workload = v
@@ -196,7 +205,7 @@ func getComponentResources(manifest *types.ComponentManifest, skipStandardWorklo
 
 	for _, trait := range manifest.Traits {
 		v := trait.DeepCopy()
-		if err := cli.Get(context.Background(), client.ObjectKeyFromObject(trait), v); err != nil {
+		if err := cli.Get(ctx, client.ObjectKeyFromObject(trait), v); err != nil {
 			return workload, nil, err
 		}
 		traits = append(traits, v)

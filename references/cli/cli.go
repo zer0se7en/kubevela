@@ -30,7 +30,6 @@ import (
 	"github.com/oam-dev/kubevela/pkg/utils/system"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
 	"github.com/oam-dev/kubevela/references/a/preimport"
-	"github.com/oam-dev/kubevela/references/cmd/cli/fake"
 	"github.com/oam-dev/kubevela/version"
 )
 
@@ -88,7 +87,6 @@ func NewCommand() *cobra.Command {
 		NewPortForwardCommand(commandArgs, ioStream),
 		NewLogsCommand(commandArgs, ioStream),
 		NewEnvCommand(commandArgs, ioStream),
-		NewConfigCommand(ioStream),
 
 		// Workflows
 		NewWorkflowCommand(commandArgs, ioStream),
@@ -118,7 +116,6 @@ func NewCommand() *cobra.Command {
 
 		// Helper
 		SystemCommandGroup(commandArgs, ioStream),
-		NewDashboardCommand(commandArgs, ioStream, fake.FrontendSource),
 		NewCompletionCommand(),
 		NewVersionCommand(),
 		NewHelpCommand(),

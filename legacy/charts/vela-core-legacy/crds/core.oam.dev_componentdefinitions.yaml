@@ -179,6 +179,24 @@ spec:
                       configuration:
                         description: Configuration is Terraform Configuration
                         type: string
+                      path:
+                        description: Path is the sub-directory of remote git repository.
+                          It's valid when remote is set
+                        type: string
+                      providerRef:
+                        description: ProviderReference specifies the reference to
+                          Provider
+                        properties:
+                          name:
+                            description: Name of the referenced object.
+                            type: string
+                          namespace:
+                            default: default
+                            description: Namespace of the secret.
+                            type: string
+                        required:
+                        - name
+                        type: object
                       type:
                         default: hcl
                         description: Type specifies which Terraform configuration
@@ -186,6 +204,7 @@ spec:
                         enum:
                         - hcl
                         - json
+                        - remote
                         type: string
                     required:
                     - configuration
@@ -448,6 +467,24 @@ spec:
                       configuration:
                         description: Configuration is Terraform Configuration
                         type: string
+                      path:
+                        description: Path is the sub-directory of remote git repository.
+                          It's valid when remote is set
+                        type: string
+                      providerRef:
+                        description: ProviderReference specifies the reference to
+                          Provider
+                        properties:
+                          name:
+                            description: Name of the referenced object.
+                            type: string
+                          namespace:
+                            default: default
+                            description: Namespace of the secret.
+                            type: string
+                        required:
+                        - name
+                        type: object
                       type:
                         default: hcl
                         description: Type specifies which Terraform configuration
@@ -455,6 +492,7 @@ spec:
                         enum:
                         - hcl
                         - json
+                        - remote
                         type: string
                     required:
                     - configuration

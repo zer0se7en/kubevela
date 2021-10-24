@@ -47,8 +47,9 @@ import (
 
 var _ = Describe("Test Helm schematic appfile", func() {
 	var (
-		appName  = "test-app"
-		compName = "test-comp"
+		appName      = "test-app"
+		compName     = "test-comp"
+		workloadName = "test-workload"
 	)
 
 	It("Test generate AppConfig resources from Helm schematic", func() {
@@ -63,7 +64,7 @@ var _ = Describe("Test Helm schematic appfile", func() {
 			},
 			Workloads: []*Workload{
 				{
-					Name:               compName,
+					Name:               workloadName,
 					Type:               "webapp-chart",
 					CapabilityCategory: oamtypes.HelmCategory,
 					Params: map[string]interface{}{
@@ -102,7 +103,7 @@ var _ = Describe("Test Helm schematic appfile", func() {
 							},
 						},
 						Helm: &common.Helm{
-							Release: util.Object2RawExtension(map[string]interface{}{
+							Release: *util.Object2RawExtension(map[string]interface{}{
 								"chart": map[string]interface{}{
 									"spec": map[string]interface{}{
 										"chart":   "podinfo",
@@ -110,7 +111,7 @@ var _ = Describe("Test Helm schematic appfile", func() {
 									},
 								},
 							}),
-							Repository: util.Object2RawExtension(map[string]interface{}{
+							Repository: *util.Object2RawExtension(map[string]interface{}{
 								"url": "http://oam.dev/catalog/",
 							}),
 						},
@@ -123,7 +124,7 @@ var _ = Describe("Test Helm schematic appfile", func() {
 		Expect(err).To(BeNil())
 
 		expectCompManifest := &oamtypes.ComponentManifest{
-			Name: compName,
+			Name: workloadName,
 			StandardWorkload: &unstructured.Unstructured{
 				Object: map[string]interface{}{
 					"apiVersion": "apps/v1",
@@ -240,7 +241,6 @@ spec:
 			},
 			Workloads: []*Workload{
 				{
-					Name:               compName,
 					Type:               "kube-worker",
 					CapabilityCategory: oamtypes.KubeCategory,
 					Params: map[string]interface{}{
@@ -907,7 +907,9 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 		writeConnectionSecretToRef *terraformtypes.SecretReference
 		json                       string
 		hcl                        string
+		remote                     string
 		params                     map[string]interface{}
+		providerRef                *terraformtypes.Reference
 	}
 
 	type want struct {
@@ -944,6 +946,15 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 			},
 			want: want{err: nil}},
 
+		"remote hcl workload": {
+			args: args{
+				remote: "https://xxx/a.git",
+				params: map[string]interface{}{"acl": "private",
+					"writeConnectionSecretToRef": map[string]interface{}{"name": "oss", "namespace": "default"}},
+				writeConnectionSecretToRef: &terraformtypes.SecretReference{Name: "oss", Namespace: "default"},
+			},
+			want: want{err: nil}},
+
 		"workload's TF configuration is empty": {
 			args: args{
 				params: variable,
@@ -957,7 +968,18 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 				params: badParam,
 				hcl:    "abc",
 			},
-			want: want{err: errors.Wrap(badParamMarshalError, errFailToConvertTerraformComponentProperties)}},
+			want: want{err: errors.Wrap(badParamMarshalError, errFailToConvertTerraformComponentProperties)},
+		},
+
+		"terraform workload has a provider reference": {
+
+			args: args{
+				params:      badParam,
+				hcl:         "abc",
+				providerRef: &terraformtypes.Reference{Name: "azure", Namespace: "default"},
+			},
+			want: want{err: errors.Wrap(badParamMarshalError, errFailToConvertTerraformComponentProperties)},
+		},
 	}
 
 	for tcName, tc := range testcases {
@@ -994,7 +1016,20 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 				WriteConnectionSecretToReference: tc.args.writeConnectionSecretToRef,
 			}
 		}
-		if tc.args.hcl == "" && tc.args.json == "" {
+		if tc.args.remote != "" {
+			template = &Template{
+				Terraform: &common.Terraform{
+					Configuration: tc.args.remote,
+					Type:          "remote",
+				},
+			}
+			configSpec = terraformapi.ConfigurationSpec{
+				Remote:                           tc.args.remote,
+				Variable:                         raw,
+				WriteConnectionSecretToReference: tc.args.writeConnectionSecretToRef,
+			}
+		}
+		if tc.args.hcl == "" && tc.args.json == "" && tc.args.remote == "" {
 			template = &Template{
 				Terraform: &common.Terraform{},
 			}
@@ -1003,6 +1038,9 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 				Variable:                         raw,
 				WriteConnectionSecretToReference: tc.args.writeConnectionSecretToRef,
 			}
+		}
+		if tc.args.providerRef != nil {
+			template.Terraform.ProviderReference = tc.args.providerRef
 		}
 
 		wl := &Workload{
@@ -1023,7 +1061,7 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 				Spec:       configSpec,
 			}
 			rawConf := util.Object2RawExtension(tfConfiguration)
-			wantWL, _ := util.RawExtension2Unstructured(&rawConf)
+			wantWL, _ := util.RawExtension2Unstructured(rawConf)
 
 			if diff := cmp.Diff(wantWL, got); diff != "" {
 				t.Errorf("\n%s\ngenerateTerraformConfigurationWorkload(...): -want, +got:\n%s\n", tcName, diff)

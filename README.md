@@ -1,3 +1,11 @@
+<div style="text-align: center">
+  <p align="center">
+    <img src="https://raw.githubusercontent.com/oam-dev/kubevela.io/main/docs/resources/KubeVela-03.png">
+    <br><br>
+    <i>Make shipping applications more enjoyable.</i>
+  </p>
+</div>
+
 ![Build status](https://github.com/oam-dev/kubevela/workflows/E2E/badge.svg)
 [![Go Report Card](https://goreportcard.com/badge/github.com/oam-dev/kubevela)](https://goreportcard.com/report/github.com/oam-dev/kubevela)
 ![Docker Pulls](https://img.shields.io/docker/pulls/oamdev/vela-core)
@@ -8,21 +16,21 @@
 [![Twitter](https://img.shields.io/twitter/url?style=social&url=https%3A%2F%2Ftwitter.com%2Foam_dev)](https://twitter.com/oam_dev)
 [![Artifact HUB](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/kubevela)](https://artifacthub.io/packages/search?repo=kubevela)
 
-![logo](https://raw.githubusercontent.com/oam-dev/kubevela.io/main/docs/resources/KubeVela-03.png)
+## Introduction
 
-*Make shipping applications more enjoyable.*
+KubeVela is a modern application delivery platform that makes deploying and operating applications across today's hybrid, multi-cloud environments easier, faster and more reliable.
 
-# KubeVela
+![](docs/resources/what-is-kubevela.png)
 
-KubeVela is a modern application platform that makes deploying and managing applications across today's hybrid, multi-cloud environments easier and faster.
+## Highlights
 
-## Features
+KubeVela practices the "render, orchestrate, deploy" workflow with below highlighted values added to existing ecosystem:
 
-**Application Centric** - KubeVela introduces [Open Application Model (OAM)](https://oam.dev/) as the consistent yet higher level API to capture a full deployment of microservices on top of hybrid environments. Placement strategy, traffic shifting and rolling update are declared at application level. No infrastructure level concern, simply deploy.
+- *Application Centric* - KubeVela introduces [Open Application Model (OAM)](https://oam.dev/) as the consistent yet higher level API to capture and render a full deployment of microservices on top of hybrid environments. Placement strategy, traffic shifting and rolling update are declared at application level. No infrastructure level concern, simply deploy.
 
-**Programmable Workflow** - KubeVela leverages [CUE](https://cuelang.org/) to implement its model layer. This allows you to declare application deployment workflow as a DAG, with all steps and application's needs glued together in programmable approach. No restrictions, natively extensible.
+- *Programmable Workflow* - KubeVela models application delivery as DAG (Directed Acyclic Graph) and expresses it with [CUE](https://cuelang.org/) - a modern data configuration language. This allows you to design application deployment steps per needs and orchestrate them in programmable approach. No restrictions, natively extensible.
 
-**Runtime Agnostic** - KubeVela works as an application delivery control plane that is fully runtime agnostic. It can deploy and manage any application components including containers, cloud functions, databases, or even EC2 instances across hybrid environments, following the workflow you defined.
+- *Infrastructure Agnostic* - KubeVela works as an application delivery control plane that is fully decoupled from runtime infrastructure. It can deploy any workload types including containers, cloud services, databases, or even VM instances to any cloud or Kubernetes cluster, following the workflow designed by you.
 
 ## Getting Started
 
@@ -39,6 +47,9 @@ Full documentation is available on the [KubeVela website](https://kubevela.io/).
 - Slack:  [CNCF Slack](https://slack.cncf.io/) #kubevela channel (*English*)
 - Gitter: [oam-dev](https://gitter.im/oam-dev/community) (*English*)
 - [DingTalk Group](https://page.dingtalk.com/wow/dingtalk/act/en-home): `23310022` (*Chinese*)
+- Wechat Group (*Chinese*): Broker wechat to add you into the user group.
+ 
+  <img src="https://static.kubevela.net/images/barnett-wechat.jpg" width="200" />
 - Bi-weekly Community Call: [Meeting Notes](https://docs.google.com/document/d/1nqdFEyULekyksFHtFvgvFAYE-0AMHKoS3RMnaKsarjs)
 
 ## Talks and Conferences

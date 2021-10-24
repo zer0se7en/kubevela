@@ -26,24 +26,36 @@ import (
 	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1alpha2/applicationrollout"
 	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1alpha2/component"
 	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1alpha2/componentdefinition"
-	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1alpha2/initializer"
 	"github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev/v1alpha2/traitdefinition"
 )
 
 // Register will be called in main and register all validation handlers
 func Register(mgr manager.Manager, args controller.Args) {
-
-	if args.OAMSpecVer == "v0.3" || args.OAMSpecVer == "all" {
+	switch args.OAMSpecVer {
+	case "all":
 		application.RegisterValidatingHandler(mgr, args)
 		componentdefinition.RegisterMutatingHandler(mgr, args)
 		componentdefinition.RegisterValidatingHandler(mgr, args)
 		traitdefinition.RegisterValidatingHandler(mgr, args)
-		initializer.RegisterValidatingHandler(mgr, args)
 		applicationrollout.RegisterMutatingHandler(mgr)
 		applicationrollout.RegisterValidatingHandler(mgr)
-	}
-
-	if args.OAMSpecVer == "v0.2" || args.OAMSpecVer == "all" {
+		applicationconfiguration.RegisterMutatingHandler(mgr)
+		applicationconfiguration.RegisterValidatingHandler(mgr, args)
+		component.RegisterMutatingHandler(mgr, args)
+		component.RegisterValidatingHandler(mgr)
+	case "minimal":
+		application.RegisterValidatingHandler(mgr, args)
+		componentdefinition.RegisterMutatingHandler(mgr, args)
+		componentdefinition.RegisterValidatingHandler(mgr, args)
+		traitdefinition.RegisterValidatingHandler(mgr, args)
+	case "v0.3":
+		application.RegisterValidatingHandler(mgr, args)
+		componentdefinition.RegisterMutatingHandler(mgr, args)
+		componentdefinition.RegisterValidatingHandler(mgr, args)
+		traitdefinition.RegisterValidatingHandler(mgr, args)
+		applicationrollout.RegisterMutatingHandler(mgr)
+		applicationrollout.RegisterValidatingHandler(mgr)
+	case "v0.2":
 		applicationconfiguration.RegisterMutatingHandler(mgr)
 		applicationconfiguration.RegisterValidatingHandler(mgr, args)
 		component.RegisterMutatingHandler(mgr, args)

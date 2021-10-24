@@ -199,10 +199,29 @@ func (a *AppManifestsDispatcher) retrieveLegacyResourceTrackers(ctx context.Cont
 	}
 	for _, rt := range rtList.Items {
 		if rt.Name != a.currentRTName &&
-			(a.previousRT != nil && rt.Name != a.previousRT.Name) {
+			(a.previousRT != nil && rt.Name != a.previousRT.Name) && !IsLifeLongResourceTracker(rt) {
 			a.legacyRTs = append(a.legacyRTs, rt.DeepCopy())
 		}
 	}
+
+	// compatibility code for label typo. more info: https://github.com/oam-dev/kubevela/issues/2464
+	// TODO(wangyikewxgm)  delete after appRollout deprecated.
+	oldRtList := &v1beta1.ResourceTrackerList{}
+	if err := a.c.List(ctx, oldRtList, client.MatchingLabels{
+		oam.LabelAppName:        ExtractAppName(a.currentRTName, a.namespace),
+		"app.oam.dev/namesapce": a.namespace,
+	}); err != nil {
+		return errors.Wrap(err, "cannot retrieve legacy resource trackers with miss-spell label")
+	}
+	if len(oldRtList.Items) != 0 {
+		for _, rt := range oldRtList.Items {
+			if rt.Name != a.currentRTName &&
+				(a.previousRT != nil && rt.Name != a.previousRT.Name) && !IsLifeLongResourceTracker(rt) {
+				a.legacyRTs = append(a.legacyRTs, rt.DeepCopy())
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -222,7 +241,7 @@ func (a *AppManifestsDispatcher) applyAndRecordManifests(ctx context.Context, ma
 		ctrlUIDs = append(ctrlUIDs, rt.UID)
 	}
 
-	applyOpts := []apply.ApplyOption{apply.MustBeControllableByAny(ctrlUIDs)}
+	applyOpts := []apply.ApplyOption{apply.MustBeControllableByAny(ctrlUIDs), apply.NotUpdateRenderHashEqual()}
 	ownerRef := metav1.OwnerReference{
 		APIVersion:         v1beta1.SchemeGroupVersion.String(),
 		Kind:               reflect.TypeOf(v1beta1.ResourceTracker{}).Name(),
@@ -346,7 +365,7 @@ func setOrOverrideOAMControllerOwner(obj ObjectOwner, controllerOwner metav1.Own
 			continue
 		}
 		// delete the old appContext owner
-		if owner.Kind == v1alpha2.ApplicationContextKind && owner.APIVersion == v1alpha2.SchemeGroupVersion.String() {
+		if owner.Kind == "ApplicationContext" && owner.APIVersion == v1alpha2.SchemeGroupVersion.String() {
 			continue
 		}
 		if owner.Controller != nil && *owner.Controller &&
@@ -356,4 +375,10 @@ func setOrOverrideOAMControllerOwner(obj ObjectOwner, controllerOwner metav1.Own
 		newOwnerRefs = append(newOwnerRefs, owner)
 	}
 	obj.SetOwnerReferences(newOwnerRefs)
+}
+
+// IsLifeLongResourceTracker check if resourcetracker shares the same whole life with the entire application
+func IsLifeLongResourceTracker(rt v1beta1.ResourceTracker) bool {
+	_, ok := rt.GetAnnotations()[oam.AnnotationResourceTrackerLifeLong]
+	return ok
 }

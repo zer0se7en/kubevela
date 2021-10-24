@@ -138,8 +138,8 @@ var _ = Describe("Application Normal tests", func() {
 					return fmt.Errorf("expect revision %d != real %d", revisionNum, gotCR.Revision)
 				}
 				ctrlOwner := metav1.GetControllerOf(gotCR)
-				if ctrlOwner == nil || ctrlOwner.Kind != v1beta1.ApplicationKind {
-					return fmt.Errorf("expect ControllerRevision is control-owned by an Application")
+				if ctrlOwner == nil || ctrlOwner.Kind != v1beta1.ResourceTrackerKind {
+					return fmt.Errorf("expect ControllerRevision is control-owned by a ResourceTracker")
 				}
 				return nil
 			},
@@ -248,6 +248,7 @@ var _ = Describe("Application Normal tests", func() {
 		firstApp.Name = "first-app"
 		Expect(k8sClient.Create(ctx, &firstApp)).Should(BeNil())
 
+		time.Sleep(time.Second)
 		var secondApp v1beta1.Application
 		Expect(common.ReadYamlToObject("testdata/app/app9.yaml", &secondApp)).Should(BeNil())
 		secondApp.Namespace = namespaceName
