@@ -7,6 +7,8 @@ replicaCount: 1
 applyOnceOnly: "off"
 
 disableCaps: "all"
+
+imageRegistry: ""
 image:
   repository: oamdev/vela-core
   tag: latest
@@ -71,6 +73,7 @@ admissionWebhooks:
       repository: oamdev/kube-webhook-certgen
       tag: v2.3
       pullPolicy: IfNotPresent
+    nodeSelector: {}
     affinity: {}
     tolerations: []
   certManager:
@@ -99,3 +102,8 @@ dependCheckWait: 30s
 
 # OAMSpecVer is the oam spec version controller want to setup
 OAMSpecVer: "v0.2"
+
+test:
+  app:
+    repository: oamdev/busybox
+    tag: v1

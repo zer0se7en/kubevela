@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	corev1beta1 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
@@ -45,20 +46,6 @@ type DryRunCmdOptions struct {
 	DefinitionFile  string
 }
 
-// NewSystemDryRunCommand is deprecated
-func NewSystemDryRunCommand(_ common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
-	o := &DryRunCmdOptions{IOStreams: ioStreams}
-	cmd := &cobra.Command{
-		Use: "dry-run",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			o.Info("vela system dry-run is deprecated, please use vela dry-run instead")
-			return nil
-		},
-	}
-	cmd.SetOut(ioStreams.Out)
-	return cmd
-}
-
 // NewDryRunCommand creates `dry-run` command
 func NewDryRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	o := &DryRunCmdOptions{IOStreams: ioStreams}
@@ -66,17 +53,17 @@ func NewDryRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command
 		Use:                   "dry-run",
 		DisableFlagsInUseLine: true,
 		Short:                 "Dry Run an application, and output the K8s resources as result to stdout",
-		Long:                  "Dry Run an application, and output the K8s resources as result to stdout, only CUE template supported for now",
+		Long:                  "Dry-run application locally, render the Kubernetes resources as result to stdout.",
 		Example:               "vela dry-run",
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return c.SetConfig()
+		Annotations: map[string]string{
+			types.TagCommandType: types.TypeApp,
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			velaEnv, err := GetFlagEnvOrCurrent(cmd, c)
+			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
 			if err != nil {
 				return err
 			}
-			buff, err := DryRunApplication(o, c, velaEnv.Namespace)
+			buff, err := DryRunApplication(o, c, namespace)
 			if err != nil {
 				return err
 			}
@@ -87,6 +74,7 @@ func NewDryRunCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command
 
 	cmd.Flags().StringVarP(&o.ApplicationFile, "file", "f", "./app.yaml", "application file name")
 	cmd.Flags().StringVarP(&o.DefinitionFile, "definition", "d", "", "specify a definition file or directory, it will only be used in dry-run rather than applied to K8s cluster")
+	addNamespaceAndEnvArg(cmd)
 	cmd.SetOut(ioStreams.Out)
 	return cmd
 }
@@ -110,8 +98,11 @@ func DryRunApplication(cmdOption *DryRunCmdOptions, c common.Args, namespace str
 	if err != nil {
 		return buff, err
 	}
-
-	dm, err := discoverymapper.New(c.Config)
+	config, err := c.GetConfig()
+	if err != nil {
+		return buff, err
+	}
+	dm, err := discoverymapper.New(config)
 	if err != nil {
 		return buff, err
 	}

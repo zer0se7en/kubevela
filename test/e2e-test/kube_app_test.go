@@ -32,6 +32,7 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 
 	. "github.com/onsi/ginkgo"
@@ -341,13 +342,13 @@ spec:
 
 	It("Test store JSON schema of Kube parameter in ConfigMap", func() {
 		By("Get the ConfigMap")
-		cmName := fmt.Sprintf("schema-%s", cdName)
+		cmName := fmt.Sprintf("component-schema-%s", cdName)
 		Eventually(func() error {
 			cm := &corev1.ConfigMap{}
 			if err := k8sClient.Get(ctx, client.ObjectKey{Name: cmName, Namespace: namespace}, cm); err != nil {
 				return err
 			}
-			if cm.Data["openapi-v3-json-schema"] == "" {
+			if cm.Data[types.OpenapiV3JSONSchema] == "" {
 				return errors.New("json schema is not found in the ConfigMap")
 			}
 			return nil

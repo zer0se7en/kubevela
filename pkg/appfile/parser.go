@@ -27,10 +27,13 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/cue/definition"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
+	monitorContext "github.com/oam-dev/kubevela/pkg/monitor/context"
+	"github.com/oam-dev/kubevela/pkg/monitor/metrics"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
@@ -74,10 +77,19 @@ func NewDryRunApplicationParser(cli client.Client, dm discoverymapper.DiscoveryM
 
 // GenerateAppFile converts an application to an Appfile
 func (p *Parser) GenerateAppFile(ctx context.Context, app *v1beta1.Application) (*Appfile, error) {
+	if ctx, ok := ctx.(monitorContext.Context); ok {
+		subCtx := ctx.Fork("generate-app-file", monitorContext.DurationMetric(func(v float64) {
+			metrics.ParseAppFileDurationHistogram.WithLabelValues("application").Observe(v)
+		}))
+		defer subCtx.Commit("finish generate appFile")
+	}
 	ns := app.Namespace
 	appName := app.Name
 
 	appfile := p.newAppfile(appName, ns, app)
+	if app.Status.LatestRevision != nil {
+		appfile.AppRevisionName = app.Status.LatestRevision.Name
+	}
 
 	var wds []*Workload
 	for _, comp := range app.Spec.Components {
@@ -126,7 +138,7 @@ func (p *Parser) GenerateAppFile(ctx context.Context, app *v1beta1.Application) 
 	}
 
 	appfile.WorkflowMode = common.WorkflowModeDAG
-	if wfSpec := app.Spec.Workflow; wfSpec != nil {
+	if wfSpec := app.Spec.Workflow; wfSpec != nil && len(wfSpec.Steps) > 0 {
 		appfile.WorkflowMode = common.WorkflowModeStep
 		appfile.WorkflowSteps = wfSpec.Steps
 	}
@@ -146,6 +158,7 @@ func (p *Parser) newAppfile(appName, ns string, app *v1beta1.Application) *Appfi
 		RelatedScopeDefinitions:     make(map[string]*v1beta1.ScopeDefinition),
 
 		parser: p,
+		app:    app,
 	}
 	for k, v := range app.Annotations {
 		file.AppAnnotations[k] = v
@@ -230,7 +243,16 @@ func (p *Parser) GenerateAppFileFromRevision(appRev *v1beta1.ApplicationRevision
 func (p *Parser) parsePolicies(ctx context.Context, policies []v1beta1.AppPolicy) ([]*Workload, error) {
 	ws := []*Workload{}
 	for _, policy := range policies {
-		w, err := p.makeWorkload(ctx, policy.Name, policy.Type, types.TypePolicy, policy.Properties)
+		var w *Workload
+		var err error
+		switch policy.Type {
+		case v1alpha1.GarbageCollectPolicyType:
+			w, err = p.makeBuiltInPolicy(policy.Name, policy.Type, policy.Properties)
+		case v1alpha1.ApplyOncePolicyType:
+			w, err = p.makeBuiltInPolicy(policy.Name, policy.Type, policy.Properties)
+		default:
+			w, err = p.makeWorkload(ctx, policy.Name, policy.Type, types.TypePolicy, policy.Properties)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -257,6 +279,21 @@ func (p *Parser) makeWorkload(ctx context.Context, name, typ string, capType typ
 		return nil, errors.WithMessagef(err, "fetch component/policy type of %s", name)
 	}
 	return p.convertTemplate2Workload(name, typ, props, templ)
+}
+
+func (p *Parser) makeBuiltInPolicy(name, typ string, props *runtime.RawExtension) (*Workload, error) {
+	settings, err := util.RawExtension2Map(props)
+	if err != nil {
+		return nil, errors.WithMessagef(err, "fail to parse settings for %s", name)
+	}
+	return &Workload{
+		Traits:          []*Trait{},
+		ScopeDefinition: []*v1beta1.ScopeDefinition{},
+		Name:            name,
+		Type:            typ,
+		Params:          settings,
+		engine:          definition.NewWorkloadAbstractEngine(name, p.pd),
+	}, nil
 }
 
 func (p *Parser) makeWorkloadFromRevision(name, typ string, capType types.CapType, props *runtime.RawExtension, appRev *v1beta1.ApplicationRevision) (*Workload, error) {

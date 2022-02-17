@@ -45,7 +45,10 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const version = process.env.VERSION
-            const label = "backport release-" + version
+            let label = "backport release-" + version
+            if (version.includes("release")) {
+              label = "backport " + version
+            }
             // Add our backport label.
             github.issues.addLabels({
               // Every pull request is an issue, but not every issue is a pull request.
@@ -55,3 +58,12 @@ jobs:
               labels: [label]
             })
             console.log("Added '" + label + "' label.")
+      - name: Checkout
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Open Backport PR
+        uses: zeebe-io/backport-action@v0.0.6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_workspace: ${{ github.workspace }}

@@ -101,13 +101,16 @@ func TestWorkflowSuspend(t *testing.T) {
 			r := require.New(t)
 			cmd := NewWorkflowSuspendCommand(c, ioStream)
 			initCommand(cmd)
-
+			// clean up the arguments before start
+			cmd.SetArgs([]string{})
+			client, err := c.GetClient()
+			r.NoError(err)
 			if tc.app != nil {
-				err := c.Client.Create(ctx, tc.app)
+				err := client.Create(ctx, tc.app)
 				r.NoError(err)
 
 				if tc.app.Namespace != corev1.NamespaceDefault {
-					err := c.Client.Create(ctx, &corev1.Namespace{
+					err := client.Create(ctx, &corev1.Namespace{
 						ObjectMeta: metav1.ObjectMeta{
 							Name: tc.app.Namespace,
 						},
@@ -118,7 +121,7 @@ func TestWorkflowSuspend(t *testing.T) {
 					cmd.SetArgs([]string{tc.app.Name})
 				}
 			}
-			err := cmd.Execute()
+			err = cmd.Execute()
 			if tc.expectedErr != nil {
 				r.Equal(tc.expectedErr, err)
 				return
@@ -126,7 +129,7 @@ func TestWorkflowSuspend(t *testing.T) {
 			r.NoError(err)
 
 			wf := &v1beta1.Application{}
-			err = c.Client.Get(ctx, types.NamespacedName{
+			err = client.Get(ctx, types.NamespacedName{
 				Namespace: tc.app.Namespace,
 				Name:      tc.app.Name,
 			}, wf)
@@ -147,15 +150,6 @@ func TestWorkflowResume(t *testing.T) {
 	}{
 		"no app name specified": {
 			expectedErr: fmt.Errorf("must specify application name"),
-		},
-		"no workflow in app": {
-			app: &v1beta1.Application{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "no-workflow",
-					Namespace: "default",
-				},
-			},
-			expectedErr: fmt.Errorf("the application must have workflow"),
 		},
 		"workflow not suspended": {
 			app: &v1beta1.Application{
@@ -218,13 +212,14 @@ func TestWorkflowResume(t *testing.T) {
 			r := require.New(t)
 			cmd := NewWorkflowResumeCommand(c, ioStream)
 			initCommand(cmd)
-
+			client, err := c.GetClient()
+			r.NoError(err)
 			if tc.app != nil {
-				err := c.Client.Create(ctx, tc.app)
+				err := client.Create(ctx, tc.app)
 				r.NoError(err)
 
 				if tc.app.Namespace != corev1.NamespaceDefault {
-					err := c.Client.Create(ctx, &corev1.Namespace{
+					err := client.Create(ctx, &corev1.Namespace{
 						ObjectMeta: metav1.ObjectMeta{
 							Name: tc.app.Namespace,
 						},
@@ -235,7 +230,7 @@ func TestWorkflowResume(t *testing.T) {
 					cmd.SetArgs([]string{tc.app.Name})
 				}
 			}
-			err := cmd.Execute()
+			err = cmd.Execute()
 			if tc.expectedErr != nil {
 				r.Equal(tc.expectedErr, err)
 				return
@@ -243,7 +238,7 @@ func TestWorkflowResume(t *testing.T) {
 			r.NoError(err)
 
 			wf := &v1beta1.Application{}
-			err = c.Client.Get(ctx, types.NamespacedName{
+			err = client.Get(ctx, types.NamespacedName{
 				Namespace: tc.app.Namespace,
 				Name:      tc.app.Name,
 			}, wf)
@@ -306,13 +301,14 @@ func TestWorkflowTerminate(t *testing.T) {
 			r := require.New(t)
 			cmd := NewWorkflowTerminateCommand(c, ioStream)
 			initCommand(cmd)
-
+			client, err := c.GetClient()
+			r.NoError(err)
 			if tc.app != nil {
-				err := c.Client.Create(ctx, tc.app)
+				err := client.Create(ctx, tc.app)
 				r.NoError(err)
 
 				if tc.app.Namespace != corev1.NamespaceDefault {
-					err := c.Client.Create(ctx, &corev1.Namespace{
+					err := client.Create(ctx, &corev1.Namespace{
 						ObjectMeta: metav1.ObjectMeta{
 							Name: tc.app.Namespace,
 						},
@@ -323,7 +319,7 @@ func TestWorkflowTerminate(t *testing.T) {
 					cmd.SetArgs([]string{tc.app.Name})
 				}
 			}
-			err := cmd.Execute()
+			err = cmd.Execute()
 			if tc.expectedErr != nil {
 				r.Equal(tc.expectedErr, err)
 				return
@@ -331,7 +327,7 @@ func TestWorkflowTerminate(t *testing.T) {
 			r.NoError(err)
 
 			wf := &v1beta1.Application{}
-			err = c.Client.Get(ctx, types.NamespacedName{
+			err = client.Get(ctx, types.NamespacedName{
 				Namespace: tc.app.Namespace,
 				Name:      tc.app.Name,
 			}, wf)
@@ -394,13 +390,14 @@ func TestWorkflowRestart(t *testing.T) {
 			r := require.New(t)
 			cmd := NewWorkflowRestartCommand(c, ioStream)
 			initCommand(cmd)
-
+			client, err := c.GetClient()
+			r.NoError(err)
 			if tc.app != nil {
-				err := c.Client.Create(ctx, tc.app)
+				err := client.Create(ctx, tc.app)
 				r.NoError(err)
 
 				if tc.app.Namespace != corev1.NamespaceDefault {
-					err := c.Client.Create(ctx, &corev1.Namespace{
+					err := client.Create(ctx, &corev1.Namespace{
 						ObjectMeta: metav1.ObjectMeta{
 							Name: tc.app.Namespace,
 						},
@@ -411,7 +408,7 @@ func TestWorkflowRestart(t *testing.T) {
 					cmd.SetArgs([]string{tc.app.Name})
 				}
 			}
-			err := cmd.Execute()
+			err = cmd.Execute()
 			if tc.expectedErr != nil {
 				r.Equal(tc.expectedErr, err)
 				return
@@ -419,13 +416,148 @@ func TestWorkflowRestart(t *testing.T) {
 			r.NoError(err)
 
 			wf := &v1beta1.Application{}
-			err = c.Client.Get(ctx, types.NamespacedName{
+			err = client.Get(ctx, types.NamespacedName{
 				Namespace: tc.app.Namespace,
 				Name:      tc.app.Name,
 			}, wf)
 			r.NoError(err)
 			var nilStatus *common.WorkflowStatus = nil
 			r.Equal(nilStatus, wf.Status.Workflow)
+		})
+	}
+}
+
+func TestWorkflowRollback(t *testing.T) {
+	c := initArgs()
+	ioStream := cmdutil.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr}
+	ctx := context.TODO()
+
+	testCases := map[string]struct {
+		app         *v1beta1.Application
+		revision    *v1beta1.ApplicationRevision
+		expectedErr error
+	}{
+		"no app name specified": {
+			expectedErr: fmt.Errorf("must specify application name"),
+		},
+		"no workflow in app": {
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "no-workflow",
+					Namespace: "default",
+				},
+			},
+			expectedErr: fmt.Errorf("the application must have workflow"),
+		},
+		"workflow running": {
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "workflow-not-running",
+					Namespace: "default",
+				},
+				Spec: workflowSpec,
+				Status: common.AppStatus{
+					Workflow: &common.WorkflowStatus{
+						Suspend:    false,
+						Terminated: false,
+						Finished:   false,
+					},
+				},
+			},
+			expectedErr: fmt.Errorf("can not rollback a running workflow"),
+		},
+		"invalid revision": {
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "invalid-revision",
+					Namespace: "default",
+				},
+				Spec: workflowSpec,
+				Status: common.AppStatus{
+					Workflow: &common.WorkflowStatus{
+						Suspend: true,
+					},
+				},
+			},
+			expectedErr: fmt.Errorf("the latest revision is not set: invalid-revision"),
+		},
+		"rollback successfully": {
+			app: &v1beta1.Application{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "workflow",
+					Namespace: "test",
+				},
+				Spec: workflowSpec,
+				Status: common.AppStatus{
+					LatestRevision: &common.Revision{
+						Name: "revision-v1",
+					},
+					Workflow: &common.WorkflowStatus{
+						Terminated: true,
+					},
+				},
+			},
+			revision: &v1beta1.ApplicationRevision{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "revision-v1",
+					Namespace: "test",
+				},
+				Spec: v1beta1.ApplicationRevisionSpec{
+					Application: v1beta1.Application{
+						Spec: v1beta1.ApplicationSpec{
+							Components: []common.ApplicationComponent{{
+								Name:       "revision-component",
+								Type:       "worker",
+								Properties: &runtime.RawExtension{Raw: []byte(`{"cmd":["sleep","1000"],"image":"busybox"}`)},
+							}},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			cmd := NewWorkflowRollbackCommand(c, ioStream)
+			initCommand(cmd)
+			client, err := c.GetClient()
+			r.NoError(err)
+			if tc.app != nil {
+				err := client.Create(ctx, tc.app)
+				r.NoError(err)
+
+				if tc.app.Namespace != corev1.NamespaceDefault {
+					err := client.Create(ctx, &corev1.Namespace{
+						ObjectMeta: metav1.ObjectMeta{
+							Name: tc.app.Namespace,
+						},
+					})
+					r.NoError(err)
+					cmd.SetArgs([]string{tc.app.Name, "-n", tc.app.Namespace})
+				} else {
+					cmd.SetArgs([]string{tc.app.Name})
+				}
+			}
+			if tc.revision != nil {
+				err := client.Create(ctx, tc.revision)
+				r.NoError(err)
+			}
+			err = cmd.Execute()
+			if tc.expectedErr != nil {
+				r.Equal(tc.expectedErr, err)
+				return
+			}
+			r.NoError(err)
+
+			wf := &v1beta1.Application{}
+			err = client.Get(ctx, types.NamespacedName{
+				Namespace: tc.app.Namespace,
+				Name:      tc.app.Name,
+			}, wf)
+			r.NoError(err)
+			r.Equal(wf.Spec.Components[0].Name, "revision-component")
 		})
 	}
 }

@@ -272,7 +272,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 			if err := k8sClient.Get(ctx, client.ObjectKey{Name: fmt.Sprintf("%s-v2-%s", appName, namespace)}, rt); err != nil {
 				return err
 			}
-			if len(rt.Status.TrackedResources) != 0 {
+			if len(rt.Spec.ManagedResources) != 0 {
 				return nil
 			}
 			return errors.New("v2 resources have not been dispatched")
@@ -352,7 +352,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 		}, 30*time.Second, 3*time.Second).Should(Succeed())
 	})
 
-	It("Test deploy application which containing helm module", func() {
+	PIt("Test deploy application which containing helm module", func() {
 		var (
 			appName  = "test-helm"
 			compName = "worker"
@@ -476,7 +476,7 @@ var _ = Describe("Test application of the specified definition version", func() 
 			By("Verify patch trait is applied")
 			templateLabels := deploy.GetLabels()
 			return templateLabels["hello"] == "world"
-		}, 120*time.Second, 10*time.Second).Should(BeTrue())
+		}, 200*time.Second, 10*time.Second).Should(BeTrue())
 
 		app = v1beta1.Application{
 			ObjectMeta: metav1.ObjectMeta{

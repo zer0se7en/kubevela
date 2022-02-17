@@ -30,22 +30,23 @@ import (
 	"strings"
 	"time"
 
-	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/klog/v2"
+	"k8s.io/klog/v2/klogr"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	ctrlClient "github.com/oam-dev/kubevela/pkg/client"
 	standardcontroller "github.com/oam-dev/kubevela/pkg/controller"
 	commonconfig "github.com/oam-dev/kubevela/pkg/controller/common"
 	oamcontroller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
 	oamv1alpha2 "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/pkg/controller/utils"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
+	_ "github.com/oam-dev/kubevela/pkg/monitor/metrics"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
+	"github.com/oam-dev/kubevela/pkg/resourcekeeper"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
 	oamwebhook "github.com/oam-dev/kubevela/pkg/webhook/core.oam.dev"
@@ -73,7 +74,6 @@ func main() {
 	var healthAddr string
 	var disableCaps string
 	var storageDriver string
-	var syncPeriod time.Duration
 	var applyOnceOnly string
 	var qps float64
 	var burst int
@@ -109,8 +109,10 @@ func main() {
 		"For the purpose of some production environment that workload or trait should not be affected if no spec change, available options: on, off, force.")
 	flag.StringVar(&disableCaps, "disable-caps", "", "To be disabled builtin capability list.")
 	flag.StringVar(&storageDriver, "storage-driver", "Local", "Application file save to the storage driver")
-	flag.DurationVar(&syncPeriod, "informer-re-sync-interval", 60*time.Minute,
-		"controller shared informer lister full re-sync period")
+	flag.DurationVar(&commonconfig.ApplicationReSyncPeriod, "application-re-sync-period", 5*time.Minute,
+		"Re-sync period for application to re-sync, also known as the state-keep interval.")
+	flag.DurationVar(&commonconfig.ReconcileTimeout, "reconcile-timeout", time.Minute*3,
+		"the timeout for controller reconcile")
 	flag.StringVar(&oam.SystemDefinitonNamespace, "system-definition-namespace", "vela-system", "define the namespace of the system-level definition")
 	flag.IntVar(&controllerArgs.ConcurrentReconciles, "concurrent-reconciles", 4, "concurrent-reconciles is the concurrent reconcile number of the controller. The default value is 4")
 	flag.Float64Var(&qps, "kube-api-qps", 50, "the qps for reconcile clients. Low qps may lead to low throughput. High qps may give stress to api-server. Raise this value if concurrent-reconciles is set to be high.")
@@ -128,6 +130,10 @@ func main() {
 	flag.DurationVar(&retryPeriod, "leader-election-retry-period", 2*time.Second,
 		"The duration the LeaderElector clients should wait between tries of actions")
 	flag.BoolVar(&enableClusterGateway, "enable-cluster-gateway", false, "Enable cluster-gateway to use multicluster, disabled by default.")
+	flag.BoolVar(&controllerArgs.EnableCompatibility, "enable-asi-compatibility", false, "enable compatibility for asi")
+	flag.BoolVar(&controllerArgs.IgnoreAppWithoutControllerRequirement, "ignore-app-without-controller-version", false, "If true, application controller will not process the app without 'app.oam.dev/controller-version-require' annotation")
+	standardcontroller.AddOptimizeFlags()
+	flag.IntVar(&resourcekeeper.MaxDispatchConcurrent, "max-dispatch-concurrent", 10, "Set the max dispatch concurrent number, default is 10")
 
 	flag.Parse()
 	// setup logging
@@ -187,12 +193,12 @@ func main() {
 
 	// wrapper the round tripper by multi cluster rewriter
 	if enableClusterGateway {
-		if err := multicluster.Initialize(restConfig); err != nil {
+		if _, err := multicluster.Initialize(restConfig, true); err != nil {
 			klog.ErrorS(err, "failed to enable multicluster")
 			os.Exit(1)
 		}
 	}
-
+	ctrl.SetLogger(klogr.New())
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                     scheme,
 		MetricsBindAddress:         metricsAddr,
@@ -202,12 +208,16 @@ func main() {
 		Port:                       webhookPort,
 		CertDir:                    certDir,
 		HealthProbeBindAddress:     healthAddr,
-		SyncPeriod:                 &syncPeriod,
 		LeaderElectionResourceLock: leaderElectionResourceLock,
 		LeaseDuration:              &leaseDuration,
 		RenewDeadline:              &renewDeadline,
 		RetryPeriod:                &retryPeriod,
-		ClientDisableCacheFor:      []client.Object{&v1beta1.ResourceTracker{}, &appsv1.ControllerRevision{}},
+		// SyncPeriod is configured with default value, aka. 10h. First, controller-runtime does not
+		// recommend use it as a time trigger, instead, it is expected to work for failure tolerance
+		// of controller-runtime. Additionally, set this value will affect not only application
+		// controller but also all other controllers like definition controller. Therefore, for
+		// functionalities like state-keep, they should be invented in other ways.
+		NewClient: ctrlClient.DefaultNewControllerClient,
 	})
 	if err != nil {
 		klog.ErrorS(err, "Unable to create a controller manager")

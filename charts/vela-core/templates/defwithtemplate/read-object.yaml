@@ -5,6 +5,8 @@ kind: WorkflowStepDefinition
 metadata:
   annotations:
     definition.oam.dev/description: Read objects for your workflow steps
+  labels:
+    custom.definition.oam.dev/ui-hidden: "true"
   name: read-object
   namespace: {{.Values.systemDefinitionNamespace}}
 spec:
@@ -28,6 +30,7 @@ spec:
         					}
         				}
         			}
+        			cluster: parameter.cluster
         		}
         	}
         	if parameter.apiVersion != _|_ || parameter.kind != _|_ {
@@ -42,6 +45,7 @@ spec:
         					}
         				}
         			}
+        			cluster: parameter.cluster
         		}
         	}
         }
@@ -54,5 +58,7 @@ spec:
         	name: string
         	// +usage=Specify the namespace of the object
         	namespace?: string
+        	// +usage=Specify the cluster of the object
+        	cluster: *"" | string
         }
 

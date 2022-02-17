@@ -22,6 +22,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/cue/model/value"
+	monitorCtx "github.com/oam-dev/kubevela/pkg/monitor/context"
 	wfContext "github.com/oam-dev/kubevela/pkg/workflow/context"
 )
 
@@ -42,6 +43,7 @@ type TaskRunOptions struct {
 	Data          *value.Value
 	PreStartHooks []TaskPreStartHook
 	PostStopHooks []TaskPostStopHook
+	GetTracer     func(id string, step v1beta1.WorkflowStep) monitorCtx.Context
 	RunSteps      func(isDag bool, runners ...TaskRunner) (*common.WorkflowStatus, error)
 }
 
@@ -53,8 +55,10 @@ type TaskPostStopHook func(ctx wfContext.Context, taskValue *value.Value, step v
 
 // Operation is workflow operation object.
 type Operation struct {
-	Suspend    bool
-	Terminated bool
+	Suspend            bool
+	Terminated         bool
+	Waiting            bool
+	FailedAfterRetries bool
 }
 
 // TaskGenerator will generate taskRunner.
@@ -77,6 +81,12 @@ type Action interface {
 const (
 	// ContextKeyMetadata is key that refer to application metadata.
 	ContextKeyMetadata = "metadata__"
-	// AnnotationPublishVersion is annotation that record the application workflow version.
-	AnnotationPublishVersion = "vela.io/publish-version"
+	// ContextPrefixFailedTimes is the prefix that refer to the failed times of the step in workflow context config map.
+	ContextPrefixFailedTimes = "failed_times"
+	// ContextPrefixBackoffTimes is the prefix that refer to the backoff times in workflow context config map.
+	ContextPrefixBackoffTimes = "backoff_times"
+	// ContextKeyLastExecuteTime is the key that refer to the last execute time in workflow context config map.
+	ContextKeyLastExecuteTime = "last_execute_time"
+	// ContextKeyNextExecuteTime is the key that refer to the next execute time in workflow context config map.
+	ContextKeyNextExecuteTime = "next_execute_time"
 )

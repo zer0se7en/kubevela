@@ -37,6 +37,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/appfile/helm"
@@ -44,20 +45,29 @@ import (
 	"github.com/oam-dev/kubevela/pkg/cue/model"
 	"github.com/oam-dev/kubevela/pkg/cue/model/value"
 	"github.com/oam-dev/kubevela/pkg/cue/process"
+	monitorContext "github.com/oam-dev/kubevela/pkg/monitor/context"
+	"github.com/oam-dev/kubevela/pkg/monitor/metrics"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
+	"github.com/oam-dev/kubevela/pkg/workflow/step"
 )
 
 // constant error information
 const (
-	errInvalidValueType                                = "require %q type parameter value"
-	errTerraformConfigurationIsNotSet                  = "terraform configuration is not set"
-	errFailToConvertTerraformComponentProperties       = "failed to convert Terraform component properties"
-	errTerraformNameOfWriteConnectionSecretToRefNotSet = "the name of writeConnectionSecretToRef of terraform component is not set"
+	errInvalidValueType                          = "require %q type parameter value"
+	errTerraformConfigurationIsNotSet            = "terraform configuration is not set"
+	errFailToConvertTerraformComponentProperties = "failed to convert Terraform component properties"
+	errConvertTerraformBaseConfigurationSpec     = "failed to convert properties to Terraform Configuration spec"
 )
 
-// WriteConnectionSecretToRefKey is used to create a secret for cloud resource connection
-const WriteConnectionSecretToRefKey = "writeConnectionSecretToRef"
+const (
+	// WriteConnectionSecretToRefKey is used to create a secret for cloud resource connection
+	WriteConnectionSecretToRefKey = "writeConnectionSecretToRef"
+	// RegionKey is the region of a Cloud Provider
+	RegionKey = "region"
+	// ProviderRefKey is the reference of a Provider
+	ProviderRefKey = "providerRef"
+)
 
 // Workload is component
 type Workload struct {
@@ -73,6 +83,7 @@ type Workload struct {
 	Ctx                process.Context
 	Patch              *value.Value
 	engine             definition.AbstractEngine
+	SkipApplyWorkload  bool
 }
 
 // EvalContext eval workload template and set result to context
@@ -82,12 +93,17 @@ func (wl *Workload) EvalContext(ctx process.Context) error {
 
 // EvalStatus eval workload status
 func (wl *Workload) EvalStatus(ctx process.Context, cli client.Client, ns string) (string, error) {
+	// if the  standard workload is managed by trait always return empty message
+	if wl.SkipApplyWorkload {
+		return "", nil
+	}
 	return wl.engine.Status(ctx, cli, ns, wl.FullTemplate.CustomStatus, wl.Params)
 }
 
 // EvalHealth eval workload health check
 func (wl *Workload) EvalHealth(ctx process.Context, client client.Client, namespace string) (bool, error) {
-	if wl.FullTemplate.Health == "" {
+	// if health of template is not set or standard workload is managed by trait always return true
+	if wl.FullTemplate.Health == "" || wl.SkipApplyWorkload {
 		return true, nil
 	}
 	return wl.engine.HealthCheck(ctx, client, namespace, wl.FullTemplate.Health)
@@ -158,6 +174,7 @@ type Appfile struct {
 	WorkflowMode  common.WorkflowMode
 
 	parser *Parser
+	app    *v1beta1.Application
 }
 
 // Handler handles reconcile
@@ -167,44 +184,55 @@ type Handler interface {
 }
 
 // PrepareWorkflowAndPolicy generates workflow steps and policies from an appFile
-func (af *Appfile) PrepareWorkflowAndPolicy() (policies []*unstructured.Unstructured, err error) {
-	policies, err = af.generateUnstructureds(af.Policies)
+func (af *Appfile) PrepareWorkflowAndPolicy(ctx context.Context) ([]*unstructured.Unstructured, error) {
+	if ctx, ok := ctx.(monitorContext.Context); ok {
+		subCtx := ctx.Fork("prepare-workflow-and-policy", monitorContext.DurationMetric(func(v float64) {
+			metrics.PrepareWorkflowAndPolicyDurationHistogram.WithLabelValues("application").Observe(v)
+		}))
+		defer subCtx.Commit("finish prepare workflow and policy")
+	}
+
+	var externalPolicies []*unstructured.Unstructured
+	var err error
+
+	for _, policy := range af.Policies {
+		if policy == nil {
+			continue
+		}
+		switch policy.Type {
+		case v1alpha1.ApplyOncePolicyType:
+		case v1alpha1.GarbageCollectPolicyType:
+		case v1alpha1.EnvBindingPolicyType:
+		default:
+			un, err := af.generateUnstructured(policy)
+			if err != nil {
+				return nil, err
+			}
+			externalPolicies = append(externalPolicies, un)
+		}
+	}
+
+	af.WorkflowSteps, err = step.NewChainWorkflowStepGenerator(
+		&step.Deploy2EnvWorkflowStepGenerator{},
+		&step.ApplyComponentWorkflowStepGenerator{},
+	).Generate(af.app, af.WorkflowSteps)
+
 	if err != nil {
-		return
+		return nil, err
 	}
-
-	af.generateSteps()
-	return
+	return externalPolicies, nil
 }
 
-func (af *Appfile) generateUnstructureds(workloads []*Workload) ([]*unstructured.Unstructured, error) {
-	var uns []*unstructured.Unstructured
-	for _, wl := range workloads {
-		un, err := generateUnstructuredFromCUEModule(wl, af.Name, af.AppRevisionName, af.Namespace, af.Components, af.Artifacts)
-		if err != nil {
-			return nil, err
-		}
-		un.SetName(wl.Name)
-		if len(un.GetNamespace()) == 0 {
-			un.SetNamespace(af.Namespace)
-		}
-		uns = append(uns, un)
+func (af *Appfile) generateUnstructured(workload *Workload) (*unstructured.Unstructured, error) {
+	un, err := generateUnstructuredFromCUEModule(workload, af.Name, af.AppRevisionName, af.Namespace, af.Components, af.Artifacts)
+	if err != nil {
+		return nil, err
 	}
-	return uns, nil
-}
-
-func (af *Appfile) generateSteps() {
-	if len(af.WorkflowSteps) == 0 {
-		for _, comp := range af.Components {
-			af.WorkflowSteps = append(af.WorkflowSteps, v1beta1.WorkflowStep{
-				Name: comp.Name,
-				Type: "apply-component",
-				Properties: util.Object2RawExtension(map[string]string{
-					"component": comp.Name,
-				}),
-			})
-		}
+	un.SetName(workload.Name)
+	if len(un.GetNamespace()) == 0 {
+		un.SetNamespace(af.Namespace)
 	}
+	return un, nil
 }
 
 func generateUnstructuredFromCUEModule(wl *Workload, appName, revision, ns string, components []common.ApplicationComponent, artifacts []*types.ComponentManifest) (*unstructured.Unstructured, error) {
@@ -264,13 +292,15 @@ func (af *Appfile) GenerateComponentManifest(wl *Workload) (*types.ComponentMani
 	if af.Namespace == "" {
 		af.Namespace = corev1.NamespaceDefault
 	}
+	// generate context here to avoid nil pointer panic
+	wl.Ctx = NewBasicContext(af.Name, wl.Name, af.AppRevisionName, af.Namespace, wl.Params)
 	switch wl.CapabilityCategory {
 	case types.HelmCategory:
 		return generateComponentFromHelmModule(wl, af.Name, af.AppRevisionName, af.Namespace)
 	case types.KubeCategory:
 		return generateComponentFromKubeModule(wl, af.Name, af.AppRevisionName, af.Namespace)
 	case types.TerraformCategory:
-		return generateComponentFromTerraformModule(wl, af.Name, af.AppRevisionName, af.Namespace)
+		return generateComponentFromTerraformModule(wl, af.Name, af.Namespace)
 	default:
 		return generateComponentFromCUEModule(wl, af.Name, af.AppRevisionName, af.Namespace)
 	}
@@ -306,6 +336,7 @@ func (af *Appfile) generateAndFilterCommonLabels(compName string) map[string]str
 	}
 	Labels := map[string]string{
 		oam.LabelAppName:      af.Name,
+		oam.LabelAppNamespace: af.Namespace,
 		oam.LabelAppRevision:  af.AppRevisionName,
 		oam.LabelAppComponent: compName,
 	}
@@ -441,18 +472,20 @@ func (af *Appfile) setWorkloadRefToTrait(wlRef corev1.ObjectReference, trait *un
 
 // PrepareProcessContext prepares a DSL process Context
 func PrepareProcessContext(wl *Workload, applicationName, revision, namespace string) (process.Context, error) {
-	pCtx := NewBasicContext(wl, applicationName, revision, namespace)
-	if err := wl.EvalContext(pCtx); err != nil {
+	if wl.Ctx == nil {
+		wl.Ctx = NewBasicContext(applicationName, wl.Name, revision, namespace, wl.Params)
+	}
+	if err := wl.EvalContext(wl.Ctx); err != nil {
 		return nil, errors.Wrapf(err, "evaluate base template app=%s in namespace=%s", applicationName, namespace)
 	}
-	return pCtx, nil
+	return wl.Ctx, nil
 }
 
 // NewBasicContext prepares a basic DSL process Context
-func NewBasicContext(wl *Workload, applicationName, revision, namespace string) process.Context {
-	pCtx := process.NewContext(namespace, wl.Name, applicationName, revision)
-	if wl.Params != nil {
-		pCtx.SetParameters(wl.Params)
+func NewBasicContext(applicationName, workloadName, revision, namespace string, params map[string]interface{}) process.Context {
+	pCtx := process.NewContext(namespace, workloadName, applicationName, revision)
+	if params != nil {
+		pCtx.SetParameters(params)
 	}
 	return pCtx
 }
@@ -462,18 +495,16 @@ func generateComponentFromCUEModule(wl *Workload, appName, revision, ns string) 
 	if err != nil {
 		return nil, err
 	}
-	wl.Ctx = pCtx
 	return baseGenerateComponent(pCtx, wl, appName, ns)
 }
 
-func generateComponentFromTerraformModule(wl *Workload, appName, revision, ns string) (*types.ComponentManifest, error) {
-	pCtx := NewBasicContext(wl, appName, revision, ns)
-	return baseGenerateComponent(pCtx, wl, appName, ns)
+func generateComponentFromTerraformModule(wl *Workload, appName, ns string) (*types.ComponentManifest, error) {
+	return baseGenerateComponent(wl.Ctx, wl, appName, ns)
 }
 
 func baseGenerateComponent(pCtx process.Context, wl *Workload, appName, ns string) (*types.ComponentManifest, error) {
 	var err error
-
+	pCtx.PushData(model.ContextComponentType, wl.Type)
 	for _, tr := range wl.Traits {
 		if err := tr.EvalContext(pCtx); err != nil {
 			return nil, errors.Wrapf(err, "evaluate template trait=%s app=%s", tr.Name, wl.Name)
@@ -658,8 +689,14 @@ func generateTerraformConfigurationWorkload(wl *Workload, ns string) (*unstructu
 	}
 
 	configuration := terraformapi.Configuration{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "terraform.core.oam.dev/v1beta1", Kind: "Configuration"},
-		ObjectMeta: metav1.ObjectMeta{Name: wl.Name, Namespace: ns},
+		TypeMeta: metav1.TypeMeta{APIVersion: "terraform.core.oam.dev/v1beta1", Kind: "Configuration"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      wl.Name,
+			Namespace: ns,
+		},
+	}
+	if wl.FullTemplate.ComponentDefinition != nil {
+		configuration.ObjectMeta.Annotations = wl.FullTemplate.ComponentDefinition.Annotations
 	}
 
 	switch wl.FullTemplate.Terraform.Type {
@@ -672,19 +709,31 @@ func generateTerraformConfigurationWorkload(wl *Workload, ns string) (*unstructu
 		configuration.Spec.Path = wl.FullTemplate.Terraform.Path
 	}
 
-	if wl.FullTemplate.Terraform.ProviderReference != nil {
-		configuration.Spec.ProviderReference = wl.FullTemplate.Terraform.ProviderReference
-	}
-
 	// 1. parse writeConnectionSecretToRef
-	if err := json.Unmarshal(params, &configuration.Spec); err != nil {
+	if err := json.Unmarshal(params, &configuration); err != nil {
 		return nil, errors.Wrap(err, errFailToConvertTerraformComponentProperties)
 	}
 
-	if configuration.Spec.WriteConnectionSecretToReference != nil {
-		if configuration.Spec.WriteConnectionSecretToReference.Name == "" {
-			return nil, errors.New(errTerraformNameOfWriteConnectionSecretToRefNotSet)
-		}
+	var spec terraformapi.BaseConfigurationSpec
+	if err := json.Unmarshal(params, &spec); err != nil {
+		return nil, errors.Wrap(err, errConvertTerraformBaseConfigurationSpec)
+	}
+	if spec.ProviderReference != nil && !reflect.DeepEqual(configuration.Spec.ProviderReference, spec.ProviderReference) {
+		configuration.Spec.ProviderReference = spec.ProviderReference
+	} else if wl.FullTemplate != nil && wl.FullTemplate.ComponentDefinition != nil &&
+		wl.FullTemplate.ComponentDefinition.Spec.Schematic != nil &&
+		wl.FullTemplate.ComponentDefinition.Spec.Schematic.Terraform != nil &&
+		wl.FullTemplate.ComponentDefinition.Spec.Schematic.Terraform.ProviderReference != nil {
+		// Check whether the provider reference is set in ComponentDefinition
+		configuration.Spec.ProviderReference = wl.FullTemplate.ComponentDefinition.Spec.Schematic.Terraform.ProviderReference
+	}
+
+	if spec.Region != "" && configuration.Spec.Region != spec.Region {
+		configuration.Spec.Region = spec.Region
+	}
+	if spec.WriteConnectionSecretToReference != nil && spec.WriteConnectionSecretToReference.Name != "" &&
+		!reflect.DeepEqual(configuration.Spec.WriteConnectionSecretToReference, spec.WriteConnectionSecretToReference) {
+		configuration.Spec.WriteConnectionSecretToReference = spec.WriteConnectionSecretToReference
 		// set namespace for writeConnectionSecretToRef, developer needn't manually set it
 		if configuration.Spec.WriteConnectionSecretToReference.Namespace == "" {
 			configuration.Spec.WriteConnectionSecretToReference.Namespace = ns
@@ -702,11 +751,14 @@ func generateTerraformConfigurationWorkload(wl *Workload, ns string) (*unstructu
 		return nil, errors.Wrap(err, errFailToConvertTerraformComponentProperties)
 	}
 	delete(variableMap, WriteConnectionSecretToRefKey)
+	delete(variableMap, RegionKey)
+	delete(variableMap, ProviderRefKey)
 
 	data, err := json.Marshal(variableMap)
 	if err != nil {
 		return nil, errors.Wrap(err, errFailToConvertTerraformComponentProperties)
 	}
+
 	configuration.Spec.Variable = &runtime.RawExtension{Raw: data}
 	raw := util.Object2RawExtension(&configuration)
 	return util.RawExtension2Unstructured(raw)

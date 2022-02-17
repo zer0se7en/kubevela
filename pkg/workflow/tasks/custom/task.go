@@ -22,8 +22,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/oam-dev/kubevela/pkg/workflow/hooks"
-
 	"cuelang.org/go/cue"
 	"github.com/pkg/errors"
 
@@ -33,7 +31,9 @@ import (
 	"github.com/oam-dev/kubevela/pkg/cue/model/sets"
 	"github.com/oam-dev/kubevela/pkg/cue/model/value"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
+	monitorContext "github.com/oam-dev/kubevela/pkg/monitor/context"
 	wfContext "github.com/oam-dev/kubevela/pkg/workflow/context"
+	"github.com/oam-dev/kubevela/pkg/workflow/hooks"
 	"github.com/oam-dev/kubevela/pkg/workflow/providers"
 	wfTypes "github.com/oam-dev/kubevela/pkg/workflow/types"
 )
@@ -53,6 +53,8 @@ const (
 	StatusReasonParameter = "ProcessParameter"
 	// StatusReasonOutput is the reason of the workflow progress condition which is Output.
 	StatusReasonOutput = "Output"
+	// MaxErrorTimes is the max times of the workflow progress condition which is Failed.
+	MaxErrorTimes = 10
 )
 
 // LoadTaskTemplate gets the workflowStep definition from cluster and resolve it.
@@ -64,6 +66,7 @@ type TaskLoader struct {
 	pd                *packages.PackageDiscover
 	handlers          providers.Providers
 	runOptionsProcess func(*wfTypes.TaskRunOptions)
+	logLevel          int
 }
 
 // GetTaskGenerator get TaskGenerator by name.
@@ -148,22 +151,40 @@ func (t *TaskLoader) makeTaskGenerator(templ string) (wfTypes.TaskGenerator, err
 			return false
 		}
 		tRunner.run = func(ctx wfContext.Context, options *wfTypes.TaskRunOptions) (common.WorkflowStepStatus, *wfTypes.Operation, error) {
+			if options.GetTracer == nil {
+				options.GetTracer = func(id string, step v1beta1.WorkflowStep) monitorContext.Context {
+					return monitorContext.NewTraceContext(context.Background(), "")
+				}
+			}
+			tracer := options.GetTracer(exec.wfStatus.ID, wfStep).AddTag("step_name", wfStep.Name, "step_type", wfStep.Type)
+			tracer.V(t.logLevel)
+			defer func() {
+				tracer.Commit(string(exec.status().Phase))
+			}()
+
+			if exec.operation().FailedAfterRetries {
+				tracer.Info("failed after retries, skip this step")
+				return exec.status(), exec.operation(), nil
+			}
+
 			if t.runOptionsProcess != nil {
 				t.runOptionsProcess(options)
 			}
 			paramsValue, err := ctx.MakeParameter(params)
 			if err != nil {
+				tracer.Error(err, "make parameter")
 				return common.WorkflowStepStatus{}, nil, errors.WithMessage(err, "make parameter")
 			}
 
 			for _, hook := range options.PreStartHooks {
 				if err := hook(ctx, paramsValue, wfStep); err != nil {
+					tracer.Error(err, "do preStartHook")
 					return common.WorkflowStepStatus{}, nil, errors.WithMessage(err, "do preStartHook")
 				}
 			}
 
 			if err := paramsValue.Error(); err != nil {
-				exec.err(err, StatusReasonParameter)
+				exec.err(ctx, err, StatusReasonParameter)
 				return exec.status(), exec.operation(), nil
 			}
 
@@ -176,20 +197,26 @@ func (t *TaskLoader) makeTaskGenerator(templ string) (wfTypes.TaskGenerator, err
 				paramFile = fmt.Sprintf(model.ParameterFieldName+": {%s}\n", ps)
 			}
 
-			taskv, err := t.makeValue(ctx, strings.Join([]string{templ, paramFile}, "\n"), genOpt.ID)
+			taskv, err := t.makeValue(ctx, strings.Join([]string{templ, paramFile}, "\n"), exec.wfStatus.ID)
 			if err != nil {
-				exec.err(err, StatusReasonRendering)
+				exec.err(ctx, err, StatusReasonRendering)
 				return exec.status(), exec.operation(), nil
 			}
 
+			exec.tracer = tracer
+			if isDebugMode(taskv) {
+				exec.printStep("workflowStepStart", "workflow", "", taskv)
+				defer exec.printStep("workflowStepEnd", "workflow", "", taskv)
+			}
 			if err := exec.doSteps(ctx, taskv); err != nil {
-				exec.err(err, StatusReasonExecute)
+				tracer.Error(err, "do steps")
+				exec.err(ctx, err, StatusReasonExecute)
 				return exec.status(), exec.operation(), nil
 			}
 
 			for _, hook := range options.PostStopHooks {
 				if err := hook(ctx, taskv, wfStep, exec.status().Phase); err != nil {
-					exec.err(err, StatusReasonOutput)
+					exec.err(ctx, err, StatusReasonOutput)
 					return exec.status(), exec.operation(), nil
 				}
 			}
@@ -217,10 +244,13 @@ func (t *TaskLoader) makeValue(ctx wfContext.Context, templ string, id string) (
 type executor struct {
 	handlers providers.Providers
 
-	wfStatus   common.WorkflowStepStatus
-	suspend    bool
-	terminated bool
-	wait       bool
+	wfStatus           common.WorkflowStepStatus
+	suspend            bool
+	terminated         bool
+	failedAfterRetries bool
+	wait               bool
+
+	tracer monitorContext.Context
 }
 
 // Suspend let workflow pause.
@@ -247,16 +277,28 @@ func (exec *executor) Wait(message string) {
 	exec.wfStatus.Message = message
 }
 
-func (exec *executor) err(err error, reason string) {
+func (exec *executor) err(ctx wfContext.Context, err error, reason string) {
+	exec.wait = true
 	exec.wfStatus.Phase = common.WorkflowStepPhaseFailed
 	exec.wfStatus.Message = err.Error()
 	exec.wfStatus.Reason = reason
+	exec.checkErrorTimes(ctx)
+}
+
+func (exec *executor) checkErrorTimes(ctx wfContext.Context) {
+	times := ctx.IncreaseCountValueInMemory(wfTypes.ContextPrefixFailedTimes, exec.wfStatus.ID)
+	if times >= MaxErrorTimes {
+		exec.wait = false
+		exec.failedAfterRetries = true
+	}
 }
 
 func (exec *executor) operation() *wfTypes.Operation {
 	return &wfTypes.Operation{
-		Suspend:    exec.suspend,
-		Terminated: exec.terminated,
+		Suspend:            exec.suspend,
+		Terminated:         exec.terminated,
+		Waiting:            exec.wait,
+		FailedAfterRetries: exec.failedAfterRetries,
 	}
 }
 
@@ -264,8 +306,17 @@ func (exec *executor) status() common.WorkflowStepStatus {
 	return exec.wfStatus
 }
 
+func (exec *executor) printStep(phase string, provider string, do string, v *value.Value) {
+	msg, _ := v.String()
+	exec.tracer.Info("cue eval: "+msg, "phase", phase, "provider", provider, "do", do)
+}
+
 // Handle process task-step value by provider and do.
 func (exec *executor) Handle(ctx wfContext.Context, provider string, do string, v *value.Value) error {
+	if isDebugMode(v) {
+		exec.printStep("stepStart", provider, do, v)
+		defer exec.printStep("stepEnd", provider, do, v)
+	}
 	h, exist := exec.handlers.GetHandler(provider, do)
 	if !exist {
 		return errors.Errorf("handler not found")
@@ -336,6 +387,11 @@ func isStepList(fieldName string) bool {
 	return strings.HasPrefix(fieldName, "#up_")
 }
 
+func isDebugMode(v *value.Value) bool {
+	debug, _ := v.CueValue().LookupDef("#debug").Bool()
+	return debug
+}
+
 func opTpy(v *value.Value) string {
 	return getLabel(v, "#do")
 }
@@ -359,7 +415,7 @@ func getLabel(v *value.Value, label string) string {
 }
 
 // NewTaskLoader create a tasks loader.
-func NewTaskLoader(lt LoadTaskTemplate, pkgDiscover *packages.PackageDiscover, handlers providers.Providers) *TaskLoader {
+func NewTaskLoader(lt LoadTaskTemplate, pkgDiscover *packages.PackageDiscover, handlers providers.Providers, logLevel int) *TaskLoader {
 	return &TaskLoader{
 		loadTemplate: lt,
 		pd:           pkgDiscover,
@@ -368,5 +424,6 @@ func NewTaskLoader(lt LoadTaskTemplate, pkgDiscover *packages.PackageDiscover, h
 			options.PreStartHooks = append(options.PreStartHooks, hooks.Input)
 			options.PostStopHooks = append(options.PostStopHooks, hooks.Output)
 		},
+		logLevel: logLevel,
 	}
 }

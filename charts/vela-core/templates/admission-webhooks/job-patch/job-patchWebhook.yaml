@@ -22,9 +22,13 @@ spec:
         app: {{ template "kubevela.name" . }}-admission-patch
         {{- include "kubevela.labels" . | nindent 8 }}
     spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+      {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: patch
-          image: {{ .Values.admissionWebhooks.patch.image.repository }}:{{ .Values.admissionWebhooks.patch.image.tag }}
+          image: {{ .Values.imageRegistry }}{{ .Values.admissionWebhooks.patch.image.repository }}:{{ .Values.admissionWebhooks.patch.image.tag }}
           imagePullPolicy: {{ .Values.admissionWebhooks.patch.image.pullPolicy }}
           args:
             - patch

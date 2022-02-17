@@ -18,18 +18,20 @@ package controllers_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
-
-	"sigs.k8s.io/yaml"
 
 	v1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	common2 "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
+	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 
@@ -49,26 +51,6 @@ var _ = Describe("rollout related e2e-test,rollout trait test", func() {
 	var rollout v1alpha1.Rollout
 	var targerDeploy, sourceDeploy v1.Deployment
 	var err error
-
-	createAllDef := func() {
-		By("install all related definition")
-		var cd v1beta1.ComponentDefinition
-		Expect(yaml.Unmarshal([]byte(rolloutTestWd), &cd))
-		// create the componentDefinition if not exist
-		cd.Namespace = namespaceName
-		Eventually(
-			func() error {
-				return k8sClient.Create(ctx, &cd)
-			},
-			time.Second*3, time.Millisecond*300).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
-		var td v1beta1.TraitDefinition
-		Expect(yaml.Unmarshal([]byte(rolloutTestTd), &td)).Should(BeNil())
-		td.Namespace = namespaceName
-		Eventually(func() error {
-			return k8sClient.Create(ctx, &td)
-		},
-			time.Second*3, time.Millisecond*300).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
-	}
 
 	createNamespace := func() {
 		ns = corev1.Namespace{
@@ -103,6 +85,7 @@ var _ = Describe("rollout related e2e-test,rollout trait test", func() {
 		By("check rollout status have succeed")
 		Eventually(func() error {
 			rolloutKey := types.NamespacedName{Namespace: namespaceName, Name: componentName}
+			rollout = v1alpha1.Rollout{}
 			if err := k8sClient.Get(ctx, rolloutKey, &rollout); err != nil {
 				return err
 			}
@@ -113,9 +96,21 @@ var _ = Describe("rollout related e2e-test,rollout trait test", func() {
 				return fmt.Errorf("error rollout status state %s", rollout.Status.RollingState)
 			}
 			compRevName = rollout.Spec.TargetRevisionName
+			if rollout.GetAnnotations() == nil || rollout.GetAnnotations()[oam.AnnotationWorkloadName] != componentRevision {
+				return fmt.Errorf("target workload name annotation missmatch  want %s acctually %s",
+					rollout.GetAnnotations()[oam.AnnotationWorkloadName], componentRevision)
+			}
 			deployKey := types.NamespacedName{Namespace: namespaceName, Name: compRevName}
 			if err := k8sClient.Get(ctx, deployKey, &targerDeploy); err != nil {
 				return err
+			}
+			gvkStr := rollout.GetAnnotations()[oam.AnnotationWorkloadGVK]
+			gvk := map[string]string{}
+			if err := json.Unmarshal([]byte(gvkStr), &gvk); err != nil {
+				return err
+			}
+			if gvk["apiVersion"] != "apps/v1" || gvk["kind"] != "Deployment" {
+				return fmt.Errorf("error targetWorkload gvk")
 			}
 			if *targerDeploy.Spec.Replicas != *rollout.Spec.RolloutPlan.TargetSize {
 				return fmt.Errorf("targetDeploy replicas missMatch %d, %d", targerDeploy.Spec.Replicas, rollout.Spec.RolloutPlan.TargetSize)
@@ -123,30 +118,22 @@ var _ = Describe("rollout related e2e-test,rollout trait test", func() {
 			if targerDeploy.Status.UpdatedReplicas != *targerDeploy.Spec.Replicas {
 				return fmt.Errorf("update not finish")
 			}
-			if len(targerDeploy.OwnerReferences) != 1 {
-				return fmt.Errorf("workload ownerReference missMatch")
-			}
-			// guarantee rollout's owners and  workload's owners are same
-			if targerDeploy.OwnerReferences[0].Kind != rollout.OwnerReferences[0].Kind ||
-				targerDeploy.OwnerReferences[0].Name != rollout.OwnerReferences[0].Name {
-				return fmt.Errorf("workload ownerReference missMatch")
-			}
 			if rollout.Status.LastSourceRevision == "" {
 				return nil
 			}
 			deployKey = types.NamespacedName{Namespace: namespaceName, Name: rollout.Status.LastSourceRevision}
 			if err := k8sClient.Get(ctx, deployKey, &sourceDeploy); err == nil || !apierrors.IsNotFound(err) {
-				return fmt.Errorf("source deploy still exist")
+				return fmt.Errorf("source deploy still exist namespace %s deployName %s", namespaceName, rollout.Status.LastSourceRevision)
 			}
 			return nil
-		}, time.Second*360, 300*time.Millisecond).Should(BeNil())
+		}, time.Second*60, 300*time.Millisecond).Should(BeNil())
 	}
 
 	BeforeEach(func() {
 		By("Start to run a test, init whole env")
 		namespaceName = randomNamespaceName("rollout-trait-e2e-test")
+		app = v1beta1.Application{}
 		createNamespace()
-		createAllDef()
 		componentName = "express-server"
 	})
 
@@ -202,7 +189,7 @@ var _ = Describe("rollout related e2e-test,rollout trait test", func() {
 			if err = k8sClient.Get(ctx, appKey, checkApp); err != nil {
 				return err
 			}
-			checkApp.Spec.Components[0].Traits[0].Properties.Raw = []byte(`{"targetRevision":"express-server-v2"}`)
+			checkApp.Spec.Components[0].Traits[0].Properties.Raw = []byte(`{"targetRevision":"express-server-v2","rolloutBatches":[{"replicas":1},{"replicas":1}],"targetSize":2}`)
 			if err = k8sClient.Update(ctx, checkApp); err != nil {
 				return err
 			}
@@ -214,8 +201,7 @@ var _ = Describe("rollout related e2e-test,rollout trait test", func() {
 			if err = k8sClient.Get(ctx, appKey, checkApp); err != nil {
 				return err
 			}
-			checkApp.Spec.Components[0].Traits[0].Properties.Raw =
-				[]byte(`{"targetRevision":"express-server-v2","targetSize":4,"firstBatchReplicas":1,"secondBatchReplicas":1}`)
+			checkApp.Spec.Components[0].Traits[0].Properties.Raw = []byte(`{"targetRevision":"express-server-v2","targetSize":4,"rolloutBatches":[{"replicas":1},{"replicas":1}]}`)
 			if err = k8sClient.Update(ctx, checkApp); err != nil {
 				return err
 			}
@@ -230,7 +216,7 @@ var _ = Describe("rollout related e2e-test,rollout trait test", func() {
 			}
 			checkApp.Spec.Components[0].Properties.Raw = []byte(`{"image":"stefanprodan/podinfo:4.0.3","cpu":"0.3"}`)
 			checkApp.Spec.Components[0].Traits[0].Properties.Raw =
-				[]byte(`{"firstBatchReplicas":2,"secondBatchReplicas":2,"targetSize":4}`)
+				[]byte(`{"rolloutBatches":[{"replicas":2},{"replicas":2}],"targetSize":4}`)
 			if err = k8sClient.Update(ctx, checkApp); err != nil {
 				return err
 			}
@@ -242,9 +228,9 @@ var _ = Describe("rollout related e2e-test,rollout trait test", func() {
 			if err = k8sClient.Get(ctx, appKey, checkApp); err != nil {
 				return err
 			}
-			checkApp.Spec.Components[0].Properties.Raw = []byte(`{"image":"stefanprodan/podinfo:4.0.3","cpu":"0.5"}`)
+			checkApp.Spec.Components[0].Properties.Raw = []byte(`{"image":"stefanprodan/podinfo:4.0.3","cpu":"0.31"}`)
 			checkApp.Spec.Components[0].Traits[0].Properties.Raw =
-				[]byte(`{"firstBatchReplicas":2,"secondBatchReplicas":2,"targetSize":4,"batchPartition":0}`)
+				[]byte(`{"rolloutBatches":[{"replicas":2},{"replicas":2}],"targetSize":4,"batchPartition":0}`)
 			if err = k8sClient.Update(ctx, checkApp); err != nil {
 				return err
 			}
@@ -282,7 +268,7 @@ var _ = Describe("rollout related e2e-test,rollout trait test", func() {
 				return err
 			}
 			checkApp.Spec.Components[0].Traits[0].Properties.Raw =
-				[]byte(`{"firstBatchReplicas":2,"secondBatchReplicas":2,"targetSize":4,"batchPartition":1}`)
+				[]byte(`{"rolloutBatches":[{"replicas":2},{"replicas":2}],"targetSize":4,"batchPartition":1}`)
 			if err = k8sClient.Update(ctx, checkApp); err != nil {
 				return err
 			}
@@ -305,98 +291,130 @@ var _ = Describe("rollout related e2e-test,rollout trait test", func() {
 			return nil
 		}, 30*time.Second, 300*time.Millisecond).Should(BeNil())
 	})
+
+	It("rollout scale up and down without rollout batches", func() {
+		By("first scale operation")
+		Expect(common.ReadYamlToObject("testdata/rollout/deployment/application.yaml", &app)).Should(BeNil())
+		app.Namespace = namespaceName
+		Expect(k8sClient.Create(ctx, &app)).Should(BeNil())
+
+		verifySuccess("express-server-v1")
+		By("scale again to targetSize 4")
+		appKey := types.NamespacedName{Namespace: namespaceName, Name: app.Name}
+		checkApp := &v1beta1.Application{}
+		Eventually(func() error {
+			if err = k8sClient.Get(ctx, appKey, checkApp); err != nil {
+				return err
+			}
+			// scale up without rollout batches, test rollout controller will fill default batches
+			checkApp.Spec.Components[0].Traits[0].Properties.Raw =
+				[]byte(`{"targetSize":4}`)
+			if err = k8sClient.Update(ctx, checkApp); err != nil {
+				return err
+			}
+			return nil
+		}, 30*time.Second, 300*time.Millisecond).Should(BeNil())
+		Eventually(func() error {
+			checkRollout := v1alpha1.Rollout{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespaceName, Name: componentName}, &checkRollout); err != nil {
+				return err
+			}
+			if *checkRollout.Spec.RolloutPlan.TargetSize != 4 {
+				return fmt.Errorf("rollout targetSize haven't update")
+			}
+			if len(checkRollout.Spec.RolloutPlan.RolloutBatches) != 1 {
+				return fmt.Errorf("fail to fill rollout batches")
+			}
+			if checkRollout.Spec.RolloutPlan.RolloutBatches[0].Replicas != intstr.FromInt(2) {
+				return fmt.Errorf("fill rollout batches missmatch")
+			}
+			return nil
+		}, 30*time.Second, 300*time.Millisecond).Should(BeNil())
+		verifySuccess("express-server-v1")
+		checkApp = &v1beta1.Application{}
+		By("update application upgrade to v2")
+		Eventually(func() error {
+			if err = k8sClient.Get(ctx, appKey, checkApp); err != nil {
+				return err
+			}
+			checkApp.Spec.Components[0].Properties.Raw = []byte(`{"image":"stefanprodan/podinfo:4.0.3","cpu":"0.1"}`)
+			checkApp.Spec.Components[0].Traits[0].Properties.Raw =
+				[]byte(`{"rolloutBatches":[{"replicas":2},{"replicas":2}],"targetSize":4}`)
+			if err = k8sClient.Update(ctx, checkApp); err != nil {
+				return err
+			}
+			return nil
+		}, 30*time.Second, 300*time.Millisecond).Should(BeNil())
+		verifySuccess("express-server-v2")
+
+		By("scale down to targetSize 2")
+		appKey = types.NamespacedName{Namespace: namespaceName, Name: app.Name}
+		checkApp = &v1beta1.Application{}
+		Eventually(func() error {
+			if err = k8sClient.Get(ctx, appKey, checkApp); err != nil {
+				return err
+			}
+			// scale down without rollout batches, test rollout controller will fill default batches
+			checkApp.Spec.Components[0].Traits[0].Properties.Raw =
+				[]byte(`{"targetSize":2}`)
+			if err = k8sClient.Update(ctx, checkApp); err != nil {
+				return err
+			}
+			return nil
+		}, 30*time.Second, 300*time.Millisecond).Should(BeNil())
+		Eventually(func() error {
+			checkRollout := v1alpha1.Rollout{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespaceName, Name: componentName}, &checkRollout); err != nil {
+				return err
+			}
+			if *checkRollout.Spec.RolloutPlan.TargetSize != 2 {
+				return fmt.Errorf("rollout targetSize haven't update")
+			}
+			if len(checkRollout.Spec.RolloutPlan.RolloutBatches) != 1 {
+				return fmt.Errorf("fail to fill rollout batches")
+			}
+			if checkRollout.Spec.RolloutPlan.RolloutBatches[0].Replicas != intstr.FromInt(2) {
+				return fmt.Errorf("fill rollout batches missmatch")
+			}
+			return nil
+		}, 30*time.Second, 300*time.Millisecond).Should(BeNil())
+		verifySuccess("express-server-v2")
+	})
+
+	It("Delete a component with rollout trait from an application should delete this workload", func() {
+		By("first scale operation")
+		Expect(common.ReadYamlToObject("testdata/rollout/deployment/multi_comp_app.yaml", &app)).Should(BeNil())
+		app.Namespace = namespaceName
+		Expect(k8sClient.Create(ctx, &app)).Should(BeNil())
+		verifySuccess("express-server-v1")
+		componentName = "express-server-another"
+		verifySuccess("express-server-another-v1")
+		By("delete a component")
+		Eventually(func() error {
+			checkApp := &v1beta1.Application{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespaceName, Name: app.Name}, checkApp); err != nil {
+				return err
+			}
+			checkApp.Spec.Components = []common2.ApplicationComponent{checkApp.Spec.Components[0]}
+			if err := k8sClient.Update(ctx, checkApp); err != nil {
+				return err
+			}
+			return nil
+		}, 30*time.Second, 300*time.Millisecond).Should(BeNil())
+		By("check deployment have been gc")
+		Eventually(func() error {
+			checkApp := &v1beta1.Application{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespaceName, Name: app.Name}, checkApp); err != nil {
+				return err
+			}
+			if len(checkApp.Spec.Components) != 1 || checkApp.Spec.Components[0].Name != "express-server" {
+				return fmt.Errorf("app hasn't update yet")
+			}
+			deploy := v1.Deployment{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Namespace: namespaceName, Name: "express-server-another-v1"}, &deploy); err == nil || !apierrors.IsNotFound(err) {
+				return fmt.Errorf("another deployment haven't been delete")
+			}
+			return nil
+		}, 30*time.Second, 300*time.Millisecond).Should(BeNil())
+	})
 })
-
-const (
-	rolloutTestWd = `# Code generated by KubeVela templates. DO NOT EDIT.
-apiVersion: core.oam.dev/v1beta1
-kind: ComponentDefinition
-metadata:
-  name: webservice
-spec:
-  workload:
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-  schematic:
-    cue:
-      template: |
-        output: {
-                        	apiVersion: "apps/v1"
-                        	kind:       "Deployment"
-                        	spec: {
-                        		selector: matchLabels: {
-                        			"app.oam.dev/component": context.name
-                        		}
-
-                        		template: {
-                        			metadata: labels: {
-                        				"app.oam.dev/component": context.name
-                        				}
-                        				spec: {
-                        					containers: [{
-                        						name:  context.name
-                                    image: parameter.image
-                                    if parameter["cpu"] != _|_ {
-                                           resources: {
-                                           limits:
-                                              cpu: parameter.cpu
-                                           requests: cpu: "0"
-                                           }
-                                           }
-                                     }]
-                                }
-                        			}
-
-
-                        	}
-                        }
-                        parameter: {
-                        	// +usage=Which image would you like to use for your service
-                        	// +short=i
-                        	image: string
-
-                        	cpu?: 0.5|string
-                        }
-
-`
-	rolloutTestTd = `apiVersion: core.oam.dev/v1beta1
-kind: TraitDefinition
-metadata:
-  name: rollout
-spec:
-  manageWorkload: true
-  schematic:
-    cue:
-      template: |
-        outputs: rollout: {
-                	apiVersion: "standard.oam.dev/v1alpha1"
-                	kind:       "Rollout"
-                	metadata: {
-                		 name:  context.name
-                         namespace: context.namespace
-                	}
-                	spec: {
-                           targetRevisionName: parameter.targetRevision
-                           componentName: context.name
-                           rolloutPlan: {
-                           	rolloutStrategy: "DecreaseFirst"
-                            rolloutBatches:[
-                            	{ replicas: parameter.firstBatchReplicas},
-                            	{ replicas: parameter.secondBatchReplicas}]
-                            targetSize: parameter.targetSize
-                             if parameter["batchPartition"] != _|_ {
-                                 batchPartition:  parameter.batchPartition
-                              }
-                            }
-                		 }
-                	}
-
-                 parameter: {
-                     targetRevision: *context.revision|string
-                     targetSize: *2|int
-                     firstBatchReplicas: *1|int
-                     secondBatchReplicas: *1|int
-                     batchPartition?: int
-                 }`
-)

@@ -17,7 +17,6 @@ limitations under the License.
 package packages
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -35,6 +34,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+
+	"github.com/oam-dev/kubevela/pkg/stdlib"
 )
 
 const (
@@ -106,15 +107,17 @@ func (pd *PackageDiscover) ImportBuiltinPackagesFor(bi *build.Instance) {
 
 // ImportPackagesAndBuildInstance Combine import built-in packages and build cue template together to avoid data race
 func (pd *PackageDiscover) ImportPackagesAndBuildInstance(bi *build.Instance) (inst *cue.Instance, err error) {
-	pd.ImportBuiltinPackagesFor(bi)
 	var r cue.Runtime
-	pd.mutex.Lock()
-	defer pd.mutex.Unlock()
-	cueInst, err := r.Build(bi)
-	if err != nil {
+	if pd == nil {
+		return r.Build(bi)
+	}
+	pd.ImportBuiltinPackagesFor(bi)
+	if err := stdlib.AddImportsFor(bi, ""); err != nil {
 		return nil, err
 	}
-	return cueInst, err
+	pd.mutex.Lock()
+	defer pd.mutex.Unlock()
+	return r.Build(bi)
 }
 
 // ListPackageKinds list packages and their kinds
@@ -126,11 +129,12 @@ func (pd *PackageDiscover) ListPackageKinds() map[string][]VersionKind {
 
 // RefreshKubePackagesFromCluster will use K8s client to load/refresh all K8s open API as a reference kube package using in template
 func (pd *PackageDiscover) RefreshKubePackagesFromCluster() error {
-	body, err := pd.client.Get().AbsPath("/openapi/v2").Do(context.Background()).Raw()
-	if err != nil {
-		return err
-	}
-	return pd.addKubeCUEPackagesFromCluster(string(body))
+	return nil
+	// body, err := pd.client.Get().AbsPath("/openapi/v2").Do(context.Background()).Raw()
+	// if err != nil {
+	//	 return err
+	// }
+	// return pd.addKubeCUEPackagesFromCluster(string(body))
 }
 
 // Exist checks if the GVK exists in the built-in packages

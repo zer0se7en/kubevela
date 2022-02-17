@@ -137,7 +137,7 @@ spec:
 
 			By("Check whether ConfigMap is created")
 			var cm corev1.ConfigMap
-			name := fmt.Sprintf("%s%s", types.CapabilityConfigMapNamePrefix, traitDefinitionName)
+			name := fmt.Sprintf("trait-%s%s", types.CapabilityConfigMapNamePrefix, traitDefinitionName)
 			Eventually(func() bool {
 				err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &cm)
 				return err == nil
@@ -268,11 +268,9 @@ spec:
   schematic:
     cue:
       template: |
-        import (
-          ev1 "example.com/v1"
-        )
-        output: ev1.#Foo
         output: {
+          kind: "Foo"
+          apiVersion: "example.com/v1"
           spec: key: parameter.key1
           status: key: parameter.key2
         }
@@ -288,7 +286,7 @@ spec:
 
 			By("Check whether ConfigMap is created")
 			var cm corev1.ConfigMap
-			name := fmt.Sprintf("%s%s", types.CapabilityConfigMapNamePrefix, traitDefinitionName)
+			name := fmt.Sprintf("trait-%s%s", types.CapabilityConfigMapNamePrefix, traitDefinitionName)
 			Eventually(func() bool {
 				testutil.ReconcileRetry(&r, req)
 				err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &cm)

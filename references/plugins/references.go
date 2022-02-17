@@ -33,14 +33,21 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/controller/utils"
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
 	"github.com/oam-dev/kubevela/pkg/cue/model"
+	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
+	"github.com/oam-dev/kubevela/pkg/utils/terraform"
 )
 
 const (
 	// BaseRefPath is the target path for reference docs
 	BaseRefPath = "docs/en/end-user"
+	// KubeVelaIOTerraformPath is the target path for kubevela.io terraform docs
+	KubeVelaIOTerraformPath = "../kubevela.io/docs/end-user/components/cloud-services/terraform"
+	// KubeVelaIOTerraformPathZh is the target path for kubevela.io terraform docs in Chinese
+	KubeVelaIOTerraformPathZh = "../kubevela.io/i18n/zh/docusaurus-plugin-content-docs/current/end-user/components/cloud-services/terraform"
 	// ReferenceSourcePath is the location for source reference
 	ReferenceSourcePath = "hack/references"
 	// ComponentDefinitionTypePath is the URL path for component typed capability
@@ -49,13 +56,8 @@ const (
 	WorkloadTypePath = "workload-types"
 	// TraitPath is the URL path for trait typed capability
 	TraitPath = "traits"
-)
-
-const (
-	// TerraformWriteConnectionSecretToRefName is the name for Terraform WriteConnectionSecretToRef
-	TerraformWriteConnectionSecretToRefName = "writeConnectionSecretToRef"
-	// TerraformWriteConnectionSecretToRefType is the type for Terraform WriteConnectionSecretToRef
-	TerraformWriteConnectionSecretToRefType = "[writeConnectionSecretToRef](#writeConnectionSecretToRef)"
+	// WorkflowStepPath is the URL path for workflow step typed capability
+	WorkflowStepPath = "workflowsteps"
 )
 
 // Int64Type is int64 type
@@ -75,10 +77,12 @@ type Reference interface {
 // ParseReference is used to include the common function `parseParameter`
 type ParseReference struct {
 	Client client.Client
+	I18N   Language `json:"i18n"`
 }
 
 // MarkdownReference is the struct for capability information in
 type MarkdownReference struct {
+	DefinitionName string `json:"definitionName"`
 	ParseReference
 }
 
@@ -295,6 +299,7 @@ spec:
                 name: bar
                 key: bar
 `,
+
 	"worker": `
 apiVersion: core.oam.dev/v1beta1
 kind: Application
@@ -309,6 +314,204 @@ spec:
         cmd:
           - sleep
           - "1000"
+`,
+
+	"alibaba-vpc": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: app-vpc-sample
+spec:
+  components:
+    - name: sample-vpc
+      type: alibaba-vpc
+      properties:
+        vpc_cidr: "172.16.0.0/12"
+
+        writeConnectionSecretToRef:
+          name: vpc-conn
+`,
+
+	"alibaba-rds": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: rds-cloud-source
+spec:
+  components:
+    - name: sample-db
+      type: alibaba-rds
+      properties:
+        instance_name: sample-db
+        account_name: oamtest
+        password: U34rfwefwefffaked
+        writeConnectionSecretToRef:
+          name: db-conn
+`,
+
+	"alibaba-ack": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: ack-cloud-source
+spec:
+  components:
+    - name: ack-cluster
+      type: alibaba-ack
+      properties:
+        writeConnectionSecretToRef:
+          name: ack-conn
+          namespace: vela-system
+`,
+	"alibaba-eip": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: provision-cloud-resource-eip
+spec:
+  components:
+    - name: sample-eip
+      type: alibaba-eip
+      properties:
+        writeConnectionSecretToRef:
+          name: eip-conn
+`,
+
+	"alibaba-oss": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: oss-cloud-source
+spec:
+  components:
+    - name: sample-oss
+      type: alibaba-oss
+      properties:
+        bucket: vela-website
+        acl: private
+        writeConnectionSecretToRef:
+          name: oss-conn
+`,
+
+	"alibaba-redis": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: redis-cloud-source
+spec:
+  components:
+    - name: sample-redis
+      type: alibaba-redis
+      properties:
+        instance_name: oam-redis
+        account_name: oam
+        password: Xyfff83jfewGGfaked
+        writeConnectionSecretToRef:
+          name: redis-conn
+`,
+
+	"aws-s3": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: s3-cloud-source
+spec:
+  components:
+    - name: sample-s3
+      type: aws-s3
+      properties:
+        bucket: vela-website-20211019
+        acl: private
+
+        writeConnectionSecretToRef:
+          name: s3-conn
+`,
+
+	"azure-database-mariadb": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: mariadb-backend
+spec:
+  components:
+    - name: mariadb-backend
+      type: azure-database-mariadb
+      properties:
+        resource_group: "kubevela-group"
+        location: "West Europe"
+        server_name: "kubevela"
+        db_name: "backend"
+        username: "acctestun"
+        password: "H@Sh1CoR3!Faked"
+        writeConnectionSecretToRef:
+          name: azure-db-conn
+          namespace: vela-system
+`,
+
+	"azure-storage-account": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: storage-account-dev
+spec:
+  components:
+    - name: storage-account-dev
+      type: azure-storage-account
+      properties:
+        create_rsg: false
+        resource_group_name: "weursgappdev01"
+        location: "West Europe"
+        name: "appdev01"
+        tags: |
+          {
+            ApplicationName       = "Application01"
+            Terraform             = "Yes"
+          } 
+        static_website: |
+          [{
+            index_document = "index.html"
+            error_404_document = "index.html"
+          }]
+
+        writeConnectionSecretToRef:
+          name: storage-account-dev
+          namespace: vela-system
+`,
+
+	"alibaba-sls-project": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: app-sls-project-sample
+spec:
+  components:
+    - name: sample-sls-project
+      type: alibaba-sls-project
+      properties:
+        name: kubevela-1112
+        description: "Managed by KubeVela"
+
+        writeConnectionSecretToRef:
+          name: sls-project-conn
+`,
+
+	"alibaba-sls-store": `
+apiVersion: core.oam.dev/v1beta1
+kind: Application
+metadata:
+  name: app-sls-store-sample
+spec:
+  components:
+    - name: sample-sls-store
+      type: alibaba-sls-store
+      properties:
+        store_name: kubevela-1111
+        store_retention_period: 30
+        store_shard_count: 2
+        store_max_split_shard_count: 2
+
+        writeConnectionSecretToRef:
+          name: sls-store-conn
 `,
 }
 
@@ -342,7 +545,6 @@ type ReferenceParameterTable struct {
 }
 
 var refContent string
-var recurseDepth *int
 var propertyConsole []ConsoleReference
 var displayFormat *string
 var commonRefs []CommonReference
@@ -352,46 +554,57 @@ func setDisplayFormat(format string) {
 }
 
 // GenerateReferenceDocs generates reference docs
-func (ref *MarkdownReference) GenerateReferenceDocs(ctx context.Context, baseRefPath string) error {
-	c, err := common.InitBaseRestConfig()
+func (ref *MarkdownReference) GenerateReferenceDocs(ctx context.Context, c common.Args, baseRefPath string, namespace string) error {
+	var (
+		caps []types.Capability
+		err  error
+	)
+	config, err := c.GetConfig()
 	if err != nil {
 		return err
 	}
-	caps, err := LoadAllInstalledCapability("default", c)
+	pd, err := packages.NewPackageDiscover(config)
 	if err != nil {
-		return fmt.Errorf("failed to generate reference docs for all capabilities: %w", err)
+		return err
 	}
-	if baseRefPath == "" {
-		baseRefPath = BaseRefPath
+
+	if ref.DefinitionName == "" {
+		caps, err = LoadAllInstalledCapability("default", c)
+		if err != nil {
+			return fmt.Errorf("failed to get all capabilityes: %w", err)
+		}
+	} else {
+		cap, err := GetCapabilityByName(ctx, c, ref.DefinitionName, namespace, pd)
+		if err != nil {
+			return fmt.Errorf("failed to get capability capability %s: %w", ref.DefinitionName, err)
+		}
+		caps = []types.Capability{*cap}
 	}
-	return ref.CreateMarkdown(ctx, caps, baseRefPath, ReferenceSourcePath)
+
+	return ref.CreateMarkdown(ctx, caps, baseRefPath, ReferenceSourcePath, pd)
 }
 
 // CreateMarkdown creates markdown based on capabilities
-func (ref *MarkdownReference) CreateMarkdown(ctx context.Context, caps []types.Capability, baseRefPath, referenceSourcePath string) error {
+func (ref *MarkdownReference) CreateMarkdown(ctx context.Context, caps []types.Capability, baseRefPath, referenceSourcePath string, pd *packages.PackageDiscover) error {
 	setDisplayFormat("markdown")
-	var capabilityType string
 	for i, c := range caps {
-		switch c.Type {
-		case types.TypeWorkload:
-			capabilityType = WorkloadTypePath
-		case types.TypeComponentDefinition:
-			capabilityType = ComponentDefinitionTypePath
-		case types.TypeTrait:
-			capabilityType = TraitPath
-		default:
+		var (
+			description   string
+			sample        string
+			specification string
+		)
+		if c.Type != types.TypeWorkload && c.Type != types.TypeComponentDefinition && c.Type != types.TypeTrait {
 			return fmt.Errorf("the type of the capability is not right")
 		}
 
 		fileName := fmt.Sprintf("%s.md", c.Name)
-		filePath := filepath.Join(baseRefPath, capabilityType)
-		if _, err := os.Stat(filePath); err != nil && os.IsNotExist(err) {
-			if err := os.MkdirAll(filePath, 0750); err != nil {
+		if _, err := os.Stat(baseRefPath); err != nil && os.IsNotExist(err) {
+			if err := os.MkdirAll(baseRefPath, 0750); err != nil {
 				return err
 			}
 		}
 
-		markdownFile := filepath.Join(baseRefPath, capabilityType, fileName)
+		markdownFile := filepath.Join(baseRefPath, fileName)
 		f, err := os.OpenFile(filepath.Clean(markdownFile), os.O_WRONLY|os.O_CREATE, 0600)
 		if err != nil {
 			return fmt.Errorf("failed to open file %s: %w", markdownFile, err)
@@ -401,15 +614,18 @@ func (ref *MarkdownReference) CreateMarkdown(ctx context.Context, caps []types.C
 		}
 		capName := c.Name
 		refContent = ""
-		capNameInTitle := strings.Title(capName)
+		lang := ref.I18N
+		if lang == "" {
+			lang = En
+		}
+		capNameInTitle := ref.makeReadableTitle(capName)
 		switch c.Category {
 		case types.CUECategory:
-			cueValue, err := common.GetCUEParameterValue(c.CueTemplate)
+			cueValue, err := common.GetCUEParameterValue(c.CueTemplate, pd)
 			if err != nil {
 				return fmt.Errorf("failed to retrieve `parameters` value from %s with err: %w", c.Name, err)
 			}
 			var defaultDepth = 0
-			recurseDepth = &defaultDepth
 			if err := ref.parseParameters(cueValue, "Properties", defaultDepth); err != nil {
 				return err
 			}
@@ -430,22 +646,26 @@ func (ref *MarkdownReference) CreateMarkdown(ctx context.Context, caps []types.C
 				refContent += ref.prepareParameter("###"+property.Name, property.Parameters, types.KubeCategory)
 			}
 		case types.TerraformCategory:
-			refContent, err = ref.GenerateTerraformCapabilityProperties(c)
+			refContent, err = ref.GenerateTerraformCapabilityPropertiesAndOutputs(c)
 			if err != nil {
 				return err
 			}
 		default:
 			return fmt.Errorf("unsupport capability category %s", c.Category)
 		}
-		title := fmt.Sprintf("%s\n===============", capNameInTitle)
-
-		description := fmt.Sprintf("\n\n## Description\n\n%s", c.Description)
-		var sample string
+		title := fmt.Sprintf("---\ntitle:  %s\n---", capNameInTitle)
 		sampleContent := ref.generateSample(capName)
-		if sampleContent != "" {
-			sample = fmt.Sprintf("\n\n## Samples\n\n%s", sampleContent)
+
+		descriptionI18N := c.Description
+		des := strings.ReplaceAll(c.Description, " ", "_")
+		if v, ok := Definitions[des]; ok {
+			descriptionI18N = v[lang]
 		}
-		specification := fmt.Sprintf("\n\n## Specification\n%s", refContent)
+		description = fmt.Sprintf("\n\n## %s\n\n%s", Definitions["Description"][lang], descriptionI18N)
+		if sampleContent != "" {
+			sample = fmt.Sprintf("\n\n## %s\n\n%s", Definitions["Samples"][lang], sampleContent)
+		}
+		specification = fmt.Sprintf("\n\n## %s\n%s", Definitions["Specification"][lang], refContent)
 
 		// it's fine if the conflict info files not found
 		conflictWithAndMoreSection, _ := ref.generateConflictWithAndMore(capName, referenceSourcePath)
@@ -461,11 +681,38 @@ func (ref *MarkdownReference) CreateMarkdown(ctx context.Context, caps []types.C
 	return nil
 }
 
+func (ref *MarkdownReference) makeReadableTitle(title string) string {
+	if ref.I18N == "" {
+		ref.I18N = En
+	}
+	if !strings.Contains(title, "-") {
+		return strings.Title(title)
+	}
+	var name string
+	provider := strings.Split(title, "-")[0]
+	switch provider {
+	case "alibaba":
+		name = "AlibabaCloud"
+	case "aws":
+		name = "AWS"
+	case "azure":
+		name = "Azure"
+	default:
+		return strings.Title(title)
+	}
+	cloudResource := strings.Replace(title, provider+"-", "", 1)
+	return fmt.Sprintf("%s %s", Definitions[name][ref.I18N], strings.ToUpper(cloudResource))
+}
+
 // prepareParameter prepares the table content for each property
 func (ref *MarkdownReference) prepareParameter(tableName string, parameterList []ReferenceParameter, category types.CapabilityCategory) string {
 	refContent := fmt.Sprintf("\n\n%s\n\n", tableName)
-	refContent += "Name | Description | Type | Required | Default \n"
-	refContent += "------------ | ------------- | ------------- | ------------- | ------------- \n"
+	lang := ref.I18N
+	if lang == "" {
+		lang = En
+	}
+	refContent += fmt.Sprintf(" %s | %s | %s | %s | %s \n", Definitions["Name"][lang], Definitions["Description"][lang], Definitions["Type"][lang], Definitions["Required"][lang], Definitions["Default"][lang])
+	refContent += " ------------ | ------------- | ------------- | ------------- | ------------- \n"
 	switch category {
 	case types.CUECategory:
 		for _, p := range parameterList {
@@ -491,6 +738,26 @@ func (ref *MarkdownReference) prepareParameter(tableName string, parameterList [
 		}
 	default:
 	}
+	return refContent
+}
+
+// prepareParameter prepares the table content for each property
+func (ref *MarkdownReference) prepareTerraformOutputs(tableName string, parameterList []ReferenceParameter) string {
+	if len(parameterList) == 0 {
+		return ""
+	}
+	refContent := fmt.Sprintf("\n\n%s\n\n", tableName)
+	lang := ref.I18N
+	if lang == "" {
+		lang = En
+	}
+	refContent += fmt.Sprintf(" %s | %s \n", Definitions["Name"][lang], Definitions["Description"][lang])
+	refContent += " ------------ | ------------- \n"
+
+	for _, p := range parameterList {
+		refContent += fmt.Sprintf(" %s | %s\n", p.Name, p.Usage)
+	}
+
 	return refContent
 }
 
@@ -531,7 +798,6 @@ func (ref *ParseReference) prepareParameter(tableName string, parameterList []Re
 // parseParameters parses every parameter
 func (ref *ParseReference) parseParameters(paraValue cue.Value, paramKey string, depth int) error {
 	var params []ReferenceParameter
-	*recurseDepth++
 	switch paraValue.Kind() {
 	case cue.StructKind:
 		arguments, err := paraValue.Struct()
@@ -566,8 +832,7 @@ func (ref *ParseReference) parseParameters(paraValue cue.Value, paramKey string,
 			param.Type = val.IncompleteKind()
 			switch val.IncompleteKind() {
 			case cue.StructKind:
-				depth := *recurseDepth
-				if subField, _ := val.Struct(); subField.Len() == 0 { // err cannot be not nil,so ignore it
+				if subField, err := val.Struct(); err == nil && subField.Len() == 0 { // err cannot be not nil,so ignore it
 					if mapValue, ok := val.Elem(); ok {
 						// In the future we could recursive call to surpport complex map-value(struct or list)
 						param.PrintableType = fmt.Sprintf("map[string]%s", mapValue.IncompleteKind().String())
@@ -575,7 +840,7 @@ func (ref *ParseReference) parseParameters(paraValue cue.Value, paramKey string,
 						return fmt.Errorf("failed to got Map kind from %s", param.Name)
 					}
 				} else {
-					if err := ref.parseParameters(val, name, depth); err != nil {
+					if err := ref.parseParameters(val, name, depth+1); err != nil {
 						return err
 					}
 					param.PrintableType = fmt.Sprintf("[%s](#%s)", name, name)
@@ -583,13 +848,15 @@ func (ref *ParseReference) parseParameters(paraValue cue.Value, paramKey string,
 			case cue.ListKind:
 				elem, success := val.Elem()
 				if !success {
-					return fmt.Errorf("failed to get elements from %s", val)
+					// fail to get elements, use the value of ListKind to be the type
+					param.Type = val.Kind()
+					param.PrintableType = val.IncompleteKind().String()
+					break
 				}
 				switch elem.Kind() {
 				case cue.StructKind:
 					param.PrintableType = fmt.Sprintf("[[]%s](#%s)", name, name)
-					depth := *recurseDepth
-					if err := ref.parseParameters(elem, name, depth); err != nil {
+					if err := ref.parseParameters(elem, name, depth+1); err != nil {
 						return err
 					}
 				default:
@@ -607,6 +874,7 @@ func (ref *ParseReference) parseParameters(paraValue cue.Value, paramKey string,
 
 	switch *displayFormat {
 	case "markdown":
+		// markdown defines the contents that display in web
 		tableName := fmt.Sprintf("%s %s", strings.Repeat("#", depth+3), paramKey)
 		ref := MarkdownReference{}
 		refContent = ref.prepareParameter(tableName, params, types.CUECategory) + refContent
@@ -675,16 +943,15 @@ func (ref *MarkdownReference) generateConflictWithAndMore(capabilityName string,
 }
 
 // GenerateCUETemplateProperties get all properties of a capability
-func (ref *ConsoleReference) GenerateCUETemplateProperties(capability *types.Capability) ([]ConsoleReference, error) {
+func (ref *ConsoleReference) GenerateCUETemplateProperties(capability *types.Capability, pd *packages.PackageDiscover) ([]ConsoleReference, error) {
 	setDisplayFormat("console")
 	capName := capability.Name
 
-	cueValue, err := common.GetCUEParameterValue(capability.CueTemplate)
+	cueValue, err := common.GetCUEParameterValue(capability.CueTemplate, pd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve `parameters` value from %s with err: %w", capName, err)
 	}
 	var defaultDepth = 0
-	recurseDepth = &defaultDepth
 	if err := ref.parseParameters(cueValue, "Properties", defaultDepth); err != nil {
 		return nil, err
 	}
@@ -708,6 +975,13 @@ type CommonSchema struct {
 // GenerateHelmAndKubeProperties get all properties of a Helm/Kube Category type capability
 func (ref *ParseReference) GenerateHelmAndKubeProperties(ctx context.Context, capability *types.Capability) ([]CommonReference, []ConsoleReference, error) {
 	cmName := fmt.Sprintf("%s%s", types.CapabilityConfigMapNamePrefix, capability.Name)
+	switch capability.Type {
+	case types.TypeComponentDefinition:
+		cmName = fmt.Sprintf("component-%s", cmName)
+	case types.TypeTrait:
+		cmName = fmt.Sprintf("trait-%s", cmName)
+	default:
+	}
 	var cm v1.ConfigMap
 	commonRefs = make([]CommonReference, 0)
 	if err := ref.Client.Get(ctx, client.ObjectKey{Namespace: capability.Namespace, Name: cmName}, &cm); err != nil {
@@ -733,33 +1007,54 @@ func (ref *ParseReference) GenerateHelmAndKubeProperties(ctx context.Context, ca
 }
 
 // GenerateTerraformCapabilityProperties generates Capability properties for Terraform ComponentDefinition
-func (ref *ParseReference) parseTerraformCapabilityParameters(capability types.Capability) ([]ReferenceParameterTable, error) {
+func (ref *ParseReference) parseTerraformCapabilityParameters(capability types.Capability) ([]ReferenceParameterTable, []ReferenceParameterTable, error) {
 	var (
 		tables                                       []ReferenceParameterTable
 		refParameterList                             []ReferenceParameter
 		writeConnectionSecretToRefReferenceParameter ReferenceParameter
+		configuration                                string
+		err                                          error
+		outputsList                                  []ReferenceParameter
+		outputsTables                                []ReferenceParameterTable
+		propertiesTitle                              string
+		outputsTableName                             string
 	)
+	lang := ref.I18N
+	if lang == "" {
+		lang = En
+	}
+	outputsTableName = fmt.Sprintf("%s %s\n\n%s", strings.Repeat("#", 3), Definitions["Outputs"][lang], Definitions["WriteConnectionSecretToRefIntroduction"][lang])
+	propertiesTitle = Definitions["Properties"][lang]
 
-	writeConnectionSecretToRefReferenceParameter.Name = TerraformWriteConnectionSecretToRefName
-	writeConnectionSecretToRefReferenceParameter.PrintableType = TerraformWriteConnectionSecretToRefType
+	writeConnectionSecretToRefReferenceParameter.Name = terraform.TerraformWriteConnectionSecretToRefName
+	writeConnectionSecretToRefReferenceParameter.PrintableType = terraform.TerraformWriteConnectionSecretToRefType
 	writeConnectionSecretToRefReferenceParameter.Required = false
-	writeConnectionSecretToRefReferenceParameter.Usage = "The secret which the cloud resource connection will be written to"
+	writeConnectionSecretToRefReferenceParameter.Usage = terraform.TerraformWriteConnectionSecretToRefDescription
 
-	variables, err := common.ParseTerraformVariables(capability.TerraformConfiguration)
+	if capability.ConfigurationType == "remote" {
+		configuration, err = utils.GetTerraformConfigurationFromRemote(capability.Name, capability.TerraformConfiguration, capability.Path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to retrieve Terraform configuration from %s: %w", capability.Name, err)
+		}
+	} else {
+		configuration = capability.TerraformConfiguration
+	}
+
+	variables, outputs, err := common.ParseTerraformVariables(configuration)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to generate capability properties")
+		return nil, nil, errors.Wrap(err, "failed to generate capability properties")
 	}
 	for _, v := range variables {
 		var refParam ReferenceParameter
 		refParam.Name = v.Name
-		refParam.PrintableType = v.Type
-		refParam.Usage = v.Description
-		refParam.Required = true
+		refParam.PrintableType = strings.ReplaceAll(v.Type, "\n", `\n`)
+		refParam.Usage = strings.ReplaceAll(v.Description, "\n", `\n`)
+		refParam.Required = v.Required
 		refParameterList = append(refParameterList, refParam)
 	}
 	refParameterList = append(refParameterList, writeConnectionSecretToRefReferenceParameter)
 
-	propertiesTableName := fmt.Sprintf("%s %s", strings.Repeat("#", 3), "Properties")
+	propertiesTableName := fmt.Sprintf("%s %s", strings.Repeat("#", 3), propertiesTitle)
 	tables = append(tables, ReferenceParameterTable{
 		Name:       propertiesTableName,
 		Parameters: refParameterList,
@@ -774,22 +1069,35 @@ func (ref *ParseReference) parseTerraformCapabilityParameters(capability types.C
 	writeSecretRefNameParam.Name = "name"
 	writeSecretRefNameParam.PrintableType = "string"
 	writeSecretRefNameParam.Required = true
-	writeSecretRefNameParam.Usage = "The secret name which the cloud resource connection will be written to"
+	writeSecretRefNameParam.Usage = terraform.TerraformSecretNameDescription
 
 	writeSecretRefNameSpaceParam.Name = "namespace"
 	writeSecretRefNameSpaceParam.PrintableType = "string"
 	writeSecretRefNameSpaceParam.Required = false
-	writeSecretRefNameSpaceParam.Usage = "The secret namespace which the cloud resource connection will be written to"
+	writeSecretRefNameSpaceParam.Usage = terraform.TerraformSecretNamespaceDescription
 
 	writeSecretRefParameterList := []ReferenceParameter{writeSecretRefNameParam, writeSecretRefNameSpaceParam}
-	writeSecretTableName := fmt.Sprintf("%s %s", strings.Repeat("#", 4), TerraformWriteConnectionSecretToRefName)
+	writeSecretTableName := fmt.Sprintf("%s %s", strings.Repeat("#", 4), terraform.TerraformWriteConnectionSecretToRefName)
 
 	tables = append(tables, ReferenceParameterTable{
 		Name:       writeSecretTableName,
 		Parameters: writeSecretRefParameterList,
 	})
 
-	return tables, nil
+	// outputs
+	for _, v := range outputs {
+		var refParam ReferenceParameter
+		refParam.Name = v.Name
+		refParam.Usage = v.Description
+		outputsList = append(outputsList, refParam)
+	}
+
+	outputsTables = append(outputsTables, ReferenceParameterTable{
+		Name:       outputsTableName,
+		Parameters: outputsList,
+	})
+
+	return tables, outputsTables, nil
 }
 
 // WalkParameterSchema will extract properties from *openapi3.Schema
@@ -844,26 +1152,29 @@ func WalkParameterSchema(parameters *openapi3.Schema, name string, depth int) {
 func (ref *ConsoleReference) GenerateTerraformCapabilityProperties(capability types.Capability) ([]ConsoleReference, error) {
 	var references []ConsoleReference
 
-	tables, err := ref.parseTerraformCapabilityParameters(capability)
+	variableTables, _, err := ref.parseTerraformCapabilityParameters(capability)
 	if err != nil {
 		return nil, err
 	}
-	for _, t := range tables {
+	for _, t := range variableTables {
 		references = append(references, ref.prepareParameter(t.Name, t.Parameters, types.TerraformCategory))
 	}
 	return references, nil
 }
 
-// GenerateTerraformCapabilityProperties generates Capability properties for Terraform ComponentDefinition in a local website
-func (ref *MarkdownReference) GenerateTerraformCapabilityProperties(capability types.Capability) (string, error) {
+// GenerateTerraformCapabilityPropertiesAndOutputs generates Capability properties and outputs for Terraform ComponentDefinition
+func (ref *MarkdownReference) GenerateTerraformCapabilityPropertiesAndOutputs(capability types.Capability) (string, error) {
 	var references string
 
-	tables, err := ref.parseTerraformCapabilityParameters(capability)
+	variableTables, outputsTable, err := ref.parseTerraformCapabilityParameters(capability)
 	if err != nil {
 		return "", err
 	}
-	for _, t := range tables {
+	for _, t := range variableTables {
 		references += ref.prepareParameter(t.Name, t.Parameters, types.CUECategory)
+	}
+	for _, t := range outputsTable {
+		references += ref.prepareTerraformOutputs(t.Name, t.Parameters)
 	}
 	return references, nil
 }

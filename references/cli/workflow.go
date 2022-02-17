@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
@@ -34,10 +35,10 @@ import (
 func NewWorkflowCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "workflow",
-		Short: "Operate application workflow in KubeVela",
-		Long:  "Operate application workflow in KubeVela",
+		Short: "Operate application delivery workflow.",
+		Long:  "Operate the Workflow during Application Delivery.",
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeSystem,
+			types.TagCommandType: types.TypeCD,
 		},
 	}
 	cmd.AddCommand(
@@ -45,6 +46,7 @@ func NewWorkflowCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Comma
 		NewWorkflowResumeCommand(c, ioStreams),
 		NewWorkflowTerminateCommand(c, ioStreams),
 		NewWorkflowRestartCommand(c, ioStreams),
+		NewWorkflowRollbackCommand(c, ioStreams),
 	)
 	return cmd
 }
@@ -53,23 +55,16 @@ func NewWorkflowCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Comma
 func NewWorkflowSuspendCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "suspend",
-		Short:   "Suspend an application workflow",
-		Long:    "Suspend an application workflow in cluster",
+		Short:   "Suspend an application workflow.",
+		Long:    "Suspend an application workflow in cluster.",
 		Example: "vela workflow suspend <application-name>",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) < 1 {
 				return fmt.Errorf("must specify application name")
 			}
-			namespace, err := cmd.Flags().GetString(FlagNamespace)
+			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
 			if err != nil {
 				return err
-			}
-			if namespace == "" {
-				env, err := GetFlagEnvOrCurrent(cmd, c)
-				if err != nil {
-					return err
-				}
-				namespace = env.Namespace
 			}
 			app, err := appfile.LoadApplication(namespace, args[0], c)
 			if err != nil {
@@ -81,19 +76,18 @@ func NewWorkflowSuspendCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra
 			if app.Status.Workflow == nil {
 				return fmt.Errorf("the workflow in application is not running")
 			}
-			kubecli, err := c.GetClient()
+			client, err := c.GetClient()
 			if err != nil {
 				return err
 			}
-
-			err = suspendWorkflow(kubecli, app)
+			err = suspendWorkflow(client, app)
 			if err != nil {
 				return err
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringP(FlagNamespace, "n", "", "Specify which namespace to get. If empty, uses namespace in env.")
+	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
 
@@ -101,30 +95,20 @@ func NewWorkflowSuspendCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra
 func NewWorkflowResumeCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "resume",
-		Short:   "Resume a suspend application workflow",
-		Long:    "Resume a suspend application workflow in cluster",
+		Short:   "Resume a suspend application workflow.",
+		Long:    "Resume a suspend application workflow in cluster.",
 		Example: "vela workflow resume <application-name>",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) < 1 {
 				return fmt.Errorf("must specify application name")
 			}
-			namespace, err := cmd.Flags().GetString(FlagNamespace)
+			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
 			if err != nil {
 				return err
-			}
-			if namespace == "" {
-				env, err := GetFlagEnvOrCurrent(cmd, c)
-				if err != nil {
-					return err
-				}
-				namespace = env.Namespace
 			}
 			app, err := appfile.LoadApplication(namespace, args[0], c)
 			if err != nil {
 				return err
-			}
-			if app.Spec.Workflow == nil {
-				return fmt.Errorf("the application must have workflow")
 			}
 			if app.Status.Workflow == nil {
 				return fmt.Errorf("the workflow in application is not running")
@@ -139,19 +123,19 @@ func NewWorkflowResumeCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.
 				}
 				return nil
 			}
-			kubecli, err := c.GetClient()
+			client, err := c.GetClient()
 			if err != nil {
 				return err
 			}
 
-			err = resumeWorkflow(kubecli, app)
+			err = resumeWorkflow(client, app)
 			if err != nil {
 				return err
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringP(FlagNamespace, "n", "", "Specify which namespace to get. If empty, uses namespace in env.")
+	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
 
@@ -159,23 +143,16 @@ func NewWorkflowResumeCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.
 func NewWorkflowTerminateCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "terminate",
-		Short:   "Terminate an application workflow",
-		Long:    "Terminate an application workflow in cluster",
+		Short:   "Terminate an application workflow.",
+		Long:    "Terminate an application workflow in cluster.",
 		Example: "vela workflow terminate <application-name>",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) < 1 {
 				return fmt.Errorf("must specify application name")
 			}
-			namespace, err := cmd.Flags().GetString(FlagNamespace)
+			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
 			if err != nil {
 				return err
-			}
-			if namespace == "" {
-				env, err := GetFlagEnvOrCurrent(cmd, c)
-				if err != nil {
-					return err
-				}
-				namespace = env.Namespace
 			}
 			app, err := appfile.LoadApplication(namespace, args[0], c)
 			if err != nil {
@@ -187,19 +164,18 @@ func NewWorkflowTerminateCommand(c common.Args, ioStream cmdutil.IOStreams) *cob
 			if app.Status.Workflow == nil {
 				return fmt.Errorf("the workflow in application is not running")
 			}
-			kubecli, err := c.GetClient()
+			client, err := c.GetClient()
 			if err != nil {
 				return err
 			}
-
-			err = terminateWorkflow(kubecli, app)
+			err = terminateWorkflow(client, app)
 			if err != nil {
 				return err
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringP(FlagNamespace, "n", "", "Specify which namespace to get. If empty, uses namespace in env.")
+	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
 
@@ -207,23 +183,16 @@ func NewWorkflowTerminateCommand(c common.Args, ioStream cmdutil.IOStreams) *cob
 func NewWorkflowRestartCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "restart",
-		Short:   "Restart an application workflow",
-		Long:    "Restart an application workflow in cluster",
+		Short:   "Restart an application workflow.",
+		Long:    "Restart an application workflow in cluster.",
 		Example: "vela workflow restart <application-name>",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) < 1 {
 				return fmt.Errorf("must specify application name")
 			}
-			namespace, err := cmd.Flags().GetString(FlagNamespace)
+			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
 			if err != nil {
 				return err
-			}
-			if namespace == "" {
-				env, err := GetFlagEnvOrCurrent(cmd, c)
-				if err != nil {
-					return err
-				}
-				namespace = env.Namespace
 			}
 			app, err := appfile.LoadApplication(namespace, args[0], c)
 			if err != nil {
@@ -235,19 +204,60 @@ func NewWorkflowRestartCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra
 			if app.Status.Workflow == nil {
 				return fmt.Errorf("the workflow in application is not running")
 			}
-			kubecli, err := c.GetClient()
+			client, err := c.GetClient()
 			if err != nil {
 				return err
 			}
 
-			err = restartWorkflow(kubecli, app)
+			err = restartWorkflow(client, app)
 			if err != nil {
 				return err
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringP(FlagNamespace, "n", "", "Specify which namespace to get. If empty, uses namespace in env.")
+	addNamespaceAndEnvArg(cmd)
+	return cmd
+}
+
+// NewWorkflowRollbackCommand create workflow rollback command
+func NewWorkflowRollbackCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "rollback",
+		Short:   "Rollback an application workflow to the latest revision.",
+		Long:    "Rollback an application workflow to the latest revision.",
+		Example: "vela workflow rollback <application-name>",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) < 1 {
+				return fmt.Errorf("must specify application name")
+			}
+			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
+			if err != nil {
+				return err
+			}
+			app, err := appfile.LoadApplication(namespace, args[0], c)
+			if err != nil {
+				return err
+			}
+			if app.Spec.Workflow == nil {
+				return fmt.Errorf("the application must have workflow")
+			}
+			if app.Status.Workflow != nil && !app.Status.Workflow.Terminated && !app.Status.Workflow.Suspend && !app.Status.Workflow.Finished {
+				return fmt.Errorf("can not rollback a running workflow")
+			}
+			client, err := c.GetClient()
+			if err != nil {
+				return err
+			}
+
+			err = rollbackWorkflow(client, app)
+			if err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
 
@@ -296,5 +306,24 @@ func restartWorkflow(kubecli client.Client, app *v1beta1.Application) error {
 	}
 
 	fmt.Printf("Successfully restart workflow: %s\n", app.Name)
+	return nil
+}
+
+func rollbackWorkflow(kubecli client.Client, app *v1beta1.Application) error {
+	if app.Status.LatestRevision == nil || app.Status.LatestRevision.Name == "" {
+		return fmt.Errorf("the latest revision is not set: %s", app.Name)
+	}
+	// get the last revision
+	revision := &v1beta1.ApplicationRevision{}
+	if err := kubecli.Get(context.TODO(), k8stypes.NamespacedName{Name: app.Status.LatestRevision.Name, Namespace: app.Namespace}, revision); err != nil {
+		return fmt.Errorf("failed to get the latest revision: %w", err)
+	}
+
+	app.Spec = revision.Spec.Application.Spec
+	if err := kubecli.Status().Update(context.TODO(), app); err != nil {
+		return err
+	}
+
+	fmt.Printf("Successfully rollback workflow to the latest revision: %s\n", app.Name)
 	return nil
 }

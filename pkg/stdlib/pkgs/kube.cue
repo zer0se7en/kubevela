@@ -6,6 +6,14 @@
 	...
 }
 
+#ApplyInParallel: {
+	#do:       "apply-in-parallel"
+	#provider: "kube"
+	cluster:   *"" | string
+	value: [...{...}]
+	...
+}
+
 #Read: {
 	#do:       "read"
 	#provider: "kube"
@@ -27,6 +35,7 @@
 		matchingLabels?: {...}
 	}
 	list?: {...}
+	...
 }
 
 #Delete: {
@@ -41,4 +50,5 @@
 			namespace: *"default" | string
 		}
 	}
+	...
 }

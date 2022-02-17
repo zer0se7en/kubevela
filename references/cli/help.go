@@ -17,6 +17,8 @@ limitations under the License.
 package cli
 
 import (
+	"sort"
+
 	"github.com/oam-dev/kubevela/apis/types"
 
 	"github.com/spf13/cobra"
@@ -41,7 +43,7 @@ func RunHelp(cmd *cobra.Command, args []string) {
 		cmd.Printf("A Highly Extensible Platform Engine based on Kubernetes and Open Application Model.\n\nUsage:\n  vela [flags]\n  vela [command]\n\nAvailable Commands:\n\n")
 		PrintHelpByTag(cmd, allCommands, types.TypeStart)
 		PrintHelpByTag(cmd, allCommands, types.TypeApp)
-		PrintHelpByTag(cmd, allCommands, types.TypeCap)
+		PrintHelpByTag(cmd, allCommands, types.TypeExtension)
 		PrintHelpByTag(cmd, allCommands, types.TypeSystem)
 	} else {
 		foundCmd, _, err := cmd.Root().Find(args)
@@ -51,19 +53,49 @@ func RunHelp(cmd *cobra.Command, args []string) {
 	}
 }
 
+// Printable is a struct for print help
+type Printable struct {
+	Order string
+	use   string
+	Long  string
+}
+
+// PrintList is a list of Printable
+type PrintList []Printable
+
+func (p PrintList) Len() int {
+	return len(p)
+}
+func (p PrintList) Swap(i, j int) {
+	p[i], p[j] = p[j], p[i]
+}
+func (p PrintList) Less(i, j int) bool {
+	return p[i].Order > p[j].Order
+}
+
 // PrintHelpByTag print custom defined help message
 func PrintHelpByTag(cmd *cobra.Command, all []*cobra.Command, tag string) {
 	table := newUITable()
+	var pl PrintList
 	for _, c := range all {
-		if val, ok := c.Annotations[types.TagCommandType]; ok && val == tag {
-			table.AddRow("    "+c.Use, c.Long)
+		if c.Hidden || c.IsAdditionalHelpTopicCommand() {
+			continue
 		}
+		if val, ok := c.Annotations[types.TagCommandType]; ok && val == tag {
+			pl = append(pl, Printable{Order: c.Annotations[types.TagCommandOrder], use: c.Use, Long: c.Long})
+		}
+	}
+	if len(all) == 0 {
+		return
+	}
+	cmd.Println("  " + tag + ":")
+	cmd.Println()
+
+	sort.Sort(pl)
+
+	for _, v := range pl {
+		table.AddRow("    "+v.use, v.Long)
 	}
 	cmd.Println(table.String())
 	cmd.Println()
-}
-
-// AddTokenVarFlags adds token flag to a command
-func AddTokenVarFlags(cmd *cobra.Command) {
-	cmd.PersistentFlags().StringP("token", "t", "", "Github Repo token")
 }

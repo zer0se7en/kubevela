@@ -25,8 +25,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
-
 	"github.com/crossplane/crossplane-runtime/pkg/fieldpath"
 	mapset "github.com/deckarep/golang-set"
 	"github.com/mitchellh/hashstructure/v2"
@@ -318,98 +316,10 @@ func RefreshPackageDiscover(ctx context.Context, k8sClient client.Client, dm dis
 	}
 
 	// Test whether the refresh is successful
-	if exist := pd.Exist(targetGVK); !exist {
-		return fmt.Errorf("get CRD %s error", targetGVK.String())
-	}
+	// if exist := pd.Exist(targetGVK); !exist {
+	//	 return fmt.Errorf("get CRD %s error", targetGVK.String())
+	// }
 	return nil
-}
-
-// CheckAppRolloutUsingAppRevision get all AppRollout using appRevisions related the app
-func CheckAppRolloutUsingAppRevision(ctx context.Context, c client.Reader, appNs string, appName string) ([]string, error) {
-	rolloutOpts := []client.ListOption{
-		client.InNamespace(appNs),
-	}
-	var res []string
-	ars := new(v1beta1.AppRolloutList)
-	if err := c.List(ctx, ars, rolloutOpts...); err != nil {
-		return nil, err
-	}
-	if len(ars.Items) == 0 {
-		return res, nil
-	}
-	relatedRevs := new(v1beta1.ApplicationRevisionList)
-	revOpts := []client.ListOption{
-		client.InNamespace(appNs),
-		client.MatchingLabels{oam.LabelAppName: appName},
-	}
-	if err := c.List(ctx, relatedRevs, revOpts...); err != nil {
-		return nil, err
-	}
-	if len(relatedRevs.Items) == 0 {
-		return res, nil
-	}
-	revName := map[string]bool{}
-	for _, rev := range relatedRevs.Items {
-		if len(rev.Name) != 0 {
-			revName[rev.Name] = true
-		}
-	}
-	for _, d := range ars.Items {
-		if d.Status.RollingState == v1alpha1.RolloutSucceedState ||
-			d.Status.RollingState == v1alpha1.RolloutAbandoningState ||
-			d.Status.RollingState == v1alpha1.RolloutFailedState {
-			continue
-		}
-		if revName[d.Spec.TargetAppRevisionName] {
-			res = append(res, d.Spec.TargetAppRevisionName)
-		}
-		if revName[d.Spec.SourceAppRevisionName] {
-			res = append(res, d.Spec.SourceAppRevisionName)
-		}
-	}
-	return res, nil
-}
-
-// CheckAppDeploymentUsingAppRevision get all appDeployments using appRevisions related the app
-func CheckAppDeploymentUsingAppRevision(ctx context.Context, c client.Reader, appNs string, appName string) ([]string, error) {
-	deployOpts := []client.ListOption{
-		client.InNamespace(appNs),
-	}
-	var res []string
-	ads := new(v1beta1.AppDeploymentList)
-	if err := c.List(ctx, ads, deployOpts...); err != nil {
-		return nil, err
-	}
-	if len(ads.Items) == 0 {
-		return res, nil
-	}
-	relatedRevs := new(v1beta1.ApplicationRevisionList)
-	revOpts := []client.ListOption{
-		client.InNamespace(appNs),
-		client.MatchingLabels{oam.LabelAppName: appName},
-	}
-	if err := c.List(ctx, relatedRevs, revOpts...); err != nil {
-		return nil, err
-	}
-	if len(relatedRevs.Items) == 0 {
-		return res, nil
-	}
-	revName := map[string]bool{}
-	for _, rev := range relatedRevs.Items {
-		if len(rev.Name) != 0 {
-			revName[rev.Name] = true
-		}
-	}
-	for _, d := range ads.Items {
-		for _, dr := range d.Spec.AppRevisions {
-			if len(dr.RevisionName) != 0 {
-				if revName[dr.RevisionName] {
-					res = append(res, dr.RevisionName)
-				}
-			}
-		}
-	}
-	return res, nil
 }
 
 // GetUnstructuredObjectStatusCondition returns the status.condition with matching condType from an unstructured object.

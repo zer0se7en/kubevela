@@ -137,10 +137,6 @@ var _ = Describe("Application Normal tests", func() {
 				if gotCR.Revision != revisionNum {
 					return fmt.Errorf("expect revision %d != real %d", revisionNum, gotCR.Revision)
 				}
-				ctrlOwner := metav1.GetControllerOf(gotCR)
-				if ctrlOwner == nil || ctrlOwner.Kind != v1beta1.ResourceTrackerKind {
-					return fmt.Errorf("expect ControllerRevision is control-owned by a ResourceTracker")
-				}
 				return nil
 			},
 			time.Second*10, time.Millisecond*500).Should(BeNil())
@@ -224,14 +220,6 @@ var _ = Describe("Application Normal tests", func() {
 		Expect(k8sClient.Create(ctx, &newApp)).ShouldNot(BeNil())
 	})
 
-	It("Test app have empty rollingBatches rolloutPlan", func() {
-		By("Apply an application")
-		var newApp v1beta1.Application
-		Expect(common.ReadYamlToObject("testdata/app/app6.yaml", &newApp)).Should(BeNil())
-		newApp.Namespace = namespaceName
-		Expect(k8sClient.Create(ctx, &newApp)).ShouldNot(BeNil())
-	})
-
 	It("Test app have components with same name", func() {
 		By("Apply an application")
 		var newApp v1beta1.Application
@@ -254,5 +242,26 @@ var _ = Describe("Application Normal tests", func() {
 		secondApp.Namespace = namespaceName
 		secondApp.Name = "second-app"
 		Expect(k8sClient.Create(ctx, &secondApp)).ShouldNot(BeNil())
+	})
+
+	It("Test app failed after retries", func() {
+		By("Apply an application")
+		var newApp v1beta1.Application
+		Expect(common.ReadYamlToObject("testdata/app/app10.yaml", &newApp)).Should(BeNil())
+		newApp.Namespace = namespaceName
+		Expect(k8sClient.Create(ctx, &newApp)).Should(BeNil())
+
+		By("check application status")
+		testApp := new(v1beta1.Application)
+		Eventually(func() error {
+			err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespaceName, Name: newApp.Name}, testApp)
+			if err != nil {
+				return err
+			}
+			if testApp.Status.Phase != oamcomm.ApplicationWorkflowSuspending {
+				return fmt.Errorf("error application status wants %s, actually %s", oamcomm.ApplicationWorkflowSuspending, testApp.Status.Phase)
+			}
+			return nil
+		}, 60*time.Second).Should(BeNil())
 	})
 })

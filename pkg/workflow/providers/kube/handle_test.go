@@ -158,6 +158,7 @@ cluster: ""
 		err = result.FillObject(expected.Object)
 		Expect(err).ToNot(HaveOccurred())
 	})
+
 	It("patch & apply", func() {
 		p := &provider{
 			apply: func(ctx context.Context, _ string, _ common.ResourceCreatorRole, manifests ...*unstructured.Unstructured) error {
@@ -282,6 +283,12 @@ cluster: ""
 			apply: func(ctx context.Context, _ string, _ common.ResourceCreatorRole, manifests ...*unstructured.Unstructured) error {
 				return nil
 			},
+			delete: func(ctx context.Context, cluster string, owner common.ResourceCreatorRole, manifest *unstructured.Unstructured) error {
+				if err := k8sClient.Delete(ctx, manifest); err != nil {
+					return err
+				}
+				return nil
+			},
 			cli: k8sClient,
 		}
 
@@ -403,7 +410,6 @@ val: {
 		err = p.Apply(ctx, v, nil)
 		Expect(err).To(HaveOccurred())
 	})
-
 })
 
 func newWorkflowContextForTest() (wfContext.Context, error) {

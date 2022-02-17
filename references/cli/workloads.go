@@ -19,7 +19,6 @@ package cli
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/oam-dev/kubevela/apis/types"
 	common2 "github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 	"github.com/oam-dev/kubevela/references/common"
@@ -34,21 +33,18 @@ func NewWorkloadsCommand(c common2.Args, ioStreams cmdutil.IOStreams) *cobra.Com
 		Short:                 "List workloads",
 		Long:                  "List workloads",
 		Example:               `vela workloads`,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return c.SetConfig()
-		},
+		Hidden:                true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			env, err := GetFlagEnvOrCurrent(cmd, c)
+			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
 			if err != nil {
 				return err
 			}
-			return printWorkloadList(env.Namespace, c, ioStreams)
+			return printWorkloadList(namespace, c, ioStreams)
 		},
-		Annotations: map[string]string{
-			types.TagCommandType: types.TypeCap,
-		},
+		Annotations: map[string]string{},
 	}
 	cmd.SetOut(ioStreams.Out)
+	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
 

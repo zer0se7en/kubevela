@@ -27,30 +27,16 @@ import (
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
-// NewSystemCUEPackageCommand is deprecated
-func NewSystemCUEPackageCommand(_ common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
-	cmd := &cobra.Command{
-		Use: "cue-packages",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			ioStreams.Info("vela system cue-packages is deprecated, please use vela cue-packages instead")
-			return nil
-		},
-	}
-	cmd.SetOut(ioStreams.Out)
-	return cmd
-}
-
 // NewCUEPackageCommand creates `cue-package` command
 func NewCUEPackageCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:                   "cue-packages",
 		DisableFlagsInUseLine: true,
+		Hidden:                true,
 		Short:                 "List cue package",
-		Long:                  "List cue package",
+		Long:                  "List CUE packages available.",
 		Example:               `vela cue-packages`,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return c.SetConfig()
-		},
+		Annotations:           map[string]string{},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return printCUEPackageList(c, ioStreams)
 		},

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/stretchr/testify/assert"
 	"k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -34,8 +35,8 @@ import (
 
 	common3 "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	pkgdef "github.com/oam-dev/kubevela/pkg/definition"
 	common2 "github.com/oam-dev/kubevela/pkg/utils/common"
-	"github.com/oam-dev/kubevela/references/common"
 )
 
 const (
@@ -44,9 +45,9 @@ const (
 )
 
 func initArgs() common2.Args {
-	return common2.Args{
-		Client: fake.NewClientBuilder().WithScheme(common2.Scheme).Build(),
-	}
+	arg := common2.Args{}
+	arg.SetClient(fake.NewClientBuilder().WithScheme(common2.Scheme).Build())
+	return arg
 }
 
 func initCommand(cmd *cobra.Command) {
@@ -65,12 +66,16 @@ func createTrait(c common2.Args, t *testing.T) string {
 
 func createNamespacedTrait(c common2.Args, name string, ns string, t *testing.T) {
 	traitName := fmt.Sprintf("my-trait-%d", time.Now().UnixNano())
-	if err := c.Client.Create(context.Background(), &v1beta1.TraitDefinition{
+	client, err := c.GetClient()
+	if err != nil {
+		t.Fatalf("failed to get client: %v", err)
+	}
+	if err := client.Create(context.Background(), &v1beta1.TraitDefinition{
 		ObjectMeta: v1.ObjectMeta{
 			Name:      name,
 			Namespace: ns,
 			Annotations: map[string]string{
-				common.DefinitionDescriptionKey: "My test-trait " + traitName,
+				pkgdef.DescriptionKey: "My test-trait " + traitName,
 			},
 		},
 		Spec: v1beta1.TraitDefinitionSpec{
@@ -164,7 +169,7 @@ func removeDir(dirname string, t *testing.T) {
 }
 
 func TestNewDefinitionCommandGroup(t *testing.T) {
-	cmd := DefinitionCommandGroup(common2.Args{})
+	cmd := DefinitionCommandGroup(common2.Args{}, "")
 	initCommand(cmd)
 	cmd.SetArgs([]string{"-h"})
 	if err := cmd.Execute(); err != nil {
@@ -198,8 +203,185 @@ func TestNewDefinitionInitCommand(t *testing.T) {
 	}
 }
 
+func TestNewDefinitionInitCommand4Terraform(t *testing.T) {
+	const (
+		defVswitchFileName = "alibaba-vswitch.yaml"
+		defRedisFileName   = "tencent-redis.yaml"
+	)
+	testcases := []struct {
+		name   string
+		args   []string
+		output string
+		errMsg string
+		want   string
+	}{
+		{
+			name: "normal",
+			args: []string{"vswitch", "-t", "component", "--provider", "alibaba", "--desc", "xxx", "--git", "https://github.com/kubevela-contrib/terraform-modules.git", "--path", "alibaba/vswitch"},
+		},
+		{
+			name:   "normal from local",
+			args:   []string{"vswitch", "-t", "component", "--provider", "tencent", "--desc", "xxx", "--local", "test-data/redis.tf", "--output", defRedisFileName},
+			output: defRedisFileName,
+			want: `apiVersion: core.oam.dev/v1beta1
+kind: ComponentDefinition
+metadata:
+  annotations:
+    definition.oam.dev/description: xxx
+  creationTimestamp: null
+  labels:
+    type: terraform
+  name: tencent-vswitch
+  namespace: vela-system
+spec:
+  schematic:
+    terraform:
+      configuration: |
+        terraform {
+          required_providers {
+            tencentcloud = {
+              source = "tencentcloudstack/tencentcloud"
+            }
+          }
+        }
+
+        resource "tencentcloud_redis_instance" "main" {
+          type_id           = 8
+          availability_zone = var.availability_zone
+          name              = var.instance_name
+          password          = var.user_password
+          mem_size          = var.mem_size
+          port              = var.port
+        }
+
+        output "DB_IP" {
+          value = tencentcloud_redis_instance.main.ip
+        }
+
+        output "DB_PASSWORD" {
+          value = var.user_password
+        }
+
+        output "DB_PORT" {
+          value = var.port
+        }
+
+        variable "availability_zone" {
+          description = "The available zone ID of an instance to be created."
+          type        = string
+          default = "ap-chengdu-1"
+        }
+
+        variable "instance_name" {
+          description = "redis instance name"
+          type        = string
+          default     = "sample"
+        }
+
+        variable "user_password" {
+          description = "redis instance password"
+          type        = string
+          default     = "IEfewjf2342rfwfwYYfaked"
+        }
+
+        variable "mem_size" {
+          description = "redis instance memory size"
+          type        = number
+          default     = 1024
+        }
+
+        variable "port" {
+          description = "The port used to access a redis instance."
+          type        = number
+          default     = 6379
+        }
+      providerRef:
+        name: tencent
+        namespace: default
+  workload:
+    definition:
+      apiVersion: terraform.core.oam.dev/v1beta1
+      kind: Configuration
+status: {}
+`,
+		},
+		{
+			name:   "print in a file",
+			args:   []string{"vswitch", "-t", "component", "--provider", "alibaba", "--desc", "xxx", "--git", "https://github.com/kubevela-contrib/terraform-modules.git", "--path", "alibaba/vswitch", "--output", defVswitchFileName},
+			output: defVswitchFileName,
+			want: `apiVersion: core.oam.dev/v1beta1
+kind: ComponentDefinition
+metadata:
+  annotations:
+    definition.oam.dev/description: xxx
+  creationTimestamp: null
+  labels:
+    type: terraform
+  name: alibaba-vswitch
+  namespace: vela-system
+spec:
+  schematic:
+    terraform:
+      configuration: https://github.com/kubevela-contrib/terraform-modules.git
+      path: alibaba/vswitch
+      type: remote
+  workload:
+    definition:
+      apiVersion: terraform.core.oam.dev/v1beta1
+      kind: Configuration
+status: {}`,
+		},
+		{
+			name:   "not supported component",
+			args:   []string{"vswitch", "-t", "trait", "--provider", "alibaba"},
+			errMsg: "provider is only valid when the type of the definition is component",
+		},
+		{
+			name:   "not supported cloud provider",
+			args:   []string{"vswitch", "-t", "component", "--provider", "xxx"},
+			errMsg: "Provider `xxx` is not supported.",
+		},
+		{
+			name:   "git is not right",
+			args:   []string{"vswitch", "-t", "component", "--provider", "alibaba", "--desc", "test", "--git", "xxx"},
+			errMsg: "invalid git url",
+		},
+		{
+			name:   "git and local could be set at the same time",
+			args:   []string{"vswitch", "-t", "component", "--provider", "alibaba", "--desc", "test", "--git", "xxx", "--local", "yyy"},
+			errMsg: "only one of --git and --local can be set",
+		},
+		{
+			name:   "local file doesn't exist",
+			args:   []string{"vswitch", "-t", "component", "--provider", "tencent", "--desc", "xxx", "--local", "test-data/redis2.tf"},
+			errMsg: "failed to read Terraform configuration from file",
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := initArgs()
+			cmd := NewDefinitionInitCommand(c)
+			initCommand(cmd)
+			cmd.SetArgs(tc.args)
+			err := cmd.Execute()
+			if err != nil && !strings.Contains(err.Error(), tc.errMsg) {
+				t.Fatalf("unexpected error when executing init command: %v", err)
+			} else if tc.want != "" {
+				data, err := os.ReadFile(tc.output)
+				defer os.Remove(tc.output)
+				assert.Nil(t, err)
+				if !strings.Contains(string(data), tc.want) {
+					t.Fatalf("unexpected output: %s", string(data))
+				}
+			}
+		})
+	}
+}
+
 func TestNewDefinitionGetCommand(t *testing.T) {
 	c := initArgs()
+
 	// normal test
 	cmd := NewDefinitionGetCommand(c)
 	initCommand(cmd)
@@ -223,6 +405,15 @@ func TestNewDefinitionGetCommand(t *testing.T) {
 	if err := cmd.Execute(); err == nil {
 		t.Fatalf("expect found no trait error, but not found")
 	}
+}
+
+func TestNewDefinitionGenDocCommand(t *testing.T) {
+	c := initArgs()
+	cmd := NewDefinitionGenDocCommand(c)
+	assert.NotNil(t, cmd.Execute())
+
+	cmd.SetArgs([]string{"alibaba-xxxxxxx"})
+	assert.NotNil(t, cmd.Execute())
 }
 
 func TestNewDefinitionListCommand(t *testing.T) {
@@ -342,7 +533,11 @@ func TestNewDefinitionDelCommand(t *testing.T) {
 		t.Fatalf("unexpeced error when executing del command: %v", err)
 	}
 	obj := &v1beta1.TraitDefinition{}
-	if err := c.Client.Get(context.Background(), types.NamespacedName{
+	client, err := c.GetClient()
+	if err != nil {
+		t.Fatalf("failed to get client: %v", err)
+	}
+	if err := client.Get(context.Background(), types.NamespacedName{
 		Namespace: VelaTestNamespace,
 		Name:      traitName,
 	}, obj); !errors.IsNotFound(err) {

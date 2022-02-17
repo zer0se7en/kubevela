@@ -53,7 +53,6 @@ import (
 	"github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
-	"github.com/oam-dev/kubevela/pkg/utils/apply"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -138,14 +137,14 @@ var _ = BeforeSuite(func(done Done) {
 	appParser = appfile.NewApplicationParser(k8sClient, dm, pd)
 
 	reconciler = &Reconciler{
-		Client:           k8sClient,
-		Scheme:           testScheme,
-		dm:               dm,
-		pd:               pd,
-		Recorder:         event.NewAPIRecorder(recorder),
-		appRevisionLimit: appRevisionLimit,
-		applicator:       apply.NewAPIApplicator(k8sClient),
+		Client:   k8sClient,
+		Scheme:   testScheme,
+		dm:       dm,
+		pd:       pd,
+		Recorder: event.NewAPIRecorder(recorder),
 	}
+
+	reconciler.appRevisionLimit = appRevisionLimit
 	// setup the controller manager since we need the component handler to run in the background
 	mgr, err = ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                  testScheme,
@@ -245,7 +244,7 @@ func NewFakeRecorder(bufferSize int) *FakeRecorder {
 
 // randomNamespaceName generates a random name based on the basic name.
 // Running each ginkgo case in a new namespace with a random name can avoid
-// waiting a long time to GC namesapce.
+// waiting a long time to GC namespace.
 func randomNamespaceName(basic string) string {
 	return fmt.Sprintf("%s-%s", basic, strconv.FormatInt(rand.Int63(), 16))
 }

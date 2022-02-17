@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/fatih/color"
+	"github.com/olekukonko/tablewriter"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,11 +33,9 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 	"github.com/oam-dev/kubevela/references/appfile"
-	"github.com/oam-dev/kubevela/references/appfile/api"
 )
 
 // HealthStatus represents health status strings.
@@ -70,78 +69,95 @@ const (
 	compStatusDeploying CompStatus = iota
 	compStatusDeployFail
 	compStatusDeployed
-	compStatusHealthChecking
-	compStatusHealthCheckDone
 	compStatusUnknown
 )
 
 // Error msg used in `status` command
 const (
-	ErrNotLoadAppConfig  = "cannot load the application"
-	ErrFmtNotInitialized = "service: %s not ready"
-	ErrServiceNotFound   = "service %s not found in app"
+	// ErrNotLoadAppConfig display the error message load
+	ErrNotLoadAppConfig = "cannot load the application"
 )
 
 const (
-	trackingInterval      time.Duration = 1 * time.Second
-	deployTimeout         time.Duration = 10 * time.Second
-	healthCheckBufferTime time.Duration = 120 * time.Second
+	trackingInterval time.Duration = 1 * time.Second
+	deployTimeout    time.Duration = 10 * time.Second
 )
 
 // NewAppStatusCommand creates `status` command for showing status
-func NewAppStatusCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewAppStatusCommand(c common.Args, order string, ioStreams cmdutil.IOStreams) *cobra.Command {
 	ctx := context.Background()
 	cmd := &cobra.Command{
 		Use:     "status APP_NAME",
-		Short:   "Show status of an application",
-		Long:    "Show status of an application, including workloads and traits of each service.",
+		Short:   "Show status of an application.",
+		Long:    "Show status of vela application.",
 		Example: `vela status APP_NAME`,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return c.SetConfig()
-		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// check args
 			argsLength := len(args)
 			if argsLength == 0 {
-				ioStreams.Errorf("Hint: please specify an application")
-				os.Exit(1)
+				return fmt.Errorf("please specify an application")
 			}
 			appName := args[0]
-			env, err := GetFlagEnvOrCurrent(cmd, c)
+			// get namespace
+			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
 			if err != nil {
-				ioStreams.Errorf("Error: failed to get Env: %s", err)
 				return err
 			}
 			newClient, err := c.GetClient()
 			if err != nil {
 				return err
 			}
-			return printAppStatus(ctx, newClient, ioStreams, appName, env, cmd, c)
+			showEndpoints, err := cmd.Flags().GetBool("endpoint")
+			if showEndpoints && err == nil {
+				return printAppEndpoints(ctx, newClient, appName, namespace, c)
+			}
+			return printAppStatus(ctx, newClient, ioStreams, appName, namespace, cmd, c)
 		},
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeApp,
+			types.TagCommandOrder: order,
+			types.TagCommandType:  types.TypeApp,
 		},
 	}
 	cmd.Flags().StringP("svc", "s", "", "service name")
+	cmd.Flags().BoolP("endpoint", "p", false, "show all service endpoints of the application")
+	addNamespaceAndEnvArg(cmd)
 	cmd.SetOut(ioStreams.Out)
 	return cmd
 }
 
-func printAppStatus(ctx context.Context, c client.Client, ioStreams cmdutil.IOStreams, appName string, env *types.EnvMeta, cmd *cobra.Command, velaC common.Args) error {
-	app, err := appfile.LoadApplication(env.Namespace, appName, velaC)
+func printAppStatus(_ context.Context, c client.Client, ioStreams cmdutil.IOStreams, appName string, namespace string, cmd *cobra.Command, velaC common.Args) error {
+	app, err := appfile.LoadApplication(namespace, appName, velaC)
 	if err != nil {
 		return err
 	}
-	namespace := env.Namespace
 
 	cmd.Printf("About:\n\n")
 	table := newUITable()
 	table.AddRow("  Name:", appName)
 	table.AddRow("  Namespace:", namespace)
 	table.AddRow("  Created at:", app.CreationTimestamp.String())
+	table.AddRow("  Status:", getAppPhaseColor(app.Status.Phase).Sprint(app.Status.Phase))
 	cmd.Printf("%s\n\n", table.String())
-
+	if err := printWorkflowStatus(c, ioStreams, appName, namespace); err != nil {
+		return err
+	}
 	cmd.Printf("Services:\n\n")
-	return loopCheckStatus(ctx, c, ioStreams, appName, env)
+	return loopCheckStatus(c, ioStreams, appName, namespace)
+}
+
+func printAppEndpoints(ctx context.Context, client client.Client, appName string, namespace string, velaC common.Args) error {
+	endpoints, err := GetServiceEndpoints(ctx, client, appName, namespace, velaC)
+	if err != nil {
+		return err
+	}
+	table := tablewriter.NewWriter(os.Stdout)
+	table.SetColWidth(100)
+	table.SetHeader([]string{"Cluster", "Ref(Kind/Namespace/Name)", "Endpoint"})
+	for _, endpoint := range endpoints {
+		table.Append([]string{endpoint.Cluster, fmt.Sprintf("%s/%s/%s", endpoint.Ref.Kind, endpoint.Ref.Namespace, endpoint.Ref.Name), endpoint.String()})
+	}
+	table.Render()
+	return nil
 }
 
 func loadRemoteApplication(c client.Client, ns string, name string) (*v1beta1.Application, error) {
@@ -153,35 +169,68 @@ func loadRemoteApplication(c client.Client, ns string, name string) (*v1beta1.Ap
 	return app, err
 }
 
-func loopCheckStatus(ctx context.Context, c client.Client, ioStreams cmdutil.IOStreams, appName string, env *types.EnvMeta) error {
-	remoteApp, err := loadRemoteApplication(c, env.Namespace, appName)
+func getComponentType(app *v1beta1.Application, name string) string {
+	for _, c := range app.Spec.Components {
+		if c.Name == name {
+			return c.Type
+		}
+	}
+	return "webservice"
+}
+
+func printWorkflowStatus(c client.Client, ioStreams cmdutil.IOStreams, appName string, namespace string) error {
+	remoteApp, err := loadRemoteApplication(c, namespace, appName)
 	if err != nil {
 		return err
 	}
-	for _, comp := range remoteApp.Spec.Components {
-		compName := comp.Name
-
-		healthStatus, healthInfo, err := healthCheckLoop(ctx, c, compName, appName, env)
-		if err != nil {
-			ioStreams.Info(healthInfo)
-			return err
+	workflowStatus := remoteApp.Status.Workflow
+	if workflowStatus != nil {
+		ioStreams.Info("Workflow:\n")
+		ioStreams.Infof("  mode: %s\n", workflowStatus.Mode)
+		ioStreams.Infof("  finished: %t\n", workflowStatus.Finished)
+		ioStreams.Infof("  Suspend: %t\n", workflowStatus.Suspend)
+		ioStreams.Infof("  Terminated: %t\n", workflowStatus.Terminated)
+		ioStreams.Info("  Steps")
+		for _, step := range workflowStatus.Steps {
+			ioStreams.Infof("  - id:%s\n", step.ID)
+			ioStreams.Infof("    name:%s\n", step.Name)
+			ioStreams.Infof("    type:%s\n", step.Type)
+			ioStreams.Infof("    phase:%s \n", getWfStepColor(step.Phase).Sprint(step.Phase))
+			ioStreams.Infof("    message:%s\n", step.Message)
 		}
-		ioStreams.Infof(white.Sprintf("  - Name: %s\n", compName))
-		ioStreams.Infof("    Type: %s\n", comp.Type)
+		ioStreams.Infof("\n")
+	}
+	return nil
+}
 
-		healthColor := getHealthStatusColor(healthStatus)
-		healthInfo = strings.ReplaceAll(healthInfo, "\n", "\n\t") // format healthInfo output
-		ioStreams.Infof("    %s %s\n", healthColor.Sprint(healthStatus), healthColor.Sprint(healthInfo))
+func loopCheckStatus(c client.Client, ioStreams cmdutil.IOStreams, appName string, namespace string) error {
+	remoteApp, err := loadRemoteApplication(c, namespace, appName)
+	if err != nil {
+		return err
+	}
+	for _, comp := range remoteApp.Status.Services {
+		compName := comp.Name
+		if comp.Env == "" {
+			comp.Env = "Control plane cluster"
+		}
+		ioStreams.Infof(white.Sprintf("  - Name: %s  Env: %s\n", compName, comp.Env))
+		ioStreams.Infof("    Type: %s\n", getComponentType(remoteApp, compName))
+		healthColor := getHealthStatusColor(comp.Healthy)
+		healthInfo := strings.ReplaceAll(comp.Message, "\n", "\n\t") // format healthInfo output
+		healthstats := "healthy"
+		if !comp.Healthy {
+			healthstats = "unhealthy"
+		}
+		ioStreams.Infof("    %s %s\n", healthColor.Sprint(healthstats), healthColor.Sprint(healthInfo))
 
 		// load it again after health check
-		remoteApp, err = loadRemoteApplication(c, env.Namespace, appName)
+		remoteApp, err = loadRemoteApplication(c, namespace, appName)
 		if err != nil {
 			return err
 		}
 		// workload Must found
 		ioStreams.Infof("    Traits:\n")
-		workloadStatus, _ := getWorkloadStatusFromApp(remoteApp, compName)
-		for _, tr := range workloadStatus.Traits {
+		for _, tr := range comp.Traits {
 			if tr.Message != "" {
 				if tr.Healthy {
 					ioStreams.Infof("      - %s%s: %s", emojiSucceed, white.Sprint(tr.Type), tr.Message)
@@ -190,58 +239,20 @@ func loopCheckStatus(ctx context.Context, c client.Client, ioStreams cmdutil.IOS
 				}
 				continue
 			}
-			var message string
-			for _, v := range comp.Traits {
-				if v.Type == tr.Type {
-					traitData, _ := util.RawExtension2Map(v.Properties)
-					for k, v := range traitData {
-						message += fmt.Sprintf("%v=%v\n\t\t", k, v)
-					}
-					break
-				}
-			}
-			ioStreams.Infof("      - %s%s: %s", emojiSucceed, white.Sprint(tr.Type), message)
 		}
 		ioStreams.Info("")
-		ioStreams.Infof("    Last Deployment:\n")
-		ioStreams.Infof("      Created at: %v\n", remoteApp.CreationTimestamp)
 	}
 	return nil
 }
 
-func healthCheckLoop(ctx context.Context, c client.Client, compName, appName string, env *types.EnvMeta) (HealthStatus, string, error) {
-	// Health Check Loop For Workload
-	var healthInfo string
-	var healthStatus HealthStatus
-	var err error
-
-	sHealthCheck := newTrackingSpinner("Checking health status ...")
-	sHealthCheck.Start()
-	defer sHealthCheck.Stop()
-HealthCheckLoop:
-	for {
-		time.Sleep(trackingInterval)
-		var healthcheckStatus CompStatus
-		healthcheckStatus, healthStatus, healthInfo, err = trackHealthCheckingStatus(ctx, c, compName, appName, env)
-		if err != nil {
-			healthInfo = red.Sprintf("Health checking failed!")
-			return "", healthInfo, err
-		}
-		if healthcheckStatus == compStatusHealthCheckDone {
-			break HealthCheckLoop
-		}
-	}
-	return healthStatus, healthInfo, nil
-}
-
-func printTrackingDeployStatus(c common.Args, ioStreams cmdutil.IOStreams, appName string, env *types.EnvMeta) (CompStatus, error) {
+func printTrackingDeployStatus(c common.Args, ioStreams cmdutil.IOStreams, appName string, namespace string) (CompStatus, error) {
 	sDeploy := newTrackingSpinnerWithDelay("Checking Status ...", trackingInterval)
 	sDeploy.Start()
 	defer sDeploy.Stop()
 TrackDeployLoop:
 	for {
 		time.Sleep(trackingInterval)
-		deployStatus, failMsg, err := TrackDeployStatus(c, appName, env)
+		deployStatus, failMsg, err := TrackDeployStatus(c, appName, namespace)
 		if err != nil {
 			return compStatusUnknown, err
 		}
@@ -263,8 +274,8 @@ TrackDeployLoop:
 }
 
 // TrackDeployStatus will only check AppConfig is deployed successfully,
-func TrackDeployStatus(c common.Args, appName string, env *types.EnvMeta) (CompStatus, string, error) {
-	appObj, err := appfile.LoadApplication(env.Namespace, appName, c)
+func TrackDeployStatus(c common.Args, appName string, namespace string) (CompStatus, string, error) {
+	appObj, err := appfile.LoadApplication(namespace, appName, c)
 	if err != nil {
 		return compStatusUnknown, "", err
 	}
@@ -289,86 +300,27 @@ func TrackDeployStatus(c common.Args, appName string, env *types.EnvMeta) (CompS
 	return compStatusDeploying, "", nil
 }
 
-// trackHealthCheckingStatus will check health status from health scope
-func trackHealthCheckingStatus(ctx context.Context, c client.Client, compName, appName string, env *types.EnvMeta) (CompStatus, HealthStatus, string, error) {
-	app, err := loadRemoteApplication(c, env.Namespace, appName)
-	if err != nil {
-		return compStatusUnknown, HealthStatusNotDiagnosed, "", err
+func getHealthStatusColor(s bool) *color.Color {
+	if s {
+		return green
 	}
-
-	if len(app.Status.Conditions) < 1 {
-		// still reconciling
-		return compStatusUnknown, HealthStatusUnknown, "", nil
-	}
-	// check whether referenced a HealthScope
-	var healthScopeName string
-	for _, v := range app.Spec.Components {
-		if len(v.Scopes) > 0 {
-			healthScopeName = v.Scopes[api.DefaultHealthScopeKey]
-		}
-	}
-	var healthStatus HealthStatus
-	if healthScopeName != "" {
-		var healthScope v1alpha2.HealthScope
-		if err = c.Get(ctx, client.ObjectKey{Namespace: env.Namespace, Name: healthScopeName}, &healthScope); err != nil {
-			return compStatusUnknown, HealthStatusUnknown, "", err
-		}
-		var wlhc *v1alpha2.WorkloadHealthCondition
-		for _, v := range healthScope.Status.WorkloadHealthConditions {
-			if v.ComponentName == compName {
-				wlhc = v
-			}
-		}
-		if wlhc == nil {
-			cTime := app.GetCreationTimestamp()
-			if time.Since(cTime.Time) <= deployTimeout {
-				return compStatusHealthChecking, HealthStatusUnknown, "", nil
-			}
-			if len(healthScope.Spec.AppRefs) == 0 && len(healthScope.Spec.WorkloadReferences) == 0 {
-				return compStatusHealthCheckDone, HealthStatusHealthy, "no workload or app found in health scope", nil
-			}
-			return compStatusUnknown, HealthStatusUnknown, "", fmt.Errorf("cannot get health condition from the health scope: %s", healthScope.Name)
-		}
-		healthStatus = wlhc.HealthStatus
-		if healthStatus == HealthStatusHealthy {
-			return compStatusHealthCheckDone, healthStatus, wlhc.Diagnosis, nil
-		}
-		if healthStatus == HealthStatusUnhealthy {
-			cTime := app.GetCreationTimestamp()
-			if time.Since(cTime.Time) <= healthCheckBufferTime {
-				return compStatusHealthChecking, HealthStatusUnknown, "", nil
-			}
-			return compStatusHealthCheckDone, healthStatus, wlhc.Diagnosis, nil
-		}
-	}
-	return compStatusHealthCheckDone, HealthStatusNotDiagnosed, "", nil
+	return yellow
 }
 
-func getWorkloadStatusFromApp(app *v1beta1.Application, compName string) (commontypes.ApplicationComponentStatus, bool) {
-	foundWlStatus := false
-	wlStatus := commontypes.ApplicationComponentStatus{}
-	if app == nil {
-		return wlStatus, foundWlStatus
-	}
-	for _, v := range app.Status.Services {
-		if v.Name == compName {
-			wlStatus = v
-			foundWlStatus = true
-			break
-		}
-	}
-	return wlStatus, foundWlStatus
-}
-
-func getHealthStatusColor(s HealthStatus) *color.Color {
-	var c *color.Color
-	switch s {
-	case HealthStatusHealthy:
-		c = green
-	case HealthStatusUnknown, HealthStatusNotDiagnosed:
-		c = yellow
+func getWfStepColor(phase commontypes.WorkflowStepPhase) *color.Color {
+	switch phase {
+	case commontypes.WorkflowStepPhaseSucceeded:
+		return green
+	case commontypes.WorkflowStepPhaseFailed:
+		return red
 	default:
-		c = red
+		return yellow
 	}
-	return c
+}
+
+func getAppPhaseColor(appPhase commontypes.ApplicationPhase) *color.Color {
+	if appPhase == commontypes.ApplicationRunning {
+		return green
+	}
+	return yellow
 }

@@ -17,9 +17,10 @@ limitations under the License.
 package workflow
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"sync"
 	"time"
 
 	"github.com/pkg/errors"
@@ -27,18 +28,44 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
 	oamcore "github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/controller/utils"
 	"github.com/oam-dev/kubevela/pkg/cue/model/value"
+	monitorContext "github.com/oam-dev/kubevela/pkg/monitor/context"
+	"github.com/oam-dev/kubevela/pkg/monitor/metrics"
+	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	wfContext "github.com/oam-dev/kubevela/pkg/workflow/context"
 	"github.com/oam-dev/kubevela/pkg/workflow/recorder"
 	wfTypes "github.com/oam-dev/kubevela/pkg/workflow/types"
 )
 
+var (
+	// DisableRecorder optimize workflow by disable recorder
+	DisableRecorder = false
+	// StepStatusCache cache the step status
+	StepStatusCache sync.Map
+)
+
+const (
+	// minWorkflowBackoffWaitTime is the min time to wait before reconcile workflow again
+	minWorkflowBackoffWaitTime = 1
+	// maxWorkflowBackoffWaitTime is the max time to wait before reconcile workflow again
+	maxWorkflowBackoffWaitTime = 600
+	// backoffTimeCoefficient is the coefficient of time to wait before reconcile workflow again
+	backoffTimeCoefficient = 0.05
+
+	// MessageFailedAfterRetries is the message of failed after retries
+	MessageFailedAfterRetries = "The workflow suspends automatically because the failed times of steps have reached the limit(10 times)"
+	// MessageInitializingWorkflow is the message of initializing workflow
+	MessageInitializingWorkflow = "Initializing workflow"
+)
+
 type workflow struct {
 	app     *oamcore.Application
 	cli     client.Client
+	wfCtx   wfContext.Context
 	dagMode bool
 }
 
@@ -56,16 +83,18 @@ func NewWorkflow(app *oamcore.Application, cli client.Client, mode common.Workfl
 }
 
 // ExecuteSteps process workflow step in order.
-func (w *workflow) ExecuteSteps(ctx context.Context, appRev *oamcore.ApplicationRevision, taskRunners []wfTypes.TaskRunner) (common.WorkflowState, error) {
-	revAndSpecHash, err := computeAppRevisionHash(appRev.Name, w.app)
+func (w *workflow) ExecuteSteps(ctx monitorContext.Context, appRev *oamcore.ApplicationRevision, taskRunners []wfTypes.TaskRunner) (common.WorkflowState, error) {
+	revAndSpecHash, err := ComputeWorkflowRevisionHash(appRev.Name, w.app)
 	if err != nil {
 		return common.WorkflowStateExecuting, err
 	}
+	ctx.AddTag("workflow_version", revAndSpecHash)
 	if len(taskRunners) == 0 {
 		return common.WorkflowStateFinished, nil
 	}
 
 	if w.app.Status.Workflow == nil || w.app.Status.Workflow.AppRevision != revAndSpecHash {
+		ctx.Info("Restart Workflow")
 		status := w.app.Status.Workflow
 		if status != nil && !status.Finished {
 			status.Terminated = true
@@ -74,18 +103,37 @@ func (w *workflow) ExecuteSteps(ctx context.Context, appRev *oamcore.Application
 		w.app.Status.Workflow = &common.WorkflowStatus{
 			AppRevision: revAndSpecHash,
 			Mode:        common.WorkflowModeStep,
-			StartTime:   metav1.NewTime(time.Now()),
+			StartTime:   metav1.Now(),
 		}
+		w.app.Status.Workflow.Message = MessageInitializingWorkflow
 		if w.dagMode {
 			w.app.Status.Workflow.Mode = common.WorkflowModeDAG
 		}
 		// clean recorded resources info.
 		w.app.Status.Services = nil
 		w.app.Status.AppliedResources = nil
+
+		// clean conditions after render
+		var reservedConditions []condition.Condition
+		for i, cond := range w.app.Status.Conditions {
+			condTpy, err := common.ParseApplicationConditionType(string(cond.Type))
+			if err == nil {
+				if condTpy <= common.RenderCondition {
+					reservedConditions = append(reservedConditions, w.app.Status.Conditions[i])
+				}
+			}
+		}
+		w.app.Status.Conditions = reservedConditions
+		StepStatusCache.Delete(fmt.Sprintf("%s-%s", w.app.Name, w.app.Namespace))
+		wfContext.CleanupMemoryStore(w.app.Name, w.app.Namespace)
+		return common.WorkflowStateInitializing, nil
 	}
 
 	wfStatus := w.app.Status.Workflow
+	cacheKey := fmt.Sprintf("%s-%s", w.app.Name, w.app.Namespace)
+
 	if wfStatus.Finished {
+		StepStatusCache.Delete(cacheKey)
 		return common.WorkflowStateFinished, nil
 	}
 	if wfStatus.Terminated {
@@ -99,43 +147,82 @@ func (w *workflow) ExecuteSteps(ctx context.Context, appRev *oamcore.Application
 		return common.WorkflowStateSucceeded, nil
 	}
 
-	var (
-		wfCtx wfContext.Context
-	)
-
-	wfCtx, err = w.makeContext(w.app.Name)
+	wfCtx, err := w.makeContext(w.app.Name)
 	if err != nil {
+		ctx.Error(err, "make context")
+		wfStatus.Message = string(common.WorkflowStateExecuting)
 		return common.WorkflowStateExecuting, err
+	}
+	w.wfCtx = wfCtx
+
+	if cacheValue, ok := StepStatusCache.Load(cacheKey); ok {
+		// handle cache resource
+		if len(wfStatus.Steps) < cacheValue.(int) {
+			return common.WorkflowStateSkipping, nil
+		}
 	}
 
 	e := &engine{
-		status:  wfStatus,
-		dagMode: w.dagMode,
+		status:     wfStatus,
+		dagMode:    w.dagMode,
+		monitorCtx: ctx,
+		app:        w.app,
+		wfCtx:      wfCtx,
 	}
 
-	err = e.run(wfCtx, taskRunners)
+	err = e.run(taskRunners)
 	if err != nil {
+		ctx.Error(err, "run steps")
+		StepStatusCache.Store(cacheKey, len(wfStatus.Steps))
+		wfStatus.Message = string(common.WorkflowStateExecuting)
 		return common.WorkflowStateExecuting, err
 	}
+
+	e.checkWorkflowStatusMessage(wfStatus)
+	StepStatusCache.Store(cacheKey, len(wfStatus.Steps))
 	if wfStatus.Terminated {
+		wfContext.CleanupMemoryStore(e.app.Name, e.app.Namespace)
 		return common.WorkflowStateTerminated, nil
 	}
 	if wfStatus.Suspend {
+		wfContext.CleanupMemoryStore(e.app.Name, e.app.Namespace)
 		return common.WorkflowStateSuspended, nil
 	}
 	if w.allDone(taskRunners) {
+		wfStatus.Message = string(common.WorkflowStateSucceeded)
 		return common.WorkflowStateSucceeded, nil
 	}
+	wfStatus.Message = string(common.WorkflowStateExecuting)
 	return common.WorkflowStateExecuting, nil
 }
 
 // Trace record the workflow execute history.
 func (w *workflow) Trace() error {
+	if DisableRecorder {
+		return nil
+	}
 	data, err := json.Marshal(w.app)
 	if err != nil {
 		return err
 	}
 	return recorder.With(w.cli, w.app).Save("", data).Limit(10).Error()
+}
+
+func (w *workflow) GetBackoffWaitTime() time.Duration {
+	nextTime, ok := w.wfCtx.GetValueInMemory(wfTypes.ContextKeyNextExecuteTime)
+	if !ok {
+		return time.Second
+	}
+	unix, ok := nextTime.(int64)
+	if !ok {
+		return time.Second
+	}
+	next := time.Unix(unix, 0)
+	if next.After(time.Now()) {
+		return time.Until(next)
+	}
+
+	return time.Second
 }
 
 func (w *workflow) allDone(taskRunners []wfTypes.TaskRunner) bool {
@@ -165,7 +252,7 @@ func (w *workflow) makeContext(appName string) (wfCtx wfContext.Context, err err
 		return
 	}
 
-	wfCtx, err = wfContext.NewEmptyContext(w.cli, w.app.Namespace, appName)
+	wfCtx, err = wfContext.NewContext(w.cli, w.app.Namespace, appName, w.app.GetUID())
 
 	if err != nil {
 		err = errors.WithMessage(err, "new context")
@@ -194,16 +281,68 @@ func (w *workflow) setMetadataToContext(wfCtx wfContext.Context) error {
 	return wfCtx.SetVar(metadata, wfTypes.ContextKeyMetadata)
 }
 
-func (e *engine) runAsDAG(wfCtx wfContext.Context, taskRunners []wfTypes.TaskRunner) error {
+func (e *engine) getBackoffWaitTime() int {
+	// the default value of min times reaches the max workflow backoff wait time
+	minTimes := 15
+	found := false
+	for _, step := range e.status.Steps {
+		if v, ok := e.wfCtx.GetValueInMemory(wfTypes.ContextPrefixBackoffTimes, step.ID); ok {
+			found = true
+			times, ok := v.(int)
+			if !ok {
+				times = 0
+			}
+			if times < minTimes {
+				minTimes = times
+			}
+		}
+	}
+	if !found {
+		return minWorkflowBackoffWaitTime
+	}
+
+	interval := math.Pow(2, float64(minTimes)) * backoffTimeCoefficient
+	if interval < minWorkflowBackoffWaitTime {
+		return minWorkflowBackoffWaitTime
+	}
+	if interval > maxWorkflowBackoffWaitTime {
+		return maxWorkflowBackoffWaitTime
+	}
+	return int(interval)
+}
+
+func (e *engine) setNextExecuteTime() {
+	interval := e.getBackoffWaitTime()
+	lastExecuteTime, ok := e.wfCtx.GetValueInMemory(wfTypes.ContextKeyLastExecuteTime)
+	if !ok {
+		e.monitorCtx.Error(fmt.Errorf("failed to get last execute time"), "application", e.app.Name)
+	}
+
+	last, ok := lastExecuteTime.(int64)
+	if !ok {
+		e.monitorCtx.Error(fmt.Errorf("failed to parse last execute time to int64"), "lastExecuteTime", lastExecuteTime)
+	}
+
+	next := last + int64(interval)
+	e.wfCtx.SetValueInMemory(next, wfTypes.ContextKeyNextExecuteTime)
+	if err := e.wfCtx.Commit(); err != nil {
+		e.monitorCtx.Error(err, "failed to commit next execute time", "nextExecuteTime", next)
+	}
+}
+
+func (e *engine) runAsDAG(taskRunners []wfTypes.TaskRunner) error {
 	var (
 		todoTasks    []wfTypes.TaskRunner
 		pendingTasks []wfTypes.TaskRunner
 	)
+	wfCtx := e.wfCtx
 	done := true
 	for _, tRunner := range taskRunners {
 		ready := false
+		var stepID string
 		for _, ss := range e.status.Steps {
 			if ss.Name == tRunner.Name() {
+				stepID = ss.ID
 				ready = ss.Phase == common.WorkflowStepPhaseSucceeded
 				break
 			}
@@ -215,6 +354,8 @@ func (e *engine) runAsDAG(wfCtx wfContext.Context, taskRunners []wfTypes.TaskRun
 				continue
 			}
 			todoTasks = append(todoTasks, tRunner)
+		} else {
+			wfCtx.DeleteValueInMemory(wfTypes.ContextPrefixBackoffTimes, stepID)
 		}
 	}
 	if done {
@@ -222,28 +363,47 @@ func (e *engine) runAsDAG(wfCtx wfContext.Context, taskRunners []wfTypes.TaskRun
 	}
 
 	if len(todoTasks) > 0 {
-		err := e.steps(wfCtx, todoTasks)
+		err := e.steps(todoTasks)
 		if err != nil {
 			return err
 		}
+
 		if e.needStop() {
 			return nil
 		}
 
 		if len(pendingTasks) > 0 {
-			return e.runAsDAG(wfCtx, pendingTasks)
+			return e.runAsDAG(pendingTasks)
 		}
 	}
 	return nil
 
 }
 
-func (e *engine) run(wfCtx wfContext.Context, taskRunners []wfTypes.TaskRunner) error {
+func (e *engine) run(taskRunners []wfTypes.TaskRunner) error {
+	var err error
 	if e.dagMode {
-		return e.runAsDAG(wfCtx, taskRunners)
+		err = e.runAsDAG(taskRunners)
+	} else {
+		err = e.steps(e.todoByIndex(taskRunners))
 	}
 
-	return e.steps(wfCtx, e.todoByIndex(taskRunners))
+	e.setNextExecuteTime()
+	return err
+}
+
+func (e *engine) checkWorkflowStatusMessage(wfStatus *common.WorkflowStatus) {
+	if !e.waiting && e.failedAfterRetries {
+		e.status.Message = MessageFailedAfterRetries
+		return
+	}
+
+	if wfStatus.Terminated {
+		e.status.Message = string(common.WorkflowStateTerminated)
+	}
+	if wfStatus.Suspend {
+		e.status.Message = string(common.WorkflowStateSuspended)
+	}
 }
 
 func (e *engine) todoByIndex(taskRunners []wfTypes.TaskRunner) []wfTypes.TaskRunner {
@@ -261,24 +421,38 @@ func (e *engine) todoByIndex(taskRunners []wfTypes.TaskRunner) []wfTypes.TaskRun
 	return taskRunners[index:]
 }
 
-func (e *engine) steps(wfCtx wfContext.Context, taskRunners []wfTypes.TaskRunner) error {
+func (e *engine) steps(taskRunners []wfTypes.TaskRunner) error {
+	wfCtx := e.wfCtx
 	for _, runner := range taskRunners {
-		status, operation, err := runner.Run(wfCtx, &wfTypes.TaskRunOptions{})
+		status, operation, err := runner.Run(wfCtx, &wfTypes.TaskRunOptions{
+			GetTracer: func(id string, stepStatus oamcore.WorkflowStep) monitorContext.Context {
+				return e.monitorCtx.Fork(id, monitorContext.DurationMetric(func(v float64) {
+					metrics.StepDurationHistogram.WithLabelValues("application", stepStatus.Type).Observe(v)
+				}))
+			},
+		})
 		if err != nil {
 			return err
 		}
 
 		e.updateStepStatus(status)
 
-		if err := wfCtx.Commit(); err != nil {
-			return errors.WithMessage(err, "commit workflow context")
-		}
-
+		e.failedAfterRetries = e.failedAfterRetries || operation.FailedAfterRetries
+		e.waiting = e.waiting || operation.Waiting
 		if status.Phase != common.WorkflowStepPhaseSucceeded {
+			wfCtx.IncreaseCountValueInMemory(wfTypes.ContextPrefixBackoffTimes, status.ID)
+			if err := wfCtx.Commit(); err != nil {
+				return errors.WithMessage(err, "commit workflow context")
+			}
 			if e.isDag() {
 				continue
 			}
+			e.checkFailedAfterRetries()
 			return nil
+		}
+		wfCtx.DeleteValueInMemory(wfTypes.ContextPrefixBackoffTimes, status.ID)
+		if err := wfCtx.Commit(); err != nil {
+			return errors.WithMessage(err, "commit workflow context")
 		}
 
 		e.finishStep(operation)
@@ -290,8 +464,13 @@ func (e *engine) steps(wfCtx wfContext.Context, taskRunners []wfTypes.TaskRunner
 }
 
 type engine struct {
-	dagMode bool
-	status  *common.WorkflowStatus
+	dagMode            bool
+	failedAfterRetries bool
+	waiting            bool
+	status             *common.WorkflowStatus
+	monitorCtx         monitorContext.Context
+	wfCtx              wfContext.Context
+	app                *oamcore.Application
 }
 
 func (e *engine) isDag() bool {
@@ -310,6 +489,8 @@ func (e *engine) updateStepStatus(status common.WorkflowStepStatus) {
 		conditionUpdated bool
 		now              = metav1.NewTime(time.Now())
 	)
+
+	e.wfCtx.SetValueInMemory(now.Unix(), wfTypes.ContextKeyLastExecuteTime)
 	status.LastExecuteTime = now
 	for i := range e.status.Steps {
 		if e.status.Steps[i].Name == status.Name {
@@ -325,14 +506,22 @@ func (e *engine) updateStepStatus(status common.WorkflowStepStatus) {
 	}
 }
 
+func (e *engine) checkFailedAfterRetries() {
+	if !e.waiting && e.failedAfterRetries {
+		e.status.Suspend = true
+	}
+}
+
 func (e *engine) needStop() bool {
+	e.checkFailedAfterRetries()
 	return e.status.Suspend || e.status.Terminated
 }
 
-func computeAppRevisionHash(rev string, app *oamcore.Application) (string, error) {
+// ComputeWorkflowRevisionHash compute workflow revision.
+func ComputeWorkflowRevisionHash(rev string, app *oamcore.Application) (string, error) {
 	version := ""
 	if annos := app.Annotations; annos != nil {
-		version = annos[wfTypes.AnnotationPublishVersion]
+		version = annos[oam.AnnotationPublishVersion]
 	}
 	if version == "" {
 		specHash, err := utils.ComputeSpecHash(app.Spec)

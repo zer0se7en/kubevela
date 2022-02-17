@@ -30,48 +30,50 @@ import (
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
+// AllNamespace list app in all namespaces
+var AllNamespace bool
+
 // NewListCommand creates `ls` command and its nested children command
-func NewListCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewListCommand(c common.Args, order string, ioStreams cmdutil.IOStreams) *cobra.Command {
 	ctx := context.Background()
 	cmd := &cobra.Command{
 		Use:                   "ls",
 		Aliases:               []string{"list"},
 		DisableFlagsInUseLine: true,
 		Short:                 "List applications",
-		Long:                  "List all applications in cluster",
+		Long:                  "List all vela applications.",
 		Example:               `vela ls`,
-		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			return c.SetConfig()
-		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			env, err := GetFlagEnvOrCurrent(cmd, c)
-			if err != nil {
-				return err
-			}
 			newClient, err := c.GetClient()
 			if err != nil {
 				return err
 			}
-			namespace, err := cmd.Flags().GetString(Namespace)
+			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
 			if err != nil {
 				return err
 			}
-			if namespace == "" {
-				namespace = env.Namespace
+			if AllNamespace {
+				namespace = ""
 			}
 			return printApplicationList(ctx, newClient, namespace, ioStreams)
 		},
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeApp,
+			types.TagCommandOrder: order,
+			types.TagCommandType:  types.TypeApp,
 		},
 	}
-	cmd.PersistentFlags().StringP(Namespace, "n", "", "specify the namespace the application want to list, default is the current env namespace")
+	addNamespaceAndEnvArg(cmd)
+	cmd.Flags().BoolVarP(&AllNamespace, "all-namespaces", "A", false, "If true, check the specified action in all namespaces.")
 	return cmd
 }
 
 func printApplicationList(ctx context.Context, c client.Reader, namespace string, ioStreams cmdutil.IOStreams) error {
 	table := newUITable()
-	table.AddRow("APP", "COMPONENT", "TYPE", "TRAITS", "PHASE", "HEALTHY", "STATUS", "CREATED-TIME")
+	header := []interface{}{"APP", "COMPONENT", "TYPE", "TRAITS", "PHASE", "HEALTHY", "STATUS", "CREATED-TIME"}
+	if AllNamespace {
+		header = append([]interface{}{"NAMESPACE"}, header...)
+	}
+	table.AddRow(header...)
 	applist := v1beta1.ApplicationList{}
 	if err := c.List(ctx, &applist, client.InNamespace(namespace)); err != nil {
 		if apierrors.IsNotFound(err) {
@@ -103,7 +105,11 @@ func printApplicationList(ctx context.Context, c client.Reader, namespace string
 			for _, tr := range cmp.Traits {
 				traits = append(traits, tr.Type)
 			}
-			table.AddRow(appName, cmp.Name, cmp.Type, strings.Join(traits, ","), a.Status.Phase, healthy, status, a.CreationTimestamp)
+			if AllNamespace {
+				table.AddRow(a.Namespace, appName, cmp.Name, cmp.Type, strings.Join(traits, ","), a.Status.Phase, healthy, status, a.CreationTimestamp)
+			} else {
+				table.AddRow(appName, cmp.Name, cmp.Type, strings.Join(traits, ","), a.Status.Phase, healthy, status, a.CreationTimestamp)
+			}
 		}
 	}
 	ioStreams.Info(table.String())

@@ -16,10 +16,11 @@ limitations under the License.
 package workflow
 
 import (
-	"context"
+	"time"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	monitorContext "github.com/oam-dev/kubevela/pkg/monitor/context"
 	"github.com/oam-dev/kubevela/pkg/workflow/types"
 )
 
@@ -27,7 +28,11 @@ import (
 type Workflow interface {
 	// ExecuteSteps executes the steps of an Application with given steps of rendered resources.
 	// It returns done=true only if all steps are executed and succeeded.
-	ExecuteSteps(ctx context.Context, appRev *v1beta1.ApplicationRevision, taskRunners []types.TaskRunner) (state common.WorkflowState, err error)
+	ExecuteSteps(ctx monitorContext.Context, appRev *v1beta1.ApplicationRevision, taskRunners []types.TaskRunner) (state common.WorkflowState, err error)
+
 	// Trace record workflow state in controllerRevision.
 	Trace() error
+
+	// GetBackoffWaitTime returns the wait time for next retry.
+	GetBackoffWaitTime() time.Duration
 }

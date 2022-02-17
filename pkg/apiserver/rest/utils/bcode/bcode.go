@@ -20,11 +20,20 @@ import (
 	"errors"
 	"fmt"
 
-	restful "github.com/emicklei/go-restful/v3"
+	"github.com/emicklei/go-restful/v3"
 	"github.com/go-playground/validator/v10"
 
+	"github.com/oam-dev/kubevela/pkg/apiserver/datastore"
 	"github.com/oam-dev/kubevela/pkg/apiserver/log"
+	"github.com/oam-dev/kubevela/pkg/utils"
 )
+
+// Business Code of VelaUX contains 5 digits, the first 3 digits should be reversed and indicates the category of concept
+// the last two digits indicates the error number
+// For example, business code 11001 should split to 110 and 01, it means the code belongs to the 011 category env, and it's the 01 number error.
+
+// ErrServer an unexpected mistake.
+var ErrServer = NewBcode(500, 500, "The service has lapsed.")
 
 // Bcode business error code
 type Bcode struct {
@@ -61,6 +70,13 @@ func ReturnError(req *restful.Request, res *restful.Response, err error) {
 		}
 		return
 	}
+
+	if errors.Is(err, datastore.ErrRecordNotExist) {
+		if err := res.WriteHeaderAndEntity(int(404), err); err != nil {
+			log.Logger.Error("write entity failure %s", err.Error())
+		}
+		return
+	}
 	var restfulerr restful.ServiceError
 	if errors.As(err, &restfulerr) {
 		if err := res.WriteHeaderAndEntity(restfulerr.Code, Bcode{HTTPCode: int32(restfulerr.Code), BusinessCode: int32(restfulerr.Code), Message: restfulerr.Message}); err != nil {
@@ -77,7 +93,7 @@ func ReturnError(req *restful.Request, res *restful.Response, err error) {
 		return
 	}
 
-	log.Logger.Errorf("Business exceptions, error message: %s, path:%s method:%s", err.Error(), req.Request.URL, req.Request.Method)
+	log.Logger.Errorf("Business exceptions, error message: %s, path:%s method:%s", err.Error(), utils.Sanitize(req.Request.URL.String()), req.Request.Method)
 	if err := res.WriteHeaderAndEntity(500, Bcode{HTTPCode: 500, BusinessCode: 500, Message: err.Error()}); err != nil {
 		log.Logger.Error("write entity failure %s", err.Error())
 	}

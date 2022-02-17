@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
+	"cuelang.org/go/cue"
 	"github.com/crossplane/crossplane-runtime/pkg/test"
 	"github.com/google/go-cmp/cmp"
 	terraformtypes "github.com/oam-dev/terraform-controller/api/types/crossplane-runtime"
@@ -112,7 +113,7 @@ var _ = Describe("Test Helm schematic appfile", func() {
 								},
 							}),
 							Repository: *util.Object2RawExtension(map[string]interface{}{
-								"url": "http://oam.dev/catalog/",
+								"url": "https://charts.kubevela.net/example/",
 							}),
 						},
 					},
@@ -191,7 +192,7 @@ var _ = Describe("Test Helm schematic appfile", func() {
 							"namespace": "default",
 						},
 						"spec": map[string]interface{}{
-							"url": "http://oam.dev/catalog/",
+							"url": "https://charts.kubevela.net/example/",
 						},
 					},
 				},
@@ -390,19 +391,6 @@ wait: op.#ConditionalWait & {
 		notCueStepDef.Namespace = "default"
 		err = k8sClient.Create(context.Background(), &notCueStepDef)
 		Expect(err).To(BeNil())
-
-		appfile := &Appfile{
-			Components: []common.ApplicationComponent{
-				{
-					Name: "test1",
-				},
-				{
-					Name: "test2",
-				},
-			},
-		}
-		appfile.generateSteps()
-		Expect(len(appfile.WorkflowSteps)).Should(Equal(2))
 	})
 })
 
@@ -469,10 +457,11 @@ spec:
 					engine: definition.NewWorkloadAbstractEngine("test-policy", pd),
 				},
 			},
+			app: &v1beta1.Application{},
 		}
 		_, err := testAppfile.GenerateComponentManifests()
 		Expect(err).Should(BeNil())
-		gotPolicies, err := testAppfile.PrepareWorkflowAndPolicy()
+		gotPolicies, err := testAppfile.PrepareWorkflowAndPolicy(context.Background())
 		Expect(err).Should(BeNil())
 		Expect(len(gotPolicies)).ShouldNot(Equal(0))
 
@@ -608,12 +597,12 @@ variable "password" {
 			},
 
 			Spec: terraformapi.ConfigurationSpec{
-				HCL:                              configuration,
-				Variable:                         raw,
-				WriteConnectionSecretToReference: &terraformtypes.SecretReference{Name: "db", Namespace: "default"},
+				HCL:      configuration,
+				Variable: raw,
 			},
 			Status: terraformapi.ConfigurationStatus{},
 		}
+		workload.Spec.WriteConnectionSecretToReference = &terraformtypes.SecretReference{Name: "db", Namespace: "default"}
 
 		expectCompManifest := &oamtypes.ComponentManifest{
 			Name: compName,
@@ -884,7 +873,7 @@ variable "password" {
 			revision: "v1",
 		}
 
-		pCtx := NewBasicContext(args.wl, args.appName, args.revision, ns)
+		pCtx := NewBasicContext(args.appName, args.wl.Name, args.revision, ns, args.wl.Params)
 		comp, err := evalWorkloadWithContext(pCtx, args.wl, ns, args.appName, compName)
 		Expect(comp.StandardWorkload).ShouldNot(BeNil())
 		Expect(comp.Name).Should(Equal(""))
@@ -920,13 +909,6 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 		args args
 		want want
 	}{
-		"json workload with invalid secret": {
-			args: args{
-				json:   "abc",
-				params: map[string]interface{}{"acl": "private", "writeConnectionSecretToRef": map[string]interface{}{"name": "", "namespace": ""}},
-			},
-			want: want{err: errors.New(errTerraformNameOfWriteConnectionSecretToRefNotSet)}},
-
 		"json workload with secret": {
 			args: args{
 
@@ -963,7 +945,6 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 		},
 
 		"workload's params is bad": {
-
 			args: args{
 				params: badParam,
 				hcl:    "abc",
@@ -971,14 +952,21 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 			want: want{err: errors.Wrap(badParamMarshalError, errFailToConvertTerraformComponentProperties)},
 		},
 
-		"terraform workload has a provider reference": {
-
+		"terraform workload has a provider reference, but parameters are bad": {
 			args: args{
 				params:      badParam,
 				hcl:         "abc",
 				providerRef: &terraformtypes.Reference{Name: "azure", Namespace: "default"},
 			},
 			want: want{err: errors.Wrap(badParamMarshalError, errFailToConvertTerraformComponentProperties)},
+		},
+		"terraform workload has a provider reference": {
+			args: args{
+				params:      variable,
+				hcl:         "variable \"name\" {\n      description = \"Name to be used on all resources as prefix. Default to 'TF-Module-EIP'.\"\n      default = \"TF-Module-EIP\"\n      type = string\n    }",
+				providerRef: &terraformtypes.Reference{Name: "aws", Namespace: "default"},
+			},
+			want: want{err: nil},
 		},
 	}
 
@@ -998,10 +986,10 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 				},
 			}
 			configSpec = terraformapi.ConfigurationSpec{
-				HCL:                              tc.args.hcl,
-				Variable:                         raw,
-				WriteConnectionSecretToReference: tc.args.writeConnectionSecretToRef,
+				HCL:      tc.args.hcl,
+				Variable: raw,
 			}
+			configSpec.WriteConnectionSecretToReference = tc.args.writeConnectionSecretToRef
 		}
 		if tc.args.json != "" {
 			template = &Template{
@@ -1011,10 +999,10 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 				},
 			}
 			configSpec = terraformapi.ConfigurationSpec{
-				JSON:                             tc.args.json,
-				Variable:                         raw,
-				WriteConnectionSecretToReference: tc.args.writeConnectionSecretToRef,
+				JSON:     tc.args.json,
+				Variable: raw,
 			}
+			configSpec.WriteConnectionSecretToReference = tc.args.writeConnectionSecretToRef
 		}
 		if tc.args.remote != "" {
 			template = &Template{
@@ -1024,10 +1012,10 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 				},
 			}
 			configSpec = terraformapi.ConfigurationSpec{
-				Remote:                           tc.args.remote,
-				Variable:                         raw,
-				WriteConnectionSecretToReference: tc.args.writeConnectionSecretToRef,
+				Remote:   tc.args.remote,
+				Variable: raw,
 			}
+			configSpec.WriteConnectionSecretToReference = tc.args.writeConnectionSecretToRef
 		}
 		if tc.args.hcl == "" && tc.args.json == "" && tc.args.remote == "" {
 			template = &Template{
@@ -1035,12 +1023,21 @@ func TestGenerateTerraformConfigurationWorkload(t *testing.T) {
 			}
 
 			configSpec = terraformapi.ConfigurationSpec{
-				Variable:                         raw,
-				WriteConnectionSecretToReference: tc.args.writeConnectionSecretToRef,
+				Variable: raw,
 			}
+			configSpec.WriteConnectionSecretToReference = tc.args.writeConnectionSecretToRef
 		}
 		if tc.args.providerRef != nil {
-			template.Terraform.ProviderReference = tc.args.providerRef
+			tf := &common.Terraform{}
+			tf.ProviderReference = tc.args.providerRef
+			template.ComponentDefinition = &v1beta1.ComponentDefinition{
+				Spec: v1beta1.ComponentDefinitionSpec{
+					Schematic: &common.Schematic{
+						Terraform: tf,
+					},
+				},
+			}
+			configSpec.ProviderReference = tc.args.providerRef
 		}
 
 		wl := &Workload{
@@ -1325,4 +1322,48 @@ spec:
 		t.Fatalf("cannot get service trait")
 	}
 
+}
+
+func TestBaseGenerateComponent(t *testing.T) {
+	var appName = "test-app"
+	var ns = "test-ns"
+	var traitName = "mytrait"
+	var wlName = "my-wl-1"
+	pContext := NewBasicContext(appName, wlName, "rev-1", ns, nil)
+	base := `
+	apiVersion: "apps/v1"
+	kind:       "Deployment"
+	spec: {
+		template: {
+			spec: containers: [{
+				image: "nginx"
+			}]
+		}
+	}
+`
+	var r cue.Runtime
+	inst, err := r.Compile("-", base)
+	assert.NilError(t, err)
+	bs, _ := model.NewBase(inst.Value())
+	err = pContext.SetBase(bs)
+	assert.NilError(t, err)
+	tr := &Trait{
+		Name:   traitName,
+		engine: definition.NewTraitAbstractEngine(traitName, nil),
+		Template: `outputs:mytrait:{
+if context.componentType == "stateless" {
+             kind:  			"Deployment"
+	}
+	if context.componentType  == "stateful" {
+             kind:  			"StatefulSet"
+	}
+	name:                   context.name
+	envSourceContainerName: context.name
+}`,
+	}
+	wl := &Workload{Type: "stateful", Traits: []*Trait{tr}}
+	cm, err := baseGenerateComponent(pContext, wl, appName, ns)
+	assert.NilError(t, err)
+	assert.Equal(t, cm.Traits[0].Object["kind"], "StatefulSet")
+	assert.Equal(t, cm.Traits[0].Object["name"], wlName)
 }

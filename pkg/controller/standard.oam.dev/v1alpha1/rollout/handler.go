@@ -20,12 +20,12 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/pkg/errors"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	v1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -34,11 +34,11 @@ import (
 	"k8s.io/utils/pointer"
 
 	"github.com/crossplane/crossplane-runtime/pkg/event"
+	"github.com/crossplane/crossplane-runtime/pkg/fieldpath"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/application/assemble"
-	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha2/applicationrollout"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 )
@@ -58,9 +58,9 @@ type handler struct {
 // but we do same thing with it in the func
 func (h *handler) assembleWorkload(ctx context.Context) error {
 	workloadOptions := []assemble.WorkloadOption{
-		applicationrollout.RolloutWorkloadName(h.compName),
+		WorkloadName(h.compName),
 		assemble.PrepareWorkloadForRollout(h.compName),
-		applicationrollout.HandleReplicas(ctx, h.compName, h.Client)}
+		HandleReplicas(ctx, h.compName, h.Client)}
 
 	for _, workloadOption := range workloadOptions {
 		if err := workloadOption.ApplyToWorkload(h.targetWorkload, nil, nil); err != nil {
@@ -119,6 +119,14 @@ func (h *handler) applyTargetWorkload(ctx context.Context) error {
 	if h.targetWorkload == nil {
 		return fmt.Errorf("cannot find target workload to template")
 	}
+	meta.AddOwnerReference(h.targetWorkload, metav1.OwnerReference{
+		APIVersion:         v1alpha1.SchemeGroupVersion.String(),
+		Kind:               v1alpha1.RolloutKind,
+		Name:               h.rollout.Name,
+		UID:                h.rollout.UID,
+		Controller:         pointer.Bool(false),
+		BlockOwnerDeletion: pointer.Bool(true),
+	})
 	if err := h.applicator.Apply(ctx, h.targetWorkload); err != nil {
 		klog.Errorf("cannot template rollout target workload", "namespace", h.rollout.Namespace,
 			"rollout", h.rollout.Name, "targetWorkload", h.targetWorkload.GetName())
@@ -213,20 +221,29 @@ func (h *handler) handleRolloutModified() {
 
 // setWorkloadBaseInfo set base workload base info, which is such as workload name and component revision label
 func (h *handler) setWorkloadBaseInfo() {
-	if len(h.targetWorkload.GetNamespace()) == 0 {
-		h.targetWorkload.SetNamespace(h.rollout.Namespace)
-	}
-	if h.sourceWorkload != nil && len(h.sourceWorkload.GetNamespace()) == 0 {
+	h.targetWorkload.SetNamespace(h.rollout.Namespace)
+	if h.sourceWorkload != nil {
 		h.sourceWorkload.SetNamespace(h.rollout.Namespace)
 	}
 
+	var appRev string
+	if len(h.rollout.GetLabels()) > 0 {
+		appRev = h.rollout.GetLabels()[oam.LabelAppRevision]
+	}
+
 	h.targetWorkload.SetName(h.compName)
-	util.AddLabels(h.targetWorkload, map[string]string{oam.LabelAppComponentRevision: h.targetRevName})
+	util.AddLabels(h.targetWorkload, map[string]string{
+		oam.LabelAppComponentRevision: h.targetRevName,
+		oam.LabelAppRevision:          appRev,
+	})
 	util.AddAnnotations(h.targetWorkload, map[string]string{oam.AnnotationSkipGC: "true"})
 
 	if h.sourceWorkload != nil {
 		h.sourceWorkload.SetName(h.compName)
-		util.AddLabels(h.sourceWorkload, map[string]string{oam.LabelAppComponentRevision: h.sourceRevName})
+		util.AddLabels(h.sourceWorkload, map[string]string{
+			oam.LabelAppComponentRevision: h.sourceRevName,
+			oam.LabelAppRevision:          appRev,
+		})
 	}
 }
 
@@ -238,6 +255,19 @@ func (h *handler) checkWorkloadNotExist(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return false, nil
+}
+
+func getWorkloadReplicasNum(u unstructured.Unstructured) (int32, error) {
+	replicaPath, err := GetWorkloadReplicasPath(u)
+	if err != nil {
+		return 0, fmt.Errorf("get workload replicas path err %w", err)
+	}
+	wlpv := fieldpath.Pave(u.UnstructuredContent())
+	replicas, err := wlpv.GetInteger(replicaPath)
+	if err != nil {
+		return 0, fmt.Errorf("get workload replicas err %w", err)
+	}
+	return int32(replicas), nil
 }
 
 // checkRollingTerminated check the rollout if have finished
@@ -292,14 +322,7 @@ func (h *handler) recordWorkloadInResourceTracker(ctx context.Context, workload 
 		klog.Errorf("fail to get resourceTracker to record workload rollout: namespace:%s, name: %s", h.rollout.Namespace, h.rollout.Name)
 		return err
 	}
-	recordedWorkload := corev1.ObjectReference{
-		APIVersion: workload.GetAPIVersion(),
-		Kind:       workload.GetKind(),
-		UID:        workload.GetUID(),
-		Namespace:  workload.GetNamespace(),
-		Name:       workload.GetName(),
-	}
-	rt.Status.TrackedResources = append(rt.Status.TrackedResources, recordedWorkload)
+	rt.AddTrackedResource(workload)
 	if err := h.Status().Update(ctx, &rt); err != nil {
 		klog.Errorf("fail to update resourceTracker for rollout record workload namespace:%s, name: %s", h.rollout.Namespace, h.rollout.Name)
 		return err
@@ -314,5 +337,7 @@ func (h *handler) passOwnerToTargetWorkload(wl *unstructured.Unstructured) {
 		reference.Controller = pointer.Bool(false)
 		owners = append(owners, reference)
 	}
-	wl.SetOwnerReferences(owners)
+	for _, owner := range owners {
+		meta.AddOwnerReference(wl, owner)
+	}
 }

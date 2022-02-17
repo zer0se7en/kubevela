@@ -43,6 +43,12 @@ func TestCreateRefTestDir(t *testing.T) {
 }
 
 func TestCreateMarkdown(t *testing.T) {
+	ctx := context.Background()
+	ref := &MarkdownReference{}
+
+	refZh := &MarkdownReference{}
+	refZh.I18N = Zh
+
 	workloadName := "workload1"
 	traitName := "trait1"
 	scopeName := "scope1"
@@ -86,11 +92,13 @@ variable "acl" {
 
 	cases := map[string]struct {
 		reason       string
+		ref          *MarkdownReference
 		capabilities []types.Capability
 		want         error
 	}{
 		"WorkloadTypeAndTraitCapability": {
 			reason: "valid capabilities",
+			ref:    ref,
 			capabilities: []types.Capability{
 				{
 					Name:        workloadName,
@@ -115,6 +123,7 @@ variable "acl" {
 		},
 		"ScopeTypeCapability": {
 			reason: "invalid capabilities",
+			ref:    ref,
 			capabilities: []types.Capability{
 				{
 					Name: scopeName,
@@ -123,12 +132,24 @@ variable "acl" {
 			},
 			want: fmt.Errorf("the type of the capability is not right"),
 		},
+		"TerraformCapabilityInChinese": {
+			reason: "terraform capability",
+			ref:    refZh,
+			capabilities: []types.Capability{
+				{
+					Name:                   workloadName2,
+					TerraformConfiguration: configuration,
+					Type:                   types.TypeWorkload,
+					Category:               types.TerraformCategory,
+				},
+			},
+			want: nil,
+		},
 	}
-	ref := &MarkdownReference{}
-	ctx := context.Background()
+
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			got := ref.CreateMarkdown(ctx, tc.capabilities, RefTestDir, ReferenceSourcePath)
+			got := tc.ref.CreateMarkdown(ctx, tc.capabilities, RefTestDir, ReferenceSourcePath, nil)
 			if diff := cmp.Diff(tc.want, got, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\nCreateMakrdown(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
@@ -402,6 +423,19 @@ variable "acl" {
 				tableName2: "#### writeConnectionSecretToRef",
 			},
 		},
+		"configuration is in git remote": {
+			args: args{
+				cap: types.Capability{
+					TerraformConfiguration: "https://github.com/zzxwill/terraform-alibaba-eip.git",
+					ConfigurationType:      "remote",
+				},
+			},
+			want: want{
+				errMsg:     "",
+				tableName1: "### Properties",
+				tableName2: "#### writeConnectionSecretToRef",
+			},
+		},
 		"configuration is not valid": {
 			args: args{
 				cap: types.Capability{
@@ -434,5 +468,113 @@ variable "acl" {
 				t.Errorf("\n%s\nGexnerateTerraformCapabilityProperties(...): -want, +got:\n%s\n", name, diff)
 			}
 		}
+	}
+}
+
+func TestPrepareTerraformOutputs(t *testing.T) {
+	type args struct {
+		tableName     string
+		parameterList []ReferenceParameter
+	}
+
+	param := ReferenceParameter{}
+	param.Name = "ID"
+	param.Usage = "Identity of the cloud resource"
+
+	testcases := []struct {
+		args   args
+		expect string
+	}{
+		{
+			args: args{
+				tableName:     "",
+				parameterList: nil,
+			},
+			expect: "",
+		},
+		{
+			args: args{
+				tableName:     "abc",
+				parameterList: []ReferenceParameter{param},
+			},
+			expect: "\n\nabc\n\n Name | Description \n ------------ | ------------- \n ID | Identity of the cloud resource\n",
+		},
+	}
+	ref := &MarkdownReference{}
+	for _, tc := range testcases {
+		t.Run("", func(t *testing.T) {
+			content := ref.prepareTerraformOutputs(tc.args.tableName, tc.args.parameterList)
+			if content != tc.expect {
+				t.Errorf("prepareTerraformOutputs(...): -want, +got:\n%s\n", cmp.Diff(tc.expect, content))
+			}
+		})
+	}
+}
+
+func TestMakeReadableTitle(t *testing.T) {
+	type args struct {
+		ref   *MarkdownReference
+		title string
+	}
+
+	ref := &MarkdownReference{}
+
+	refZh := &MarkdownReference{}
+	refZh.I18N = Zh
+
+	testcases := []struct {
+		args args
+		want string
+	}{
+		{
+			args: args{
+				title: "abc",
+				ref:   ref,
+			},
+			want: "Abc",
+		},
+		{
+			args: args{
+				title: "abc-def",
+				ref:   ref,
+			},
+			want: "Abc-Def",
+		},
+		{
+			args: args{
+				title: "alibaba-def-ghi",
+				ref:   ref,
+			},
+			want: "Alibaba Cloud DEF-GHI",
+		},
+		{
+			args: args{
+				title: "alibaba-def-ghi",
+				ref:   refZh,
+			},
+			want: "阿里云 DEF-GHI",
+		},
+		{
+			args: args{
+				title: "aws-jk",
+				ref:   refZh,
+			},
+			want: "AWS JK",
+		},
+		{
+			args: args{
+				title: "azure-jk",
+				ref:   refZh,
+			},
+			want: "Azure JK",
+		},
+	}
+	for _, tc := range testcases {
+		t.Run("", func(t *testing.T) {
+			title := tc.args.ref.makeReadableTitle(tc.args.title)
+			if title != tc.want {
+				t.Errorf("makeReadableTitle(...): -want, +got:\n%s\n", cmp.Diff(tc.want, title))
+			}
+		})
 	}
 }

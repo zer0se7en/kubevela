@@ -21,18 +21,19 @@ import (
 	"context"
 	j "encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
-	"sort"
-	"strings"
 	"time"
 
-	"github.com/AlecAivazis/survey/v2"
+	"github.com/crossplane/crossplane-runtime/pkg/meta"
+	"github.com/fatih/color"
+	"github.com/gosuri/uilive"
 	"github.com/pkg/errors"
-	"github.com/spf13/cobra"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	apitypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
@@ -40,32 +41,28 @@ import (
 	corev1beta1 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/oam"
-	oamutil "github.com/oam-dev/kubevela/pkg/oam/util"
+	"github.com/oam-dev/kubevela/pkg/resourcekeeper"
+	"github.com/oam-dev/kubevela/pkg/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
-	"github.com/oam-dev/kubevela/references/apis"
 	"github.com/oam-dev/kubevela/references/appfile"
 	"github.com/oam-dev/kubevela/references/appfile/api"
 	"github.com/oam-dev/kubevela/references/appfile/template"
 )
 
-// nolint:golint
 const (
-	DefaultChosenAllSvc = "ALL SERVICES"
-	FlagNotSet          = "FlagNotSet"
-	FlagIsInvalid       = "FlagIsInvalid"
-	FlagIsValid         = "FlagIsValid"
+	resourceTrackerFinalizer = "app.oam.dev/resource-tracker-finalizer"
+	// legacyOnlyRevisionFinalizer is to delete all resource trackers of app revisions which may be used
+	// out of the domain of app controller, e.g., AppRollout controller.
+	legacyOnlyRevisionFinalizer = "app.oam.dev/only-revision-finalizer"
 )
-
-type componentMetaList []apis.ComponentMeta
-type applicationMetaList []apis.ApplicationMeta
 
 // AppfileOptions is some configuration that modify options for an Appfile
 type AppfileOptions struct {
-	Kubecli client.Client
-	IO      cmdutil.IOStreams
-	Env     *types.EnvMeta
+	Kubecli   client.Client
+	IO        cmdutil.IOStreams
+	Namespace string
 }
 
 // BuildResult is the export struct from AppFile yaml or AppFile object
@@ -73,26 +70,6 @@ type BuildResult struct {
 	appFile     *api.AppFile
 	application *corev1beta1.Application
 	scopes      []oam.Object
-}
-
-func (comps componentMetaList) Len() int {
-	return len(comps)
-}
-func (comps componentMetaList) Swap(i, j int) {
-	comps[i], comps[j] = comps[j], comps[i]
-}
-func (comps componentMetaList) Less(i, j int) bool {
-	return comps[i].CreatedTime > comps[j].CreatedTime
-}
-
-func (a applicationMetaList) Len() int {
-	return len(a)
-}
-func (a applicationMetaList) Swap(i, j int) {
-	a[i], a[j] = a[j], a[i]
-}
-func (a applicationMetaList) Less(i, j int) bool {
-	return a[i].CreatedTime > a[j].CreatedTime
 }
 
 // Option is option work with dashboard api server
@@ -105,260 +82,232 @@ type Option struct {
 
 // DeleteOptions is options for delete
 type DeleteOptions struct {
-	AppName  string
-	CompName string
-	Client   client.Client
-	Env      *types.EnvMeta
-	C        common.Args
-}
+	Namespace string
+	AppName   string
+	CompName  string
+	Client    client.Client
+	C         common.Args
 
-// ListApplications lists all applications
-func ListApplications(ctx context.Context, c client.Reader, opt Option) ([]apis.ApplicationMeta, error) {
-	var applicationMetaList applicationMetaList
-	var appList corev1beta1.ApplicationList
-	if opt.AppName != "" {
-		var app corev1beta1.Application
-		if err := c.Get(ctx, client.ObjectKey{Name: opt.AppName, Namespace: opt.Namespace}, &app); err != nil {
-			return applicationMetaList, err
-		}
-		appList.Items = append(appList.Items, app)
-	} else {
-		err := c.List(ctx, &appList, &client.ListOptions{Namespace: opt.Namespace})
-		if err != nil {
-			return applicationMetaList, err
-		}
-	}
-	for _, a := range appList.Items {
-		// ignore the deleted resource
-		if a.GetDeletionGracePeriodSeconds() != nil {
-			continue
-		}
-		applicationMeta, err := RetrieveApplicationStatusByName(ctx, c, a.Name, a.Namespace)
-		if err != nil {
-			return applicationMetaList, err
-		}
-		applicationMeta.Components = nil
-		applicationMetaList = append(applicationMetaList, applicationMeta)
-	}
-	sort.Stable(applicationMetaList)
-	return applicationMetaList, nil
-}
-
-// ListApplicationConfigurations lists all OAM ApplicationConfiguration
-func ListApplicationConfigurations(ctx context.Context, c client.Reader, opt Option) (corev1alpha2.ApplicationConfigurationList, error) {
-	var appConfigList corev1alpha2.ApplicationConfigurationList
-
-	if opt.AppName != "" {
-		var appConfig corev1alpha2.ApplicationConfiguration
-		if err := c.Get(ctx, client.ObjectKey{Name: opt.AppName, Namespace: opt.Namespace}, &appConfig); err != nil {
-			return appConfigList, err
-		}
-		appConfigList.Items = append(appConfigList.Items, appConfig)
-	} else {
-		err := c.List(ctx, &appConfigList, &client.ListOptions{Namespace: opt.Namespace})
-		if err != nil {
-			return appConfigList, err
-		}
-	}
-	return appConfigList, nil
-}
-
-// ListComponents will list all components for dashboard
-func ListComponents(ctx context.Context, c client.Reader, opt Option) ([]apis.ComponentMeta, error) {
-	var componentMetaList componentMetaList
-	var appConfigList corev1alpha2.ApplicationConfigurationList
-	var err error
-	if appConfigList, err = ListApplicationConfigurations(ctx, c, opt); err != nil {
-		return nil, err
-	}
-
-	for _, a := range appConfigList.Items {
-		for _, com := range a.Spec.Components {
-			component, _, err := oamutil.GetComponent(ctx, c, com, opt.Namespace)
-			if err != nil {
-				return componentMetaList, err
-			}
-			componentMetaList = append(componentMetaList, apis.ComponentMeta{
-				Name:        com.ComponentName,
-				Status:      types.StatusDeployed,
-				CreatedTime: a.ObjectMeta.CreationTimestamp.String(),
-				Component:   *component,
-				AppConfig:   a,
-				App:         a.Name,
-			})
-		}
-	}
-	sort.Stable(componentMetaList)
-	return componentMetaList, nil
-}
-
-// RetrieveApplicationStatusByName will get app status
-func RetrieveApplicationStatusByName(ctx context.Context, c client.Reader, applicationName string,
-	namespace string) (apis.ApplicationMeta, error) {
-	var applicationMeta apis.ApplicationMeta
-	var app corev1beta1.Application
-	if err := c.Get(ctx, client.ObjectKey{Name: applicationName, Namespace: namespace}, &app); err != nil {
-		return applicationMeta, err
-	}
-	applicationMeta.Name = app.Name
-	applicationMeta.Status = string(app.Status.Phase)
-	applicationMeta.CreatedTime = app.CreationTimestamp.Format(time.RFC3339)
-
-	return applicationMeta, nil
+	Wait        bool
+	ForceDelete bool
 }
 
 // DeleteApp will delete app including server side
-func (o *DeleteOptions) DeleteApp() (string, error) {
+func (o *DeleteOptions) DeleteApp(io cmdutil.IOStreams) error {
+	if o.ForceDelete {
+		return o.ForceDeleteApp(io)
+	}
+	if o.Wait {
+		return o.WaitUntilDeleteApp(io)
+	}
+	return o.DeleteAppWithoutDoubleCheck(io)
+}
+
+// ForceDeleteApp force delete the application
+func (o *DeleteOptions) ForceDeleteApp(io cmdutil.IOStreams) error {
+	ctx := context.Background()
+	err := o.DeleteAppWithoutDoubleCheck(io)
+	if err != nil {
+		return err
+	}
+	app := new(corev1beta1.Application)
+	err = o.Client.Get(ctx, client.ObjectKey{Name: o.AppName, Namespace: o.Namespace}, app)
+	if err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	io.Info("force deleted the resources created by application")
+	err = wait.PollImmediate(1*time.Second, 1*time.Minute, func() (done bool, err error) {
+		err = o.Client.Get(ctx, client.ObjectKeyFromObject(app), app)
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		rk, err := resourcekeeper.NewResourceKeeper(ctx, o.Client, app)
+		if err != nil {
+			return false, errors.Wrapf(err, "failed to create resource keeper to run garbage collection")
+		}
+		if done, _, err = rk.GarbageCollect(ctx); err != nil && !apierrors.IsConflict(err) {
+			return false, errors.Wrapf(err, "failed to run garbage collect")
+		}
+		if done {
+			meta.RemoveFinalizer(app, resourceTrackerFinalizer)
+			meta.RemoveFinalizer(app, legacyOnlyRevisionFinalizer)
+			if err = o.Client.Update(ctx, app); err != nil && !apierrors.IsConflict(err) && !apierrors.IsNotFound(err) {
+				return false, errors.Wrapf(err, "failed to update app finalizer")
+			}
+		}
+		return false, nil
+	})
+	if err != nil {
+		io.Info("successfully cleanup the resources created by application, but fail to delete the application")
+		return err
+	}
+	return nil
+}
+
+// WaitUntilDeleteApp will wait until the application is completely deleted
+func (o *DeleteOptions) WaitUntilDeleteApp(io cmdutil.IOStreams) error {
+	tryCnt, startTime := 0, time.Now()
+	writer := uilive.New()
+	writer.Start()
+	defer writer.Stop()
+
+	io.Infof(color.New(color.FgYellow).Sprintf("waiting for delete the application \"%s\"...\n", o.AppName))
+	err := wait.PollImmediate(2*time.Second, 5*time.Minute, func() (done bool, err error) {
+		tryCnt++
+		fmt.Fprintf(writer, "try to delete the application for the %d time, wait a total of %f s\n", tryCnt, time.Since(startTime).Seconds())
+		err = o.DeleteAppWithoutDoubleCheck(io)
+		if err != nil {
+			fmt.Printf("Failed delete Application \"%s\": %s\n", o.AppName, err.Error())
+			return false, nil
+		}
+		app := new(corev1beta1.Application)
+		err = o.Client.Get(context.Background(), client.ObjectKey{Name: o.AppName, Namespace: o.Namespace}, app)
+		if apierrors.IsNotFound(err) {
+			return true, nil
+		}
+		return false, nil
+	})
+	if err != nil {
+		io.Info("waiting for the application to be deleted timed out, please try again")
+		return err
+	}
+	return nil
+}
+
+// DeleteAppWithoutDoubleCheck delete application without double check
+func (o *DeleteOptions) DeleteAppWithoutDoubleCheck(io cmdutil.IOStreams) error {
 	ctx := context.Background()
 	var app = new(corev1beta1.Application)
-	err := o.Client.Get(ctx, client.ObjectKey{Name: o.AppName, Namespace: o.Env.Namespace}, app)
+	err := o.Client.Get(ctx, client.ObjectKey{Name: o.AppName, Namespace: o.Namespace}, app)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Sprintf("app \"%s\" already deleted", o.AppName), nil
+			return fmt.Errorf("app %s already deleted or not exist", o.AppName)
 		}
-		return "", fmt.Errorf("delete appconfig err: %w", err)
+		return fmt.Errorf("delete application err: %w", err)
 	}
 
 	err = o.Client.Delete(ctx, app)
 	if err != nil && !apierrors.IsNotFound(err) {
-		return "", fmt.Errorf("delete application err: %w", err)
+		return fmt.Errorf("delete application err: %w", err)
 	}
 
 	for _, cmp := range app.Spec.Components {
 		healthScopeName, ok := cmp.Scopes[api.DefaultHealthScopeKey]
 		if ok {
 			var healthScope corev1alpha2.HealthScope
-			if err := o.Client.Get(ctx, client.ObjectKey{Namespace: o.Env.Namespace, Name: healthScopeName}, &healthScope); err != nil {
+			if err := o.Client.Get(ctx, client.ObjectKey{Namespace: o.Namespace, Name: healthScopeName}, &healthScope); err != nil {
 				if apierrors.IsNotFound(err) {
 					continue
 				}
-				return "", fmt.Errorf("delete health scope %s err: %w", healthScopeName, err)
+				return fmt.Errorf("delete health scope %s err: %w", healthScopeName, err)
 			}
 			if err = o.Client.Delete(ctx, &healthScope); err != nil {
-				return "", fmt.Errorf("delete health scope %s err: %w", healthScopeName, err)
+				return fmt.Errorf("delete health scope %s err: %w", healthScopeName, err)
 			}
 		}
 	}
-	return fmt.Sprintf("app \"%s\" deleted from env \"%s\"", o.AppName, o.Env.Name), nil
+	return nil
 }
 
 // DeleteComponent will delete one component including server side.
-func (o *DeleteOptions) DeleteComponent(io cmdutil.IOStreams) (string, error) {
+func (o *DeleteOptions) DeleteComponent(io cmdutil.IOStreams) error {
 	var err error
 	if o.AppName == "" {
-		return "", errors.New("app name is required")
+		return errors.New("app name is required")
 	}
-	app, err := appfile.LoadApplication(o.Env.Namespace, o.AppName, o.C)
+	app, err := appfile.LoadApplication(o.Namespace, o.AppName, o.C)
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	if len(appfile.GetComponents(app)) <= 1 {
-		return o.DeleteApp()
+		return o.DeleteApp(io)
 	}
 
 	// Remove component from local appfile
 	if err := appfile.RemoveComponent(app, o.CompName); err != nil {
-		return "", err
+		return err
 	}
 
 	// Remove component from appConfig in k8s cluster
 	ctx := context.Background()
 
 	if err := o.Client.Update(ctx, app); err != nil {
-		return "", err
+		return err
 	}
 
 	// It's the server responsibility to GC component
-
-	return fmt.Sprintf("component \"%s\" deleted from \"%s\"", o.CompName, o.AppName), nil
+	return nil
 }
 
-func chooseSvc(services []string) (string, error) {
-	var svcName string
-	services = append(services, DefaultChosenAllSvc)
-	prompt := &survey.Select{
-		Message: "Please choose one service: ",
-		Options: services,
-		Default: DefaultChosenAllSvc,
-	}
-	err := survey.AskOne(prompt, &svcName)
-	if err != nil {
-		return "", fmt.Errorf("failed to retrieve services of the application, err %w", err)
-	}
-	return svcName, nil
-}
-
-// GetServicesWhenDescribingApplication gets the target services list either from cli `--svc` flag or from survey
-func GetServicesWhenDescribingApplication(cmd *cobra.Command, app *api.Application) ([]string, error) {
-	var svcFlag string
-	var svcFlagStatus string
-	// to store the value of flag `--svc` set in Cli, or selected value in survey
-	var targetServices []string
-	if svcFlag = cmd.Flag("svc").Value.String(); svcFlag == "" {
-		svcFlagStatus = FlagNotSet
-	} else {
-		svcFlagStatus = FlagIsInvalid
-	}
-	// all services name of the application `appName`
-	var services []string
-	for svcName := range app.Services {
-		services = append(services, svcName)
-		if svcFlag == svcName {
-			svcFlagStatus = FlagIsValid
-			targetServices = append(targetServices, svcName)
-		}
-	}
-	totalServices := len(services)
-	if svcFlagStatus == FlagNotSet && totalServices == 1 {
-		targetServices = services
-	}
-	if svcFlagStatus == FlagIsInvalid || (svcFlagStatus == FlagNotSet && totalServices > 1) {
-		if svcFlagStatus == FlagIsInvalid {
-			cmd.Printf("The service name '%s' is not valid\n", svcFlag)
-		}
-		chosenSvc, err := chooseSvc(services)
-		if err != nil {
-			return []string{}, err
-		}
-
-		if chosenSvc == DefaultChosenAllSvc {
-			targetServices = services
-		} else {
-			targetServices = targetServices[:0]
-			targetServices = append(targetServices, chosenSvc)
-		}
-	}
-	return targetServices, nil
-}
-
-func saveAndLoadRemoteAppfile(url string) (*api.AppFile, error) {
-	body, err := common.HTTPGet(context.Background(), url)
+// LoadAppFile will load vela appfile from remote URL or local file system.
+func LoadAppFile(pathOrURL string) (*api.AppFile, error) {
+	body, err := ReadRemoteOrLocalPath(pathOrURL)
 	if err != nil {
 		return nil, err
 	}
-	af := api.NewAppFile()
+	return api.LoadFromBytes(body)
+}
+
+// ReadRemoteOrLocalPath will read a path remote or locally
+func ReadRemoteOrLocalPath(pathOrURL string) ([]byte, error) {
+	if pathOrURL == "-" {
+		return ioutil.ReadAll(os.Stdin)
+	}
+	var body []byte
+	var err error
+	if utils.IsValidURL(pathOrURL) {
+		body, err = common.HTTPGet(context.Background(), pathOrURL)
+		if err != nil {
+			return nil, err
+		}
+		if err = localSave(pathOrURL, body); err != nil {
+			return nil, err
+		}
+	} else {
+		body, err = os.ReadFile(filepath.Clean(pathOrURL))
+		if err != nil {
+			return nil, err
+		}
+	}
+	return body, nil
+}
+
+// IsAppfile check if a file is Appfile format or application format, return true if it's appfile, false means application object
+func IsAppfile(body []byte) bool {
+	if j.Valid(body) {
+		// we only support json format for appfile
+		return true
+	}
+	res := map[string]interface{}{}
+	err := yaml.Unmarshal(body, &res)
+	if err != nil {
+		return false
+	}
+	// appfile didn't have apiVersion
+	if _, ok := res["apiVersion"]; ok {
+		return false
+	}
+	return true
+}
+
+func localSave(url string, body []byte) error {
+	var name string
 	ext := filepath.Ext(url)
-	dest := "Appfile"
 	switch ext {
 	case ".json":
-		dest = "vela.json"
-		af, err = api.JSONToYaml(body, af)
+		name = "vela.json"
 	case ".yaml", ".yml":
-		dest = "vela.yaml"
-		err = yaml.Unmarshal(body, af)
+		name = "vela.yaml"
 	default:
 		if j.Valid(body) {
-			af, err = api.JSONToYaml(body, af)
+			name = "vela.json"
 		} else {
-			err = yaml.Unmarshal(body, af)
+			name = "vela.yaml"
 		}
 	}
-	if err != nil {
-		return nil, err
-	}
 	//nolint:gosec
-	return af, os.WriteFile(dest, body, 0644)
+	return os.WriteFile(name, body, 0644)
 }
 
 // ExportFromAppFile exports Application from appfile object
@@ -371,7 +320,7 @@ func (o *AppfileOptions) ExportFromAppFile(app *api.AppFile, namespace string, q
 	appHandler := appfile.NewApplication(app, tm)
 
 	// new
-	retApplication, scopes, err := appHandler.BuildOAMApplication(o.Env, o.IO, appHandler.Tm, quiet)
+	retApplication, err := appHandler.ConvertToApplication(o.Namespace, o.IO, appHandler.Tm, quiet)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -386,19 +335,9 @@ func (o *AppfileOptions) ExportFromAppFile(app *api.AppFile, namespace string, q
 	}
 	w.WriteByte('\n')
 
-	for _, scope := range scopes {
-		w.WriteString("---\n")
-		err = enc.Encode(scope, &w)
-		if err != nil {
-			return nil, nil, fmt.Errorf("yaml encode scope (%s) failed: %w", scope.GetName(), err)
-		}
-		w.WriteByte('\n')
-	}
-
 	result := &BuildResult{
 		appFile:     app,
 		application: retApplication,
-		scopes:      scopes,
 	}
 	return result, w.Bytes(), nil
 }
@@ -408,14 +347,10 @@ func (o *AppfileOptions) Export(filePath, namespace string, quiet bool, c common
 	var app *api.AppFile
 	var err error
 	if !quiet {
-		o.IO.Info("Parsing vela appfile ...")
+		o.IO.Info("Parsing vela application file ...")
 	}
 	if filePath != "" {
-		if strings.HasPrefix(filePath, "https://") || strings.HasPrefix(filePath, "http://") {
-			app, err = saveAndLoadRemoteAppfile(filePath)
-		} else {
-			app, err = api.LoadFromFile(filePath)
-		}
+		app, err = LoadAppFile(filePath)
 	} else {
 		app, err = api.Load()
 	}
@@ -441,7 +376,7 @@ func (o *AppfileOptions) Run(filePath, namespace string, c common.Args) error {
 // BaseAppFileRun starts an application according to Appfile
 func (o *AppfileOptions) BaseAppFileRun(result *BuildResult, args common.Args) error {
 
-	kubernetesComponent, err := appfile.ApplyTerraform(result.application, o.Kubecli, o.IO, o.Env.Namespace, args)
+	kubernetesComponent, err := appfile.ApplyTerraform(result.application, o.Kubecli, o.IO, o.Namespace, args)
 	if err != nil {
 		return err
 	}
@@ -475,7 +410,7 @@ func (o *AppfileOptions) ApplyApp(app *corev1beta1.Application, scopes []oam.Obj
 	if err := o.apply(app, scopes); err != nil {
 		return err
 	}
-	o.IO.Infof(o.Info(app))
+	o.IO.Infof(Info(app))
 	return nil
 }
 
@@ -487,7 +422,7 @@ func (o *AppfileOptions) apply(app *corev1beta1.Application, scopes []oam.Object
 }
 
 // Info shows the status of each service in the Appfile
-func (o *AppfileOptions) Info(app *corev1beta1.Application) string {
+func Info(app *corev1beta1.Application) string {
 	appName := app.Name
 	var appUpMessage = "✅ App has been deployed 🚀🚀🚀\n" +
 		fmt.Sprintf("    Port forward: vela port-forward %s\n", appName) +
@@ -505,7 +440,7 @@ func ApplyApplication(app corev1beta1.Application, ioStream cmdutil.IOStreams, c
 	if app.Namespace == "" {
 		app.Namespace = types.DefaultAppNamespace
 	}
-	_, err := ioStream.Out.Write([]byte("Applying an application in K8S format...\n"))
+	_, err := ioStream.Out.Write([]byte("Applying an application in vela K8s object format...\n"))
 	if err != nil {
 		return err
 	}
@@ -514,9 +449,6 @@ func ApplyApplication(app corev1beta1.Application, ioStream cmdutil.IOStreams, c
 	if err != nil {
 		return err
 	}
-	_, err = ioStream.Out.Write([]byte("Successfully apply application"))
-	if err != nil {
-		return err
-	}
+	ioStream.Infof(Info(&app))
 	return nil
 }

@@ -24,6 +24,8 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/oam-dev/kubevela/pkg/multicluster"
+
 	"github.com/fatih/color"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
@@ -39,75 +41,106 @@ import (
 )
 
 // NewLogsCommand creates `logs` command to tail logs of application
-func NewLogsCommand(c common.Args, ioStreams util.IOStreams) *cobra.Command {
-	largs := &Args{C: c}
-	cmd := &cobra.Command{}
-	cmd.Use = "logs"
-	cmd.Short = "Tail logs for application"
-	cmd.Long = "Tail logs for application"
-	cmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		if err := c.SetConfig(); err != nil {
-			return err
-		}
-		largs.C = c
-		return nil
-	}
-	cmd.RunE = func(cmd *cobra.Command, args []string) error {
-		if len(args) < 1 {
-			ioStreams.Errorf("please specify app name")
+func NewLogsCommand(c common.Args, order string, ioStreams util.IOStreams) *cobra.Command {
+	largs := &Args{Args: c}
+	cmd := &cobra.Command{
+		Use:   "logs APP_NAME",
+		Short: "Tail logs for application.",
+		Long:  "Tail logs for vela application.",
+		Args:  cobra.ExactArgs(1),
+		PreRunE: func(cmd *cobra.Command, args []string) error {
+			config, err := c.GetConfig()
+			if err != nil {
+				return err
+			}
+			largs.Args = c
+			config.Wrap(multicluster.NewSecretModeMultiClusterRoundTripper)
 			return nil
-		}
-		env, err := GetFlagEnvOrCurrent(cmd, c)
-		if err != nil {
-			return err
-		}
-		app, err := appfile.LoadApplication(env.Namespace, args[0], c)
-		if err != nil {
-			return err
-		}
-		largs.App = app
-		largs.Env = env
-		ctx := context.Background()
-		if err := largs.Run(ctx, ioStreams); err != nil {
-			return err
-		}
-		return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var err error
+			largs.Namespace, err = GetFlagNamespaceOrEnv(cmd, c)
+			if err != nil {
+				return err
+			}
+			app, err := appfile.LoadApplication(largs.Namespace, args[0], c)
+			if err != nil {
+				return err
+			}
+			largs.Namespace, err = GetFlagNamespaceOrEnv(cmd, c)
+			if err != nil {
+				return err
+			}
+			largs.App = app
+			ctx := context.Background()
+			if err := largs.Run(ctx, ioStreams); err != nil {
+				return err
+			}
+			return nil
+		},
+		Annotations: map[string]string{
+			types.TagCommandOrder: order,
+			types.TagCommandType:  types.TypeApp,
+		},
 	}
-	cmd.Annotations = map[string]string{
-		types.TagCommandType: types.TypeApp,
-	}
+
 	cmd.Flags().StringVarP(&largs.Output, "output", "o", "default", "output format for logs, support: [default, raw, json]")
+	cmd.Flags().StringVarP(&largs.Container, "container", "c", "", "specify container name for output")
+	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
 
 // Args creates arguments for `logs` command
 type Args struct {
-	Output string
-	Env    *types.EnvMeta
-	C      common.Args
-	App    *v1beta1.Application
+	Output    string
+	Args      common.Args
+	Namespace string
+	Container string
+	App       *v1beta1.Application
 }
 
 // Run refer to the implementation at https://github.com/oam-dev/stern/blob/master/stern/main.go
 func (l *Args) Run(ctx context.Context, ioStreams util.IOStreams) error {
-
-	clientSet, err := kubernetes.NewForConfig(l.C.Config)
-	if err != nil {
-		return err
-	}
-	compName, err := common.AskToChooseOneService(appfile.GetComponents(l.App))
-	if err != nil {
-		return err
-	}
 	// TODO(wonderflow): we could get labels from service to narrow the pods scope selected
 	labelSelector := labels.Everything()
-	pod, err := regexp.Compile(compName + "-.*")
+	config, err := l.Args.GetConfig()
 	if err != nil {
-		return fmt.Errorf("fail to compile '%s' for logs query", compName+".*")
+		return err
+	}
+	clientSet, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		return err
+	}
+	selectedRes, err := common.AskToChooseOneEnvResource(l.App)
+	if err != nil {
+		return err
+	}
+	if selectedRes.Kind == "Configuration" {
+		selectedRes.Cluster = "local"
+		if l.App.DeletionTimestamp == nil {
+			selectedRes.Name += "-apply"
+			labelSelector = labels.SelectorFromSet(map[string]string{
+				"job-name": selectedRes.Name,
+			})
+		}
+		// TODO(zzxwill) : We should also support showing logs when the terraform is destroying resources.
+		// But currently, when deleting an application, it won't hold on its deletion. So `vela logs` miss application
+		// parameter and is unable to display any logs.
+	}
+
+	if selectedRes.Cluster != "" && selectedRes.Cluster != "local" {
+		ctx = multicluster.ContextWithClusterName(ctx, selectedRes.Cluster)
+	}
+	pod, err := regexp.Compile(selectedRes.Name + "-.*")
+	if err != nil {
+		return fmt.Errorf("fail to compile '%s' for logs query", selectedRes.Name+".*")
 	}
 	container := regexp.MustCompile(".*")
-	namespace := l.Env.Namespace
-	added, removed, err := stern.Watch(ctx, clientSet.CoreV1().Pods(namespace), pod, container, nil, stern.RUNNING, labelSelector)
+	if l.Container != "" {
+		container = regexp.MustCompile(l.Container + ".*")
+	}
+	namespace := selectedRes.Namespace
+	added, removed, err := stern.Watch(ctx, clientSet.CoreV1().Pods(namespace), pod, container, nil, []stern.ContainerState{stern.RUNNING, stern.TERMINATED}, labelSelector)
 	if err != nil {
 		return err
 	}

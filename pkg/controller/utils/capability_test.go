@@ -18,15 +18,20 @@
 package utils
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	. "github.com/agiledragon/gomonkey/v2"
 	"github.com/crossplane/crossplane-runtime/pkg/test"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/go-cmp/cmp"
+	git "gopkg.in/src-d/go-git.v4"
 	"gotest.tools/assert"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
@@ -216,7 +221,7 @@ func TestFixOpenAPISchema(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			swagger, _ := openapi3.NewSwaggerLoader().LoadSwaggerFromFile(filepath.Join(TestDir, tc.inputFile))
 			schema := swagger.Components.Schemas[model.ParameterFieldName].Value
-			fixOpenAPISchema("", schema)
+			FixOpenAPISchema("", schema)
 			fixedSchema, _ := schema.MarshalJSON()
 			expectedSchema, _ := os.ReadFile(filepath.Join(TestDir, tc.fixedFile))
 			assert.Equal(t, string(fixedSchema), string(expectedSchema))
@@ -312,7 +317,7 @@ variable "mapVar" {
   type = "map"
 }`,
 			want: want{
-				subStr: "account_name",
+				subStr: `"required":["intVar","boolVar","listVar","mapVar"]`,
 				err:    nil,
 			},
 		},
@@ -322,8 +327,38 @@ variable "name" {
   default = "abc"
 }`,
 			want: want{
-				subStr: "",
-				err:    errors.New("null type variable is NOT supported, please specify a type for the variable: name"),
+				subStr: "abc",
+				err:    nil,
+			},
+		},
+		"null type variable, while default value is a slice": {
+			configuration: `
+variable "name" {
+  default = [123]
+}`,
+			want: want{
+				subStr: "123",
+				err:    nil,
+			},
+		},
+		"null type variable, while default value is a map": {
+			configuration: `
+variable "name" {
+  default = {a = 1}
+}`,
+			want: want{
+				subStr: "a",
+				err:    nil,
+			},
+		},
+		"null type variable, while default value is number": {
+			configuration: `
+variable "name" {
+  default = 123
+}`,
+			want: want{
+				subStr: "123",
+				err:    nil,
 			},
 		},
 		"complicated list variable": {
@@ -356,6 +391,38 @@ variable "bbb" {
 				err:    nil,
 			},
 		},
+		"not supported complicated variable": {
+			configuration: `
+variable "bbb" {
+  type = xxxxx(string)
+}`,
+			want: want{
+				subStr: "",
+				err:    fmt.Errorf("the type `%s` of variable %s is NOT supported", "xxxxx(string)", "bbb"),
+			},
+		},
+		"any type, slice default": {
+			configuration: `
+variable "bbb" {
+  type = any
+  default = []
+}`,
+			want: want{
+				subStr: "bbb",
+				err:    nil,
+			},
+		},
+		"any type, map default": {
+			configuration: `
+variable "bbb" {
+  type = any
+  default = {}
+}`,
+			want: want{
+				subStr: "bbb",
+				err:    nil,
+			},
+		},
 	}
 
 	for name, tc := range cases {
@@ -367,6 +434,138 @@ variable "bbb" {
 			if tc.want.err == nil {
 				data := string(schema)
 				assert.Equal(t, strings.Contains(data, tc.want.subStr), true)
+			}
+		})
+	}
+}
+
+func TestGetTerraformConfigurationFromRemote(t *testing.T) {
+	// If you hit a panic on macOS as below, please fix it by referencing https://github.com/eisenxp/macos-golink-wrapper.
+	// panic: permission denied [recovered]
+	//    panic: permission denied
+	type want struct {
+		config string
+		errMsg string
+	}
+
+	type args struct {
+		name         string
+		url          string
+		path         string
+		data         []byte
+		variableFile string
+		// mockWorkingPath will create `/tmp/terraform`
+		mockWorkingPath bool
+	}
+	cases := map[string]struct {
+		args args
+		want want
+	}{
+		"valid": {
+			args: args{
+				name: "valid",
+				url:  "https://github.com/kubevela-contrib/terraform-modules.git",
+				path: "",
+				data: []byte(`
+variable "aaa" {
+	type = list(object({
+		type = string
+		sourceArn = string
+		config = string
+	}))
+	default = []
+}`),
+				variableFile: "main.tf",
+			},
+			want: want{
+				config: `
+variable "aaa" {
+	type = list(object({
+		type = string
+		sourceArn = string
+		config = string
+	}))
+	default = []
+}`,
+			},
+		},
+		"configuration is remote with path": {
+			args: args{
+				name: "aws-subnet",
+				url:  "https://github.com/kubevela-contrib/terraform-modules.git",
+				path: "aws/subnet",
+				data: []byte(`
+variable "aaa" {
+	type = list(object({
+		type = string
+		sourceArn = string
+		config = string
+	}))
+	default = []
+}`),
+				variableFile: "variables.tf",
+			},
+			want: want{
+				config: `
+variable "aaa" {
+	type = list(object({
+		type = string
+		sourceArn = string
+		config = string
+	}))
+	default = []
+}`,
+			},
+		},
+		"working path exists": {
+			args: args{
+				variableFile:    "main.tf",
+				mockWorkingPath: true,
+			},
+			want: want{
+				errMsg: "failed to remove the directory",
+			},
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if tc.args.mockWorkingPath {
+				err := os.MkdirAll("./tmp/terraform", 0755)
+				assert.NilError(t, err)
+				defer os.RemoveAll("./tmp/terraform")
+				patch1 := ApplyFunc(os.Remove, func(_ string) error {
+					return errors.New("failed")
+				})
+				defer patch1.Reset()
+				patch2 := ApplyFunc(os.Open, func(_ string) (*os.File, error) {
+					return nil, errors.New("failed")
+				})
+				defer patch2.Reset()
+			}
+
+			patch := ApplyFunc(git.PlainCloneContext, func(ctx context.Context, path string, isBare bool, o *git.CloneOptions) (*git.Repository, error) {
+				var tmpPath string
+				if tc.args.path != "" {
+					tmpPath = filepath.Join("./tmp/terraform", tc.args.name, tc.args.path)
+				} else {
+					tmpPath = filepath.Join("./tmp/terraform", tc.args.name)
+				}
+				err := os.MkdirAll(tmpPath, os.ModePerm)
+				assert.NilError(t, err)
+				err = ioutil.WriteFile(filepath.Clean(filepath.Join(tmpPath, tc.args.variableFile)), tc.args.data, 0644)
+				assert.NilError(t, err)
+				return nil, nil
+			})
+			defer patch.Reset()
+
+			conf, err := GetTerraformConfigurationFromRemote(tc.args.name, tc.args.url, tc.args.path)
+			if tc.want.errMsg != "" {
+				if err != nil && !strings.Contains(err.Error(), tc.want.errMsg) {
+					t.Errorf("\n%s\nGetTerraformConfigurationFromRemote(...): -want error %v, +got error:%s", name, err, tc.want.errMsg)
+				}
+			} else {
+				assert.Equal(t, tc.want.config, conf)
 			}
 		})
 	}

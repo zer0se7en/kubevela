@@ -32,6 +32,9 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/oam-dev/kubevela/apis/types"
 )
 
 var ResponseString = "Hello HTTP Get."
@@ -124,7 +127,7 @@ output: {
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := GetCUEParameterValue(tc.cueStr)
+			_, err := GetCUEParameterValue(tc.cueStr, nil)
 			if tc.want.err != nil {
 				if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 					t.Errorf("\n%s\nGenOpenAPIFromFile(...): -want error, +got error:\n%s", tc.reason, diff)
@@ -159,7 +162,7 @@ name
 
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := GetCUEParameterValue(tc.cueStr)
+			_, err := GetCUEParameterValue(tc.cueStr, nil)
 			if diff := cmp.Diff(tc.want.errMsg, err.Error(), test.EquateConditions()); diff != "" {
 				t.Errorf("\n%s\nGenOpenAPIFromFile(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
@@ -299,7 +302,7 @@ variable "mapVar" {
   type = "map"
 }`
 
-	variables, err := ParseTerraformVariables(configuration)
+	variables, _, err := ParseTerraformVariables(configuration)
 	assert.NoError(t, err)
 	_, passwordExisted := variables["password"]
 	assert.True(t, passwordExisted)
@@ -313,12 +316,12 @@ func TestRefineParameterInstance(t *testing.T) {
 	s := `parameter: #parameter
 #parameter: {
 	x?: string
-	if x != _|_ {
+	if x != "" {
 	y: string
 	}
 }
 patch: {
-	if parameter.x != _|_ {
+	if parameter.x != "" {
 	label: parameter.x
 	}
 }`
@@ -330,7 +333,7 @@ patch: {
 	// test #parameter not exist but parameter exists
 	s = `parameter: {
 	x?: string
-	if x != _|_ {
+	if x != "" {
 	y: string
 	}
 }`
@@ -353,4 +356,16 @@ patch: {
 	assert.NoError(t, err)
 	_, err = RefineParameterInstance(inst)
 	assert.NotNil(t, err)
+}
+
+func TestFilterClusterObjectRefFromAddonObservability(t *testing.T) {
+	ref := common.ClusterObjectReference{}
+	ref.Name = AddonObservabilityGrafanaSvc
+	ref.Namespace = types.DefaultKubeVelaNS
+	resources := []common.ClusterObjectReference{ref}
+
+	res := filterClusterObjectRefFromAddonObservability(resources)
+	assert.Equal(t, 1, len(res))
+	assert.Equal(t, "Service", res[0].Kind)
+	assert.Equal(t, "v1", res[0].APIVersion)
 }

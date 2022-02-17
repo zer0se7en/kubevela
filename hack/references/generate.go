@@ -21,13 +21,28 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/oam-dev/kubevela/apis/types"
+	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/references/plugins"
 )
 
 func main() {
 	ref := &plugins.MarkdownReference{}
 	ctx := context.Background()
-	if err := ref.GenerateReferenceDocs(ctx, plugins.BaseRefPath); err != nil {
+	path := plugins.BaseRefPath
+
+	if len(os.Args) == 2 {
+		ref.DefinitionName = os.Args[1]
+		path = plugins.KubeVelaIOTerraformPath
+	}
+
+	c, err := common.InitBaseRestConfig()
+	if err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+
+	if err := ref.GenerateReferenceDocs(ctx, c, path, types.DefaultKubeVelaNS); err != nil {
 		fmt.Println(err)
 		os.Exit(1)
 	}

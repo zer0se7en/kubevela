@@ -18,6 +18,7 @@ package healthscope
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 	"sync"
@@ -38,17 +39,16 @@ import (
 
 	commonapis "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	af "github.com/oam-dev/kubevela/pkg/appfile"
 	"github.com/oam-dev/kubevela/pkg/controller/common"
 	controller "github.com/oam-dev/kubevela/pkg/controller/core.oam.dev"
-	"github.com/oam-dev/kubevela/pkg/controller/core.oam.dev/v1alpha1/envbinding"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
+	"github.com/oam-dev/kubevela/pkg/policy/envbinding"
 )
 
 const (
@@ -188,7 +188,12 @@ func (r *Reconciler) Reconcile(ctx context.Context, req reconcile.Request) (reco
 	if err := r.patchHealthStatusToApplications(ctx, appConditions, hs); err != nil {
 		return reconcile.Result{}, errors.Wrap(err, "cannot patch health status to application")
 	}
-	return reconcile.Result{RequeueAfter: interval - elapsed}, errors.Wrap(r.UpdateStatus(ctx, hs), errUpdateHealthScopeStatus)
+
+	requeueAfter := interval - elapsed
+	if requeueAfter <= time.Second { // prevent underflow
+		requeueAfter = time.Second
+	}
+	return reconcile.Result{RequeueAfter: requeueAfter}, errors.Wrap(r.UpdateStatus(ctx, hs), errUpdateHealthScopeStatus)
 }
 
 // GetScopeHealthStatus get the status of the healthscope based on workload resources.
@@ -243,8 +248,12 @@ func (r *Reconciler) GetScopeHealthStatus(ctx context.Context, healthScope *v1al
 			)
 
 			subCtx := multicluster.ContextWithClusterName(ctxWithTimeout, resRef.clusterName)
+			ns := resRef.Namespace
+			if ns == "" {
+				ns = healthScope.GetNamespace()
+			}
 			if appfile, ok := appfiles[resRef]; ok {
-				wlHealthCondition, traitConditions = CUEBasedHealthCheck(subCtx, r.client, resRef, healthScope.GetNamespace(), appfile)
+				wlHealthCondition, traitConditions = CUEBasedHealthCheck(subCtx, r.client, resRef, ns, appfile)
 				if wlHealthCondition != nil {
 					klog.V(common.LogDebug).InfoS("Get health condition from CUE-based health check", "workload", resRef, "healthCondition", wlHealthCondition)
 					wlHealthCondition.Traits = traitConditions
@@ -257,7 +266,7 @@ func (r *Reconciler) GetScopeHealthStatus(ctx context.Context, healthScope *v1al
 				}
 			}
 
-			wlHealthCondition = r.traitChecker.Check(subCtx, r.client, resRef.ObjectReference, healthScope.GetNamespace())
+			wlHealthCondition = r.traitChecker.Check(subCtx, r.client, resRef.ObjectReference, ns)
 			if wlHealthCondition != nil {
 				klog.V(common.LogDebug).InfoS("Get health condition from health check trait ", "workload", resRef, "healthCondition", wlHealthCondition)
 				wlHealthCondition.Traits = traitConditions
@@ -270,7 +279,7 @@ func (r *Reconciler) GetScopeHealthStatus(ctx context.Context, healthScope *v1al
 			}
 
 			for _, checker := range r.checkers {
-				wlHealthCondition = checker.Check(subCtx, r.client, resRef.ObjectReference, healthScope.GetNamespace())
+				wlHealthCondition = checker.Check(subCtx, r.client, resRef.ObjectReference, ns)
 				if wlHealthCondition != nil {
 					klog.V(common.LogDebug).InfoS("Get health condition from built-in checker", "workload", resRef, "healthCondition", wlHealthCondition)
 					// found matched checker and get health condition
@@ -285,7 +294,7 @@ func (r *Reconciler) GetScopeHealthStatus(ctx context.Context, healthScope *v1al
 			}
 			// handle unknown workload
 			klog.V(common.LogDebug).InfoS("Get unknown workload", "workload", resRef)
-			wlHealthCondition = r.unknownChecker.Check(subCtx, r.client, resRef.ObjectReference, healthScope.GetNamespace())
+			wlHealthCondition = r.unknownChecker.Check(subCtx, r.client, resRef.ObjectReference, ns)
 			wlHealthCondition.Traits = traitConditions
 			wlHealthResultsC <- wlHealthResult{
 				name:    appInfos[resRef].appName,
@@ -352,8 +361,12 @@ func (r *Reconciler) CollectAppfilesAndAppNames(ctx context.Context, refs []Work
 		u := &unstructured.Unstructured{}
 		u.SetGroupVersionKind(ref.GroupVersionKind())
 
+		refNs := ref.Namespace
+		if refNs == "" {
+			refNs = ns
+		}
 		subCtx := multicluster.ContextWithClusterName(ctx, ref.clusterName)
-		if err := r.client.Get(subCtx, client.ObjectKey{Name: ref.Name, Namespace: ns}, u); err != nil {
+		if err := r.client.Get(subCtx, client.ObjectKey{Name: ref.Name, Namespace: refNs}, u); err != nil {
 			// no need to check error in this function
 			// HealthCheckFn  will handle all errors latter
 			continue
@@ -396,12 +409,7 @@ func (r *Reconciler) UpdateStatus(ctx context.Context, hs *v1alpha2.HealthScope,
 
 func (r *Reconciler) patchHealthStatusToApplications(ctx context.Context, appHealthConditions []*AppHealthCondition, hs *v1alpha2.HealthScope) error {
 	multiClusterAppCondition := make(map[string][]*AppHealthCondition)
-	for i := range appHealthConditions {
-		appHealth := appHealthConditions[i]
-		_, ok := multiClusterAppCondition[appHealth.AppName]
-		if !ok {
-			multiClusterAppCondition[appHealth.AppName] = make([]*AppHealthCondition, 0)
-		}
+	for _, appHealth := range appHealthConditions {
 		multiClusterAppCondition[appHealth.AppName] = append(multiClusterAppCondition[appHealth.AppName], appHealth)
 	}
 
@@ -413,6 +421,12 @@ func (r *Reconciler) patchHealthStatusToApplications(ctx context.Context, appHea
 		app := &v1beta1.Application{}
 		if err := r.client.Get(ctx, client.ObjectKey{Name: appName, Namespace: hs.Namespace}, app); err != nil {
 			return err
+		}
+		if app.Status.Workflow == nil {
+			continue
+		}
+		if !app.Status.Workflow.Finished && !app.Status.Workflow.Suspend {
+			continue
 		}
 		copyApp := app.DeepCopy()
 		componentPosition := make(map[string]int)
@@ -435,6 +449,7 @@ func (r *Reconciler) patchHealthStatusToApplications(ctx context.Context, appHea
 				healthCondition,
 			})
 			compStatus = append(compStatus, constructAppCompStatus(healthCondition, hsRef)...)
+
 		}
 		app.Status.Services = compStatus
 		app.Status.SetConditions(condition.Condition{
@@ -461,60 +476,18 @@ func (r *Reconciler) patchHealthStatusToApplications(ctx context.Context, appHea
 	return nil
 }
 
-func (r *Reconciler) getEnvBinding(ctx context.Context, appName string, ns string) (*v1alpha1.EnvBinding, *v1beta1.Application, error) {
-	app := new(v1beta1.Application)
-	appKey := client.ObjectKey{Name: appName, Namespace: ns}
-	if err := r.client.Get(ctx, appKey, app); err != nil {
-		return nil, nil, err
-	}
-
-	var envBindingName string
-	for _, policy := range app.Spec.Policies {
-		if policy.Type == "env-binding" {
-			envBindingName = policy.Name
-			break
-		}
-	}
-	if len(envBindingName) == 0 {
-		return nil, app, nil
-	}
-
-	envBinding := new(v1alpha1.EnvBinding)
-	envBindingKey := client.ObjectKey{Name: envBindingName, Namespace: ns}
-	if err := r.client.Get(ctx, envBindingKey, envBinding); err != nil {
-		return nil, nil, err
-	}
-
-	if envBinding.Status.Phase != v1alpha1.EnvBindingFinished {
-		return nil, nil, errors.Errorf("policy env-binding was not ready")
-	}
-	return envBinding, app, nil
-}
-
 func (r *Reconciler) createAppfile(ctx context.Context, appName, ns, envName string) (*af.Appfile, error) {
 	appParser := af.NewApplicationParser(r.client, r.dm, r.pd)
 	if len(envName) != 0 {
-		envBinding, baseApp, err := r.getEnvBinding(ctx, appName, ns)
+		app := &v1beta1.Application{}
+		if err := r.client.Get(ctx, types.NamespacedName{Namespace: ns, Name: appName}, app); err != nil {
+			return nil, err
+		}
+		patchedApp, err := envbinding.PatchApplicationByEnvBindingEnv(app, "", envName)
 		if err != nil {
 			return nil, err
 		}
-		var targetEnvConfig *v1alpha1.EnvConfig
-		for i := range envBinding.Spec.Envs {
-			envConfig := envBinding.Spec.Envs[i]
-			if envConfig.Name == envName {
-				targetEnvConfig = &envConfig
-				break
-			}
-		}
-		if targetEnvConfig == nil {
-			return nil, errors.Errorf("policy env-binding doesn't contains env %s", envName)
-		}
-
-		envBindApp := envbinding.NewEnvBindApp(baseApp, targetEnvConfig)
-		if err = envBindApp.GenerateConfiguredApplication(); err != nil {
-			return nil, err
-		}
-		return appParser.GenerateAppFile(ctx, envBindApp.PatchedApp)
+		return appParser.GenerateAppFile(ctx, patchedApp)
 	}
 
 	app := &v1beta1.Application{}
@@ -570,20 +543,35 @@ func constructAppCompStatus(appC *AppHealthCondition, hsRef corev1.ObjectReferen
 func (r *Reconciler) createWorkloadRefs(ctx context.Context, appRef v1alpha2.AppReference, ns string) []WorkloadReference {
 	wlRefs := make([]WorkloadReference, 0)
 
-	envBinding, application, err := r.getEnvBinding(ctx, appRef.AppName, ns)
-	if err != nil {
-		klog.ErrorS(err, "Failed to get envBinding")
+	application := &v1beta1.Application{}
+	if err := r.client.Get(ctx, types.NamespacedName{Namespace: ns, Name: appRef.AppName}, application); err != nil {
+		klog.ErrorS(err, "Failed to get application")
 		return wlRefs
 	}
 
-	var decisions []v1alpha1.ClusterDecision
-	decisionsMap := make(map[string]string)
-	if envBinding == nil {
-		decisions = make([]v1alpha1.ClusterDecision, 1)
-	} else {
-		decisions = envBinding.Status.ClusterDecisions
-		for _, decision := range decisions {
-			decisionsMap[decision.Cluster] = decision.Env
+	// ugly implementation, should be reworked in future
+	decisionsMap := map[string]string{}
+	var decisions []struct {
+		Cluster string
+		Env     string
+	}
+	policyStatus, err := envbinding.GetEnvBindingPolicyStatus(application, "")
+	if err == nil && policyStatus != nil {
+		for _, env := range policyStatus.Envs {
+			for _, placement := range env.Placements {
+				if placement.Namespace != "" {
+					decisionsMap[placement.Cluster+"."+placement.Namespace] = env.Env
+				} else {
+					decisionsMap[placement.Cluster] = env.Env
+				}
+				decisions = append(decisions, struct {
+					Cluster string
+					Env     string
+				}{
+					Cluster: placement.Cluster,
+					Env:     env.Env,
+				})
+			}
 		}
 	}
 
@@ -613,12 +601,40 @@ func (r *Reconciler) createWorkloadRefs(ctx context.Context, appRef v1alpha2.App
 				}, o); err != nil {
 					continue
 				}
-				if labels := o.GetLabels(); labels != nil && labels[oam.WorkloadTypeLabel] != "" {
-					wlRefs = append(wlRefs, WorkloadReference{
-						ObjectReference: rs.ObjectReference,
-						clusterName:     rs.Cluster,
-						envName:         decisionsMap[rs.Cluster],
-					})
+
+				if labels := o.GetLabels(); labels != nil {
+					var envName string
+					if _envName, ok := decisionsMap[rs.Cluster+"."+rs.Namespace]; ok {
+						envName = _envName
+					} else {
+						envName = decisionsMap[rs.Cluster]
+					}
+					if labels[oam.WorkloadTypeLabel] != "" {
+						wlRefs = append(wlRefs, WorkloadReference{
+							ObjectReference: rs.ObjectReference,
+							clusterName:     rs.Cluster,
+							envName:         envName,
+						})
+					} else if labels[oam.TraitTypeLabel] != "" && labels[oam.LabelManageWorkloadTrait] == "true" {
+						// this means this trait is a manage-Workload trait, get workload GVK and name for trait's annotation
+						objectRef := corev1.ObjectReference{}
+						err := json.Unmarshal([]byte(o.GetAnnotations()[oam.AnnotationWorkloadGVK]), &objectRef)
+						if err != nil {
+							// don't break whole check process due to this error
+							continue
+						}
+						if o.GetAnnotations() != nil && len(o.GetAnnotations()[oam.AnnotationWorkloadName]) != 0 {
+							objectRef.Name = o.GetAnnotations()[oam.AnnotationWorkloadName]
+						} else {
+							// use component name as default
+							objectRef.Name = labels[oam.LabelAppComponent]
+						}
+						wlRefs = append(wlRefs, WorkloadReference{
+							ObjectReference: objectRef,
+							clusterName:     rs.Cluster,
+							envName:         envName,
+						})
+					}
 				}
 			}
 		}

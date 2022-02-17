@@ -27,24 +27,30 @@ import (
 
 	"github.com/spf13/cobra"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	types2 "k8s.io/apimachinery/pkg/types"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 	cmdpf "k8s.io/kubectl/pkg/cmd/portforward"
 	k8scmdutil "k8s.io/kubectl/pkg/cmd/util"
+	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	common2 "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/oam"
+	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
 	"github.com/oam-dev/kubevela/references/appfile"
+)
+
+const (
+	fluxcdNameLabel      = "helm.toolkit.fluxcd.io/name"
+	fluxcdNameSpaceLabel = "helm.toolkit.fluxcd.io/namespace"
 )
 
 // VelaPortForwardOptions for vela port-forward
@@ -53,20 +59,23 @@ type VelaPortForwardOptions struct {
 	Args      []string
 	ioStreams util.IOStreams
 
-	context.Context
-	VelaC common.Args
-	Env   *types.EnvMeta
-	App   *v1beta1.Application
+	Ctx            context.Context
+	VelaC          common.Args
+	Env            *types.EnvMeta
+	App            *v1beta1.Application
+	targetResource *common2.ClusterObjectReference
 
 	f                    k8scmdutil.Factory
 	kcPortForwardOptions *cmdpf.PortForwardOptions
 	ClientSet            kubernetes.Interface
 	Client               client.Client
 	routeTrait           bool
+
+	namespace string
 }
 
 // NewPortForwardCommand is vela port-forward command
-func NewPortForwardCommand(c common.Args, ioStreams util.IOStreams) *cobra.Command {
+func NewPortForwardCommand(c common.Args, order string, ioStreams util.IOStreams) *cobra.Command {
 	o := &VelaPortForwardOptions{
 		ioStreams: ioStreams,
 		kcPortForwardOptions: &cmdpf.PortForwardOptions{
@@ -75,13 +84,10 @@ func NewPortForwardCommand(c common.Args, ioStreams util.IOStreams) *cobra.Comma
 	}
 	cmd := &cobra.Command{
 		Use:     "port-forward APP_NAME",
-		Short:   "Forward local ports to services in an application",
-		Long:    "Forward local ports to services in an application",
+		Short:   "Forward local ports to container/service port of vela application.",
+		Long:    "Forward local ports to container/service port of vela application.",
 		Example: "port-forward APP_NAME [options] [LOCAL_PORT:]REMOTE_PORT [...[LOCAL_PORT_N:]REMOTE_PORT_N]",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-			if err := c.SetConfig(); err != nil {
-				return err
-			}
 			o.VelaC = c
 			return nil
 		},
@@ -90,6 +96,13 @@ func NewPortForwardCommand(c common.Args, ioStreams util.IOStreams) *cobra.Comma
 				ioStreams.Error("Please specify application name.")
 				return nil
 			}
+
+			var err error
+			o.namespace, err = GetFlagNamespaceOrEnv(cmd, c)
+			if err != nil {
+				return err
+			}
+
 			newClient, err := o.VelaC.GetClient()
 			if err != nil {
 				return err
@@ -107,41 +120,59 @@ func NewPortForwardCommand(c common.Args, ioStreams util.IOStreams) *cobra.Comma
 			return nil
 		},
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeApp,
+			types.TagCommandOrder: order,
+			types.TagCommandType:  types.TypeApp,
 		},
 	}
+
 	cmd.Flags().StringSliceVar(&o.kcPortForwardOptions.Address, "address", []string{"localhost"}, "Addresses to listen on (comma separated). Only accepts IP addresses or localhost as a value. When localhost is supplied, vela will try to bind on both 127.0.0.1 and ::1 and will fail if neither of these addresses are available to bind.")
 	cmd.Flags().Duration(podRunningTimeoutFlag, defaultPodExecTimeout,
 		"The length of time (like 5s, 2m, or 3h, higher than zero) to wait until at least one pod is running",
 	)
 	cmd.Flags().BoolVar(&o.routeTrait, "route", false, "forward ports from route trait service")
+
+	addNamespaceAndEnvArg(cmd)
 	return cmd
 }
 
 // Init will initialize
 func (o *VelaPortForwardOptions) Init(ctx context.Context, cmd *cobra.Command, argsIn []string) error {
-	o.Context = ctx
+	o.Ctx = ctx
 	o.Cmd = cmd
 	o.Args = argsIn
 
-	env, err := GetFlagEnvOrCurrent(o.Cmd, o.VelaC)
-	if err != nil {
-		return err
-	}
-	o.Env = env
-
-	app, err := appfile.LoadApplication(env.Namespace, o.Args[0], o.VelaC)
+	app, err := appfile.LoadApplication(o.namespace, o.Args[0], o.VelaC)
 	if err != nil {
 		return err
 	}
 	o.App = app
 
-	cf := genericclioptions.NewConfigFlags(true)
-	cf.Namespace = &o.Env.Namespace
-	o.f = k8scmdutil.NewFactory(k8scmdutil.NewMatchVersionFlags(cf))
+	targetResource, err := common.AskToChooseOnePortForwardEndpoint(o.App)
+	if err != nil {
+		return err
+	}
 
+	cf := genericclioptions.NewConfigFlags(true)
+	cf.Namespace = pointer.String(targetResource.Namespace)
+	cf.WrapConfigFn = func(cfg *rest.Config) *rest.Config {
+		cfg.Wrap(multicluster.NewClusterGatewayRoundTripperWrapperGenerator(targetResource.Cluster))
+		return cfg
+	}
+	o.f = k8scmdutil.NewFactory(k8scmdutil.NewMatchVersionFlags(cf))
+	o.targetResource = targetResource
+	o.Ctx = multicluster.ContextWithClusterName(ctx, targetResource.Cluster)
+	config, err := o.VelaC.GetConfig()
+	if err != nil {
+		return err
+	}
+	config.Wrap(multicluster.NewSecretModeMultiClusterRoundTripper)
+	client, err := client.New(config, client.Options{Scheme: common.Scheme})
+	if err != nil {
+		return err
+	}
+	o.VelaC.SetClient(client)
 	if o.ClientSet == nil {
-		c, err := kubernetes.NewForConfig(o.VelaC.Config)
+		c, err := kubernetes.NewForConfig(config)
 		if err != nil {
 			return err
 		}
@@ -165,23 +196,51 @@ func getRouteServiceName(appconfig *v1alpha2.ApplicationConfiguration, svcName s
 	return ""
 }
 
+func getSvcNameAndPortFromHelmRelease(ctx context.Context, cli client.Client, o common2.ClusterObjectReference) (string, string, error) {
+	svcList := corev1.ServiceList{}
+	if err := cli.List(ctx, &svcList, client.InNamespace(o.Namespace), client.MatchingLabels{
+		fluxcdNameLabel:      o.Name,
+		fluxcdNameSpaceLabel: o.Namespace,
+	}); err != nil {
+		return "", "", err
+	}
+	for _, svc := range svcList.Items {
+		if strings.HasPrefix(svc.Name, o.Name) {
+			// avoid panic
+			if len(svc.Spec.Ports) == 0 {
+				continue
+			}
+			port := svc.Spec.Ports[0].Port
+			return svc.Name, strconv.Itoa(int(port)), nil
+		}
+	}
+	return "", "", fmt.Errorf("have not found svc from helmRelease: %s", o.Name)
+}
+
 // Complete will complete the config of port-forward
 func (o *VelaPortForwardOptions) Complete() error {
-	svcName, err := common.AskToChooseOneService(appfile.GetComponents(o.App))
+	client, err := o.VelaC.GetClient()
 	if err != nil {
 		return err
 	}
+	compName, err := getCompNameFromClusterObjectReference(o.Ctx, client, o.targetResource)
+	if err != nil {
+		return err
+	}
+	if compName == "" {
+		return fmt.Errorf("failed to get component name")
+	}
 	if o.routeTrait {
-		appconfig, err := appfile.GetAppConfig(o.Context, o.Client, o.App, o.Env)
+		appconfig, err := appfile.GetAppConfig(o.Ctx, client, o.App, o.Env)
 		if err != nil {
 			return err
 		}
-		routeSvc := getRouteServiceName(appconfig, svcName)
+		routeSvc := getRouteServiceName(appconfig, compName)
 		if routeSvc == "" {
-			return fmt.Errorf("no route trait found in %s %s", o.App.Name, svcName)
+			return fmt.Errorf("no route trait found in %s %s", o.App.Name, compName)
 		}
 		var svc = corev1.Service{}
-		err = o.Client.Get(o.Context, types2.NamespacedName{Name: routeSvc, Namespace: o.Env.Namespace}, &svc)
+		err = client.Get(o.Ctx, types2.NamespacedName{Name: routeSvc, Namespace: o.Env.Namespace}, &svc)
 		if err != nil {
 			return err
 		}
@@ -201,13 +260,37 @@ func (o *VelaPortForwardOptions) Complete() error {
 		return o.kcPortForwardOptions.Complete(o.f, o.Cmd, args)
 	}
 
-	podName, err := o.getPodName(svcName)
-	if err != nil {
-		return err
+	if o.targetResource.Kind == "HelmRelease" {
+		svcName, port, err := getSvcNameAndPortFromHelmRelease(o.Ctx, o.Client, *o.targetResource)
+		if err != nil {
+			return err
+		}
+		var val string
+		switch port {
+		case "80":
+			val = "8080:80"
+		case "443":
+			val = "8443:443"
+		default:
+			val = fmt.Sprintf("%s:%s", port, port)
+		}
+		o.Args[0] = fmt.Sprintf("svc/%s", svcName)
+		o.Args = append(o.Args, val)
+		return o.kcPortForwardOptions.Complete(o.f, o.Cmd, o.Args)
+	}
+
+	var podName string
+	if o.targetResource.Kind == "Service" {
+		podName = "svc/" + o.targetResource.Name
+	} else {
+		podName, err = getPodNameForResource(o.Ctx, o.ClientSet, o.targetResource.Name, o.targetResource.Namespace)
+		if err != nil {
+			return err
+		}
 	}
 	if len(o.Args) < 2 {
 		var found bool
-		_, configs := appfile.GetApplicationSettings(o.App, svcName)
+		_, configs := appfile.GetApplicationSettings(o.App, compName)
 		for k, v := range configs {
 			if k == "port" {
 				var val string
@@ -238,26 +321,6 @@ func (o *VelaPortForwardOptions) Complete() error {
 	copy(args, o.Args)
 	args[0] = podName
 	return o.kcPortForwardOptions.Complete(o.f, o.Cmd, args)
-}
-
-func (o *VelaPortForwardOptions) getPodName(svcName string) (string, error) {
-	podList, err := o.ClientSet.CoreV1().Pods(o.Env.Namespace).List(o.Context, v1.ListOptions{
-		LabelSelector: labels.Set(map[string]string{
-			oam.LabelAppComponent: svcName,
-		}).String(),
-	})
-	if err != nil {
-		return "", err
-	}
-	if podList != nil && len(podList.Items) == 0 {
-		return "", fmt.Errorf("cannot get pods")
-	}
-	for _, p := range podList.Items {
-		if strings.HasPrefix(p.Name, svcName+"-") {
-			return p.Name, nil
-		}
-	}
-	return podList.Items[0].Name, nil
 }
 
 // Run will execute port-forward

@@ -17,12 +17,14 @@
 package v1beta1
 
 import (
+	"encoding/json"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
-	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
 )
 
 const (
@@ -86,11 +88,6 @@ type ApplicationSpec struct {
 	Workflow *Workflow `json:"workflow,omitempty"`
 
 	// TODO(wonderflow): we should have application level scopes supported here
-
-	// RolloutPlan is the details on how to rollout the resources
-	// The controller simply replace the old resources with the new one if there is no rollout plan involved
-	// +optional
-	RolloutPlan *v1alpha1.RolloutPlan `json:"rolloutPlan,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -143,4 +140,37 @@ func (app *Application) GetComponent(workloadType string) *common.ApplicationCom
 		}
 	}
 	return nil
+}
+
+// Unstructured convert application to unstructured.Unstructured.
+func (app *Application) Unstructured() (*unstructured.Unstructured, error) {
+	var obj = &unstructured.Unstructured{}
+	app.SetGroupVersionKind(ApplicationKindVersionKind)
+	bt, err := json.Marshal(app)
+	if err != nil {
+		return nil, err
+	}
+	if err := obj.UnmarshalJSON(bt); err != nil {
+		return nil, err
+	}
+
+	if app.Status.Services == nil {
+		if err := unstructured.SetNestedSlice(obj.Object, []interface{}{}, "status", "services"); err != nil {
+			return nil, err
+		}
+	}
+
+	if app.Status.AppliedResources == nil {
+		if err := unstructured.SetNestedSlice(obj.Object, []interface{}{}, "status", "appliedResources"); err != nil {
+			return nil, err
+		}
+	}
+
+	if wfStatus := app.Status.Workflow; wfStatus != nil && wfStatus.Steps == nil {
+		if err := unstructured.SetNestedSlice(obj.Object, []interface{}{}, "status", "workflow", "steps"); err != nil {
+			return nil, err
+		}
+	}
+
+	return obj, nil
 }

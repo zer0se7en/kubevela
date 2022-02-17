@@ -18,36 +18,24 @@ package e2e
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	v1 "k8s.io/api/core/v1"
-	"sigs.k8s.io/yaml"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/e2e"
-	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
 
 var _ = Describe("Addon Test", func() {
-	args := common.Args{}
-	var cmSimpleAddon v1.ConfigMap
-	var cmInputAddon v1.ConfigMap
-	Context("Prepare test addon", func() {
-		k8sClient, err := args.GetClient()
-		Expect(err).Should(BeNil())
-		It("Apply test addon", func() {
-			Expect(yaml.Unmarshal([]byte(testAddon), &cmSimpleAddon)).Should(BeNil())
-			err = k8sClient.Create(context.Background(), &cmSimpleAddon)
-			Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
-		})
-		It("Apply test input addon", func() {
-			Expect(yaml.Unmarshal([]byte(testInputAddon), &cmInputAddon)).Should(BeNil())
-			err = k8sClient.Create(context.Background(), &cmInputAddon)
-			Expect(err).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
-		})
-	})
+	args := common.Args{Schema: common.Scheme}
+	k8sClient, err := args.GetClient()
+	Expect(err).Should(BeNil())
 
 	Context("List addons", func() {
 		It("List all addon", func() {
@@ -55,128 +43,77 @@ var _ = Describe("Addon Test", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(ContainSubstring("test-addon"))
 		})
-	})
-	Context("Enable addon", func() {
+
 		It("Enable addon test-addon", func() {
 			output, err := e2e.Exec("vela addon enable test-addon")
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(ContainSubstring("Successfully enable addon"))
+			Expect(output).To(ContainSubstring("enabled Successfully."))
 		})
-	})
-	Context("Disable addon", func() {
+
+		It("Upgrade addon test-addon", func() {
+			output, err := e2e.Exec("vela addon upgrade test-addon")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("enabled Successfully."))
+		})
+
 		It("Disable addon test-addon", func() {
 			output, err := e2e.LongTimeExec("vela addon disable test-addon", 600*time.Second)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(ContainSubstring("Successfully disable addon"))
+			Eventually(func(g Gomega) {
+				g.Expect(apierrors.IsNotFound(k8sClient.Get(context.Background(), types.NamespacedName{Name: "addon-test-addon", Namespace: "vela-system"}, &v1beta1.Application{}))).Should(BeTrue())
+			}, 60*time.Second).Should(Succeed())
 		})
-	})
 
-	Context("Test addon receive input", func() {
 		It("Enable addon with input", func() {
-			output, err := e2e.LongTimeExec("vela addon enable test-input-addon url=https://charts.bitnami.com/bitnami chart=redis", 300*time.Second)
+			output, err := e2e.LongTimeExec("vela addon enable test-addon example=redis", 300*time.Second)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(ContainSubstring("Successfully enable addon"))
+			Expect(output).To(ContainSubstring("enabled Successfully."))
 		})
-	})
 
-	Context("Disable addon", func() {
 		It("Disable addon test-addon", func() {
-			output, err := e2e.LongTimeExec("vela addon disable test-input-addon", 600*time.Second)
+			output, err := e2e.LongTimeExec("vela addon disable test-addon", 600*time.Second)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).To(ContainSubstring("Successfully disable addon"))
+			Eventually(func(g Gomega) {
+				g.Expect(apierrors.IsNotFound(k8sClient.Get(context.Background(), types.NamespacedName{Name: "addon-test-addon", Namespace: "vela-system"}, &v1beta1.Application{}))).Should(BeTrue())
+			}, 60*time.Second).Should(Succeed())
 		})
+
 	})
 
-	Context("Clean test environment", func() {
-		It("Delete test addon and test-input addon", func() {
-			k8sClient, err := args.GetClient()
-			Expect(err).Should(BeNil())
-			err = k8sClient.Delete(context.Background(), &cmSimpleAddon)
-			Expect(err).Should(BeNil())
-			err = k8sClient.Delete(context.Background(), &cmInputAddon)
-			Expect(err).Should(BeNil())
+	Context("Addon registry test", func() {
+		It("List all addon registry", func() {
+			output, err := e2e.Exec("vela addon registry list")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("KubeVela"))
+		})
+
+		It("Get addon registry", func() {
+			output, err := e2e.Exec("vela addon registry get KubeVela")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("KubeVela"))
+		})
+
+		It("Add test addon registry", func() {
+			output, err := e2e.LongTimeExec("vela addon registry add my-repo --type=git --endpoint=https://github.com/oam-dev/catalog --path=/experimental/addons", 600*time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("Successfully add an addon registry my-repo"))
+
+			Eventually(func() error {
+				output, err := e2e.LongTimeExec("vela addon registry update my-repo --type=git --endpoint=https://github.com/oam-dev/catalog --path=/addons", 300*time.Second)
+				if err != nil {
+					return err
+				}
+				if !strings.Contains(output, "Successfully update an addon registry my-repo") {
+					return fmt.Errorf("cannot update addon registry")
+				}
+				return nil
+			}, 30*time.Second, 300*time.Millisecond).Should(BeNil())
+
+			output, err = e2e.LongTimeExec("vela addon registry delete my-repo", 600*time.Second)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(output).To(ContainSubstring("Successfully delete an addon registry my-repo"))
 		})
 	})
-
 })
-
-var testAddon = `
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  annotations:
-    addons.oam.dev/description: This is a addon for e2e test
-    addons.oam.dev/name: test-addon
-  labels:
-    addons.oam.dev/type: test-addon
-  name: test-addon
-  namespace: vela-system
-data:
-  application: |
-    apiVersion: core.oam.dev/v1beta1
-    kind: Application
-    metadata:
-      annotations:
-        addons.oam.dev/description: This is a addon for e2e test
-      name: test-addon
-      namespace: vela-system
-    spec:
-      workflow:
-        steps:
-          - name: apply-ns
-            type: apply-component
-            properties:
-              component: ns-test-addon-system
-          - name: apply-resources
-            type: apply-remaining
-      components:
-        - name: ns-test-addon-system
-          type: raw
-          properties:
-            apiVersion: v1
-            kind: Namespace
-            metadata:
-              name: test-addon-system
-        - name: test-addon-pod
-          type: raw
-          properties:
-            apiVersion: v1
-            kind: Pod
-            metadata:
-              name: test-addon-pod
-            spec:
-              namespace: test-addon-system
-              containers:
-                - name: test-addon-pod-container
-                  image: nginx
-`
-
-var testInputAddon = `
-kind: ConfigMap
-metadata:
-  annotations:
-    addons.oam.dev/description: This is a test addon for test addon input
-    addons.oam.dev/name: test-input-addon
-  labels:
-    addons.oam.dev/type: test
-  name: test-input-addon
-  namespace: vela-system
-apiVersion: v1
-data:
-  application: |
-    apiVersion: core.oam.dev/v1beta1
-    kind: Application
-    metadata:
-      annotations:
-        addons.oam.dev/description: This is a test addon for test addon input
-      name: test-input-addon
-      namespace: vela-system
-    spec:
-      components:
-      - name: test-chart
-        properties:
-          chart: [[ index .Args "chart" ]]
-          repoType: helm
-          url: [[ index .Args "url" ]]
-        type: helm
-`

@@ -18,7 +18,9 @@ package apply
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/controller/utils"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 
@@ -48,7 +50,8 @@ type Applicator interface {
 }
 
 type applyAction struct {
-	skipUpdate bool
+	skipUpdate       bool
+	updateAnnotation bool
 }
 
 // ApplyOption is called before applying state to the object.
@@ -78,13 +81,13 @@ func (fn creatorFn) createOrGetExisting(ctx context.Context, act *applyAction, c
 }
 
 type patcher interface {
-	patch(c, m client.Object) (client.Patch, error)
+	patch(c, m client.Object, a *applyAction) (client.Patch, error)
 }
 
-type patcherFn func(c, m client.Object) (client.Patch, error)
+type patcherFn func(c, m client.Object, a *applyAction) (client.Patch, error)
 
-func (fn patcherFn) patch(c, m client.Object) (client.Patch, error) {
-	return fn(c, m)
+func (fn patcherFn) patch(c, m client.Object, a *applyAction) (client.Patch, error) {
+	return fn(c, m, a)
 }
 
 // APIApplicator implements Applicator
@@ -110,7 +113,7 @@ func (a *APIApplicator) Apply(ctx context.Context, desired client.Object, ao ...
 	if err != nil {
 		return err
 	}
-	applyAct := new(applyAction)
+	applyAct := &applyAction{updateAnnotation: true}
 	existing, err := a.createOrGetExisting(ctx, applyAct, a.c, desired, ao...)
 	if err != nil {
 		return err
@@ -130,7 +133,7 @@ func (a *APIApplicator) Apply(ctx context.Context, desired client.Object, ao ...
 	}
 
 	loggingApply("patching object", desired)
-	patch, err := a.patcher.patch(existing, desired)
+	patch, err := a.patcher.patch(existing, desired, applyAct)
 	if err != nil {
 		return errors.Wrap(err, "cannot calculate patch by computing a three way diff")
 	}
@@ -167,8 +170,10 @@ func createOrGetExisting(ctx context.Context, act *applyAction, c client.Client,
 		if err := executeApplyOptions(act, nil, desired, ao); err != nil {
 			return nil, err
 		}
-		if err := addLastAppliedConfigAnnotation(desired); err != nil {
-			return nil, err
+		if act.updateAnnotation {
+			if err := addLastAppliedConfigAnnotation(desired); err != nil {
+				return nil, err
+			}
 		}
 		loggingApply("creating object", desired)
 		return nil, errors.Wrap(c.Create(ctx, desired), "cannot create object")
@@ -243,33 +248,27 @@ func MustBeControllableBy(u types.UID) ApplyOption {
 	}
 }
 
-// MustBeControllableByAny requires that the new object is controllable by any of the object with
-// the supplied UID.
-func MustBeControllableByAny(ctrlUIDs []types.UID) ApplyOption {
+// MustBeControlledByApp requires that the new object is controllable by versioned resourcetracker
+func MustBeControlledByApp(app *v1beta1.Application) ApplyOption {
 	return func(_ *applyAction, existing, _ client.Object) error {
-		if existing == nil || len(ctrlUIDs) == 0 {
+		if existing == nil {
 			return nil
 		}
-		existingObjMeta, _ := existing.(metav1.Object)
-		c := metav1.GetControllerOf(existingObjMeta)
-		if c == nil {
+		labels := existing.GetLabels()
+		if labels == nil {
 			return nil
 		}
-
-		// NOTE This is for backward compatibility after ApplicationContext is deprecated.
-		// In legacy clusters, existing resources are ctrl-owned by ApplicationContext or ResourceTracker (only for
-		// cx-namespace and cluster-scope resources).  We use a particular annotation to identify legacy resources.
-		if len(existingObjMeta.GetAnnotations()[oam.AnnotationKubeVelaVersion]) == 0 {
-			// just skip checking UIDs, '3-way-merge' will remove the legacy ctrl-owner automatically
-			return nil
+		if appName, exists := labels[oam.LabelAppName]; exists && appName != app.Name {
+			return fmt.Errorf("existing object is managed by other application %s", appName)
 		}
-
-		for _, u := range ctrlUIDs {
-			if c.UID == u {
-				return nil
-			}
+		ns := app.Namespace
+		if ns == "" {
+			ns = metav1.NamespaceDefault
 		}
-		return errors.Errorf("existing object is not controlled by any of UID %q", ctrlUIDs)
+		if appNs, exists := labels[oam.LabelAppNamespace]; exists && appNs != ns {
+			return fmt.Errorf("existing object is managed by other application %s/%s", appNs, labels[oam.LabelAppName])
+		}
+		return nil
 	}
 }
 
@@ -277,5 +276,13 @@ func MustBeControllableByAny(ctrlUIDs []types.UID) ApplyOption {
 func MakeCustomApplyOption(f func(existing, desired client.Object) error) ApplyOption {
 	return func(act *applyAction, existing, desired client.Object) error {
 		return f(existing, desired)
+	}
+}
+
+// DisableUpdateAnnotation disable write last config to annotation
+func DisableUpdateAnnotation() ApplyOption {
+	return func(a *applyAction, existing, _ client.Object) error {
+		a.updateAnnotation = false
+		return nil
 	}
 }

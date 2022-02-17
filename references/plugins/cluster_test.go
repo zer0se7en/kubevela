@@ -19,7 +19,6 @@ package plugins
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 
 	"cuelang.org/go/cue"
@@ -30,7 +29,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/yaml"
 
 	corev1beta1 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
@@ -114,13 +112,13 @@ var _ = Describe("DefinitionFiles", func() {
 
 	req, _ := labels.NewRequirement("usecase", selection.Equals, []string{"forplugintest"})
 	selector := labels.NewSelector().Add(*req)
-
 	// Notice!!  DefinitionPath Object is Cluster Scope object
 	// which means objects created in other DefinitionNamespace will also affect here.
 	It("getcomponents", func() {
-		workloadDefs, _, err := GetComponentsFromCluster(context.Background(), DefinitionNamespace, common.Args{Config: cfg, Schema: scheme}, selector)
+		arg := common.Args{}
+		arg.SetClient(k8sClient)
+		workloadDefs, _, err := GetComponentsFromCluster(context.Background(), DefinitionNamespace, arg, selector)
 		Expect(err).Should(BeNil())
-		logf.Log.Info(fmt.Sprintf("Getting component definitions  %v", workloadDefs))
 		for i := range workloadDefs {
 			// CueTemplate should always be fulfilled, even those whose CueTemplateURI is assigend,
 			By("check CueTemplate is fulfilled")
@@ -130,9 +128,10 @@ var _ = Describe("DefinitionFiles", func() {
 		Expect(cmp.Diff(workloadDefs, []types.Capability{deployment, websvc})).Should(BeEquivalentTo(""))
 	})
 	It("getall", func() {
-		alldef, err := GetCapabilitiesFromCluster(context.Background(), DefinitionNamespace, common.Args{Config: cfg, Schema: scheme}, selector)
+		arg := common.Args{}
+		arg.SetClient(k8sClient)
+		alldef, err := GetCapabilitiesFromCluster(context.Background(), DefinitionNamespace, arg, selector)
 		Expect(err).Should(BeNil())
-		logf.Log.Info(fmt.Sprintf("Getting all definitions %v", alldef))
 		for i := range alldef {
 			alldef[i].CueTemplate = ""
 		}
@@ -162,11 +161,8 @@ var _ = Describe("test GetCapabilityByName", func() {
 		trait3     string
 	)
 	BeforeEach(func() {
-		c = common.Args{
-			Client: k8sClient,
-			Config: cfg,
-			Schema: scheme,
-		}
+		c = common.Args{}
+		c.SetClient(k8sClient)
 		ctx = context.Background()
 		ns = "cluster-test-ns-suffix"
 		defaultNS = types.DefaultKubeVelaNS
@@ -231,15 +227,15 @@ var _ = Describe("test GetCapabilityByName", func() {
 
 	It("get capability", func() {
 		Context("ComponentDefinition is in the current namespace", func() {
-			_, err := GetCapabilityByName(ctx, c, component1, ns)
+			_, err := GetCapabilityByName(ctx, c, component1, ns, nil)
 			Expect(err).Should(BeNil())
 		})
 		Context("ComponentDefinition is in the default namespace", func() {
-			_, err := GetCapabilityByName(ctx, c, component2, ns)
+			_, err := GetCapabilityByName(ctx, c, component2, ns, nil)
 			Expect(err).Should(BeNil())
 		})
 		Context("ComponentDefinition is in the default namespace", func() {
-			cap, err := GetCapabilityByName(ctx, c, component3, ns)
+			cap, err := GetCapabilityByName(ctx, c, component3, ns, nil)
 			Expect(err).Should(BeNil())
 			jsontmp, err := json.Marshal(cap.KubeParameter)
 			Expect(err).Should(BeNil())
@@ -249,20 +245,20 @@ var _ = Describe("test GetCapabilityByName", func() {
 			Expect(string(jsontmp)).Should(ContainSubstring("the specific container port num which can accept external request."))
 		})
 		Context("ComponentDefinition's workload type is AutoDetectWorkloadDefinition", func() {
-			_, err := GetCapabilityByName(ctx, c, component4, ns)
+			_, err := GetCapabilityByName(ctx, c, component4, ns, nil)
 			Expect(err).Should(BeNil())
 		})
 
 		Context("TraitDefinition is in the current namespace", func() {
-			_, err := GetCapabilityByName(ctx, c, trait1, ns)
+			_, err := GetCapabilityByName(ctx, c, trait1, ns, nil)
 			Expect(err).Should(BeNil())
 		})
 		Context("TraitDefinition is in the default namespace", func() {
-			_, err := GetCapabilityByName(ctx, c, trait2, ns)
+			_, err := GetCapabilityByName(ctx, c, trait2, ns, nil)
 			Expect(err).Should(BeNil())
 		})
 		Context("TraitDefinition is in the default namespace", func() {
-			cap, err := GetCapabilityByName(ctx, c, trait3, ns)
+			cap, err := GetCapabilityByName(ctx, c, trait3, ns, nil)
 			Expect(err).Should(BeNil())
 			jsontmp, err := json.Marshal(cap.KubeParameter)
 			Expect(err).Should(BeNil())
@@ -271,7 +267,7 @@ var _ = Describe("test GetCapabilityByName", func() {
 		})
 
 		Context("capability cloud not be found", func() {
-			_, err := GetCapabilityByName(ctx, c, "a-component-definition-not-existed", ns)
+			_, err := GetCapabilityByName(ctx, c, "a-component-definition-not-existed", ns, nil)
 			Expect(err).Should(HaveOccurred())
 		})
 	})
@@ -293,11 +289,8 @@ var _ = Describe("test GetNamespacedCapabilitiesFromCluster", func() {
 		trait2     string
 	)
 	BeforeEach(func() {
-		c = common.Args{
-			Client: k8sClient,
-			Config: cfg,
-			Schema: scheme,
-		}
+		c = common.Args{}
+		c.SetClient(k8sClient)
 		ctx = context.Background()
 		ns = "cluster-test-ns"
 		defaultNS = types.DefaultKubeVelaNS

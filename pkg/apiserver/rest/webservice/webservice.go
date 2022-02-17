@@ -17,8 +17,8 @@ limitations under the License.
 package webservice
 
 import (
-	"context"
 	"net/http"
+	"time"
 
 	"github.com/emicklei/go-restful/v3"
 
@@ -34,16 +34,16 @@ type WebService interface {
 	GetWebService() *restful.WebService
 }
 
-var registedWebService []WebService
+var registeredWebService []WebService
 
-// RegistWebService regist webservice
-func RegistWebService(ws WebService) {
-	registedWebService = append(registedWebService, ws)
+// RegisterWebService regist webservice
+func RegisterWebService(ws WebService) {
+	registeredWebService = append(registeredWebService, ws)
 }
 
-// GetRegistedWebService return registedWebService
-func GetRegistedWebService() []WebService {
-	return registedWebService
+// GetRegisteredWebService return registeredWebService
+func GetRegisteredWebService() []WebService {
+	return registeredWebService
 }
 
 func noop(req *restful.Request, resp *restful.Response) {}
@@ -58,15 +58,42 @@ func returns500(b *restful.RouteBuilder) {
 
 // Init init all webservice, pass in the required parameter object.
 // It can be implemented using the idea of dependency injection.
-func Init(ctx context.Context, ds datastore.DataStore) {
+func Init(ds datastore.DataStore, addonCacheTime time.Duration) {
 	clusterUsecase := usecase.NewClusterUsecase(ds)
-	applicationUsecase := usecase.NewApplicationUsecase(ds)
-	RegistWebService(NewClusterWebService(clusterUsecase))
-	RegistWebService(NewApplicationWebService(applicationUsecase))
-	RegistWebService(&namespaceWebService{})
-	RegistWebService(&componentDefinitionWebservice{})
-	RegistWebService(&addonWebService{})
-	RegistWebService(&oamApplicationWebService{})
-	RegistWebService(&policyDefinitionWebservice{})
-	RegistWebService(&workflowWebService{})
+	envUsecase := usecase.NewEnvUsecase(ds)
+	workflowUsecase := usecase.NewWorkflowUsecase(ds, envUsecase)
+	projectUsecase := usecase.NewProjectUsecase(ds)
+	targetUsecase := usecase.NewTargetUsecase(ds)
+	oamApplicationUsecase := usecase.NewOAMApplicationUsecase()
+	velaQLUsecase := usecase.NewVelaQLUsecase()
+	definitionUsecase := usecase.NewDefinitionUsecase()
+	addonUsecase := usecase.NewAddonUsecase(addonCacheTime)
+	envBindingUsecase := usecase.NewEnvBindingUsecase(ds, workflowUsecase, definitionUsecase, envUsecase)
+	applicationUsecase := usecase.NewApplicationUsecase(ds, workflowUsecase, envBindingUsecase, envUsecase, targetUsecase, definitionUsecase, projectUsecase)
+	webhookUsecase := usecase.NewWebhookUsecase(ds, applicationUsecase)
+	systemInfoUsecase := usecase.NewSystemInfoUsecase(ds)
+
+	// init for default values
+
+	// Application
+	RegisterWebService(NewApplicationWebService(applicationUsecase, envBindingUsecase, workflowUsecase))
+	RegisterWebService(NewProjectWebService(projectUsecase))
+	RegisterWebService(NewEnvWebService(envUsecase, applicationUsecase))
+
+	// Extension
+	RegisterWebService(NewDefinitionWebservice(definitionUsecase))
+	RegisterWebService(NewAddonWebService(addonUsecase))
+	RegisterWebService(NewEnabledAddonWebService(addonUsecase))
+	RegisterWebService(NewAddonRegistryWebService(addonUsecase))
+
+	// Resources
+	RegisterWebService(NewClusterWebService(clusterUsecase))
+	RegisterWebService(NewOAMApplication(oamApplicationUsecase))
+	RegisterWebService(&policyDefinitionWebservice{})
+	RegisterWebService(&payloadTypesWebservice{})
+	RegisterWebService(NewTargetWebService(targetUsecase, applicationUsecase))
+	RegisterWebService(NewVelaQLWebService(velaQLUsecase))
+	RegisterWebService(NewWebhookWebService(webhookUsecase, applicationUsecase))
+
+	RegisterWebService(NewSystemInfoWebService(systemInfoUsecase))
 }

@@ -24,7 +24,7 @@ spec:
     spec:
       containers:
         - name: patch
-          image: {{ .Values.admissionWebhooks.patch.image.repository }}:{{ .Values.admissionWebhooks.patch.image.tag }}
+          image: {{ .Values.imageRegistry }}{{ .Values.admissionWebhooks.patch.image.repository }}:{{ .Values.admissionWebhooks.patch.image.tag }}
           imagePullPolicy: {{ .Values.admissionWebhooks.patch.image.pullPolicy }}
           args:
             - patch
@@ -34,13 +34,17 @@ spec:
             - --patch-failure-policy={{ .Values.admissionWebhooks.failurePolicy }}
       restartPolicy: OnFailure
       serviceAccountName: {{ template "oam-runtime.fullname" . }}-admission
+      {{- with .Values.admissionWebhooks.patch.nodeSelector }}
+      nodeSelector:
+      {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.admissionWebhooks.patch.affinity }}
       affinity:
-{{ toYaml . | indent 8 }}
+      {{ toYaml . | indent 8 }}
       {{- end }}
       {{- with .Values.admissionWebhooks.patch.tolerations }}
       tolerations:
-{{ toYaml . | indent 8 }}
+      {{ toYaml . | indent 8 }}
       {{- end }}
       securityContext:
         runAsGroup: 2000

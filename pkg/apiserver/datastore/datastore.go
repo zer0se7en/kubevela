@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"time"
 )
 
 var (
@@ -40,6 +41,9 @@ var (
 
 	// ErrIndexInvalid Error that entity index is invalid
 	ErrIndexInvalid = NewDBError(fmt.Errorf("entity index is invalid"))
+
+	// ErrEntityInvalid Error that entity is invalid
+	ErrEntityInvalid = NewDBError(fmt.Errorf("entity is invalid"))
 )
 
 // DBError datastore error
@@ -65,6 +69,8 @@ type Config struct {
 
 // Entity database data model
 type Entity interface {
+	SetCreateTime(time time.Time)
+	SetUpdateTime(time time.Time)
 	PrimaryKey() string
 	TableName() string
 	Index() map[string]string
@@ -83,21 +89,50 @@ func NewEntity(in Entity) (Entity, error) {
 	return new.Interface().(Entity), nil
 }
 
+// SortOrder is the order of sort
+type SortOrder int
+
+const (
+	// SortOrderAscending defines the order of ascending for sorting
+	SortOrderAscending = SortOrder(1)
+	// SortOrderDescending defines the order of descending for sorting
+	SortOrderDescending = SortOrder(-1)
+)
+
+// SortOption describes the sorting parameters for list
+type SortOption struct {
+	Key   string
+	Order SortOrder
+}
+
+// FuzzyQueryOption defines the fuzzy query search filter option
+type FuzzyQueryOption struct {
+	Key   string
+	Query string
+}
+
+// FilterOptions filter query returned items
+type FilterOptions struct {
+	Queries []FuzzyQueryOption
+}
+
 // ListOptions list api options
 type ListOptions struct {
+	FilterOptions
 	Page     int
 	PageSize int
+	SortBy   []SortOption
 }
 
 // DataStore datastore interface
 type DataStore interface {
-	// add entity to database, Name() and TableName() can't return zero value.
+	// Add adds entity to database, Name() and TableName() can't return zero value.
 	Add(ctx context.Context, entity Entity) error
 
-	// batch add entity to database, Name() and TableName() can't return zero value.
-	BatchAdd(ctx context.Context, entitys []Entity) error
+	// BatchAdd will adds batched entities to database, Name() and TableName() can't return zero value.
+	BatchAdd(ctx context.Context, entities []Entity) error
 
-	// Update entity to database, Name() and TableName() can't return zero value.
+	// Put will update entity to database, Name() and TableName() can't return zero value.
 	Put(ctx context.Context, entity Entity) error
 
 	// Delete entity from database, Name() and TableName() can't return zero value.
@@ -106,8 +141,11 @@ type DataStore interface {
 	// Get entity from database, Name() and TableName() can't return zero value.
 	Get(ctx context.Context, entity Entity) error
 
-	// TableName() can't return zero value.
+	// List entities from database, TableName() can't return zero value.
 	List(ctx context.Context, query Entity, options *ListOptions) ([]Entity, error)
+
+	// Count entities from database, TableName() can't return zero value.
+	Count(ctx context.Context, entity Entity, options *FilterOptions) (int64, error)
 
 	// IsExist Name() and TableName() can't return zero value.
 	IsExist(ctx context.Context, entity Entity) (bool, error)

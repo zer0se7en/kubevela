@@ -40,6 +40,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/pointer"
 )
 
 var _ = Describe("Test rollout related handler func", func() {
@@ -59,6 +60,7 @@ var _ = Describe("Test rollout related handler func", func() {
 		srcWorkload.SetAPIVersion("apps/v1")
 		srcWorkload.SetKind("Deployment")
 		compName := "comp-test"
+		appRevName := "app-revision-v2"
 		h := handler{
 			reconciler: &reconciler{
 				Client: k8sClient,
@@ -66,6 +68,9 @@ var _ = Describe("Test rollout related handler func", func() {
 			rollout: &v1alpha1.Rollout{
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: namespace,
+					Labels: map[string]string{
+						oam.LabelAppRevision: appRevName,
+					},
 				}},
 			targetWorkload: tarWorkload,
 			sourceWorkload: srcWorkload,
@@ -81,10 +86,10 @@ var _ = Describe("Test rollout related handler func", func() {
 		Expect(h.targetWorkload.GetNamespace()).Should(BeEquivalentTo(namespace))
 		Expect(h.sourceWorkload.GetNamespace()).Should(BeEquivalentTo(namespace))
 		tarLabel := h.targetWorkload.GetLabels()
-		Expect(len(tarLabel)).Should(BeEquivalentTo(2))
+		Expect(tarLabel[oam.LabelAppRevision]).Should(BeEquivalentTo(appRevName))
 		Expect(tarLabel[oam.LabelAppComponentRevision]).Should(BeEquivalentTo("comp-test-v2"))
 		srcLabel := h.sourceWorkload.GetLabels()
-		Expect(len(srcLabel)).Should(BeEquivalentTo(2))
+		Expect(srcLabel[oam.LabelAppRevision]).Should(BeEquivalentTo(appRevName))
 		Expect(srcLabel[oam.LabelAppComponentRevision]).Should(BeEquivalentTo("comp-test-v1"))
 
 		Expect(h.assembleWorkload(ctx)).Should(BeNil())
@@ -512,6 +517,50 @@ var _ = Describe("Test rollout related handler func", func() {
 			Expect(len(checkRt.Status.TrackedResources)).Should(BeEquivalentTo(1))
 			Expect(checkRt.Status.TrackedResources[0].Name).Should(BeEquivalentTo(u.GetName()))
 			Expect(checkRt.Status.TrackedResources[0].UID).Should(BeEquivalentTo(u.GetUID()))
+		})
+
+		It("TestGetWorkloadReplicasNum", func() {
+			deployName := "test-workload-get"
+			deploy := appsv1.Deployment{
+				TypeMeta: metav1.TypeMeta{
+					Kind: "Deployment",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: namespace,
+					Name:      deployName,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: pointer.Int32Ptr(3),
+					Selector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"app": "test",
+						},
+					},
+					Template: v1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Labels: map[string]string{
+								"app": "test",
+							},
+						},
+						Spec: v1.PodSpec{
+							Containers: []v1.Container{
+								{
+									Name:  "test-container",
+									Image: "test-image",
+								},
+							},
+						},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, &deploy)).Should(BeNil())
+			u := unstructured.Unstructured{}
+			u.SetAPIVersion("apps/v1")
+			u.SetKind("Deployment")
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: deployName, Namespace: namespace}, &u)).Should(BeNil())
+			rep, err := getWorkloadReplicasNum(u)
+			Expect(err).Should(BeNil())
+			Expect(rep).Should(BeEquivalentTo(3))
 		})
 	})
 })

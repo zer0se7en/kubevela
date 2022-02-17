@@ -18,36 +18,52 @@ package model
 
 import (
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 )
 
-// Workflow workflow database model
+func init() {
+	RegistModel(&Workflow{})
+	RegistModel(&WorkflowRecord{})
+}
+
+// Workflow application delivery database model
 type Workflow struct {
-	Name      string         `json:"name"`
-	Namespace string         `json:"namespace"`
-	Steps     []WorkflowStep `json:"steps,omitempty"`
+	BaseModel
+	Name        string `json:"name"`
+	Alias       string `json:"alias"`
+	Description string `json:"description"`
+	// Workflow used by the default
+	Default       *bool          `json:"default"`
+	AppPrimaryKey string         `json:"appPrimaryKey"`
+	EnvName       string         `json:"envName"`
+	Steps         []WorkflowStep `json:"steps,omitempty"`
 }
 
 // WorkflowStep defines how to execute a workflow step.
 type WorkflowStep struct {
 	// Name is the unique name of the workflow step.
-	Name       string             `json:"name"`
-	Type       string             `json:"type"`
-	Properties JSONStruct         `json:"properties,omitempty"`
-	DependsOn  []string           `json:"dependsOn,omitempty"`
-	Inputs     common.StepInputs  `json:"inputs,omitempty"`
-	Outputs    common.StepOutputs `json:"outputs,omitempty"`
+	Name        string             `json:"name"`
+	Alias       string             `json:"alias"`
+	Type        string             `json:"type"`
+	Description string             `json:"description"`
+	OrderIndex  int                `json:"orderIndex"`
+	Inputs      common.StepInputs  `json:"inputs,omitempty"`
+	Outputs     common.StepOutputs `json:"outputs,omitempty"`
+	DependsOn   []string           `json:"dependsOn"`
+	Properties  *JSONStruct        `json:"properties,omitempty"`
 }
 
 // TableName return custom table name
 func (w *Workflow) TableName() string {
-	return tableNamePrefix + "application_component"
+	return tableNamePrefix + "workflow"
 }
 
 // PrimaryKey return custom primary key
 func (w *Workflow) PrimaryKey() string {
-	return fmt.Sprintf("%s-%s", w.Namespace, w.Name)
+	return fmt.Sprintf("%s-%s", w.AppPrimaryKey, w.Name)
 }
 
 // Index return custom primary key
@@ -56,8 +72,80 @@ func (w *Workflow) Index() map[string]string {
 	if w.Name != "" {
 		index["name"] = w.Name
 	}
+	if w.AppPrimaryKey != "" {
+		index["appPrimaryKey"] = w.AppPrimaryKey
+	}
+	if w.EnvName != "" {
+		index["envName"] = w.EnvName
+	}
+	if w.Default != nil {
+		index["default"] = strconv.FormatBool(*w.Default)
+	}
+
+	return index
+}
+
+// WorkflowRecord is the workflow record database model
+type WorkflowRecord struct {
+	BaseModel
+	WorkflowName       string               `json:"workflowName"`
+	WorkflowAlias      string               `json:"workflowAlias"`
+	AppPrimaryKey      string               `json:"appPrimaryKey"`
+	RevisionPrimaryKey string               `json:"revisionPrimaryKey"`
+	Name               string               `json:"name"`
+	Namespace          string               `json:"namespace"`
+	StartTime          time.Time            `json:"startTime,omitempty"`
+	Finished           string               `json:"finished"`
+	Steps              []WorkflowStepStatus `json:"steps,omitempty"`
+	Status             string               `json:"status"`
+}
+
+// WorkflowStepStatus is the workflow step status database model
+type WorkflowStepStatus struct {
+	ID               string                   `json:"id"`
+	Name             string                   `json:"name"`
+	Alias            string                   `json:"alias"`
+	Type             string                   `json:"type,omitempty"`
+	Phase            common.WorkflowStepPhase `json:"phase,omitempty"`
+	Message          string                   `json:"message,omitempty"`
+	Reason           string                   `json:"reason,omitempty"`
+	FirstExecuteTime time.Time                `json:"firstExecuteTime,omitempty"`
+	LastExecuteTime  time.Time                `json:"lastExecuteTime,omitempty"`
+}
+
+// TableName return custom table name
+func (w *WorkflowRecord) TableName() string {
+	return tableNamePrefix + "workflow_record"
+}
+
+// PrimaryKey return custom primary key
+func (w *WorkflowRecord) PrimaryKey() string {
+	return w.Name
+}
+
+// Index return custom primary key
+func (w *WorkflowRecord) Index() map[string]string {
+	index := make(map[string]string)
+	if w.Name != "" {
+		index["name"] = w.Name
+	}
 	if w.Namespace != "" {
 		index["namespace"] = w.Namespace
+	}
+	if w.WorkflowName != "" {
+		index["workflowPrimaryKey"] = w.WorkflowName
+	}
+	if w.AppPrimaryKey != "" {
+		index["appPrimaryKey"] = w.AppPrimaryKey
+	}
+	if w.RevisionPrimaryKey != "" {
+		index["revisionPrimaryKey"] = w.RevisionPrimaryKey
+	}
+	if w.Finished != "" {
+		index["finished"] = w.Finished
+	}
+	if w.Status != "" {
+		index["status"] = w.Status
 	}
 	return index
 }

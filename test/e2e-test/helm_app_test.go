@@ -75,7 +75,7 @@ var _ = Describe("Test application containing helm module", func() {
 					},
 				}),
 				Repository: *util.Object2RawExtension(map[string]interface{}{
-					"url": "http://oam.dev/catalog/",
+					"url": "https://charts.kubevela.net/example/",
 				}),
 			},
 		}
@@ -133,7 +133,7 @@ var _ = Describe("Test application containing helm module", func() {
 		Expect(k8sClient.Patch(ctx, &scalerTd, client.Merge)).Should(Succeed())
 	})
 
-	It("Test deploy an application containing helm module", func() {
+	PIt("Test deploy an application containing helm module", func() {
 		app = v1beta1.Application{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      appName,
@@ -275,7 +275,7 @@ var _ = Describe("Test application containing helm module", func() {
 					},
 				}),
 				Repository: *util.Object2RawExtension(map[string]interface{}{
-					"url": "http://oam.dev/catalog/",
+					"url": "https://charts.kubevela.net/example/",
 				}),
 			},
 		}
@@ -330,7 +330,7 @@ var _ = Describe("Test application containing helm module", func() {
 					},
 				}),
 				Repository: *util.Object2RawExtension(map[string]interface{}{
-					"url": "http://oam.dev/catalog/",
+					"url": "https://charts.kubevela.net/example/",
 				}),
 			},
 		}
@@ -372,13 +372,13 @@ var _ = Describe("Test application containing helm module", func() {
 
 	It("Test store JSON schema of Helm Chart in ConfigMap", func() {
 		By("Get the ConfigMap")
-		cmName := fmt.Sprintf("schema-%s", cdName)
+		cmName := fmt.Sprintf("component-schema-%s", cdName)
 		Eventually(func() error {
 			cm := &corev1.ConfigMap{}
 			if err := k8sClient.Get(ctx, client.ObjectKey{Name: cmName, Namespace: namespace}, cm); err != nil {
 				return err
 			}
-			if cm.Data["openapi-v3-json-schema"] == "" {
+			if cm.Data[types.OpenapiV3JSONSchema] == "" {
 				return errors.New("json schema is not found in the ConfigMap")
 			}
 			return nil

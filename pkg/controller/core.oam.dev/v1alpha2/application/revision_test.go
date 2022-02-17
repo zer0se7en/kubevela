@@ -151,16 +151,14 @@ var _ = Describe("test generate revision ", func() {
 		appRevision1.Spec.ComponentDefinitions[cd.Name] = cd
 		appRevision1.Spec.WorkloadDefinitions[wd.Name] = wd
 		appRevision1.Spec.TraitDefinitions[td.Name] = td
-		appRevision1.Spec.TraitDefinitions[rolloutTd.Name] = rolloutTd
 		appRevision1.Spec.ScopeDefinitions[sd.Name] = sd
 
 		appRevision2 = *appRevision1.DeepCopy()
 		appRevision2.Name = "appRevision2"
 
-		handler = AppHandler{
-			r:   reconciler,
-			app: &app,
-		}
+		_handler, err := NewAppHandler(ctx, reconciler, &app, nil)
+		Expect(err).Should(Succeed())
+		handler = *_handler
 
 	})
 
@@ -168,6 +166,10 @@ var _ = Describe("test generate revision ", func() {
 		By("[TEST] Clean up resources after an integration test")
 		Expect(k8sClient.Delete(context.TODO(), &ns)).Should(Succeed())
 	})
+
+	verifyDeepEqualRevision := func() {
+		Expect(DeepEqualRevision(&appRevision1, &appRevision2)).Should(BeTrue())
+	}
 
 	verifyEqual := func() {
 		appHash1, err := ComputeAppRevisionHash(&appRevision1)
@@ -229,7 +231,7 @@ var _ = Describe("test generate revision ", func() {
 		verifyNotEqual()
 	})
 
-	It("Test appliction contain a SkipAppRevision tait will have same hash", func() {
+	It("Test appliction contain a SkipAppRevision tait will have same hash and revision will equal", func() {
 		rolloutTrait := common.ApplicationTrait{
 			Type: "rollout",
 			Properties: &runtime.RawExtension{
@@ -237,7 +239,32 @@ var _ = Describe("test generate revision ", func() {
 			},
 		}
 		appRevision2.Spec.Application.Spec.Components[0].Traits = append(appRevision2.Spec.Application.Spec.Components[0].Traits, rolloutTrait)
+		// appRevision will have no traitDefinition of rollout
+		appRevision2.Spec.TraitDefinitions[rolloutTd.Name] = rolloutTd
 		verifyEqual()
+		verifyDeepEqualRevision()
+	})
+
+	It("Test application revision compare", func() {
+		By("Apply the application")
+		appParser := appfile.NewApplicationParser(reconciler.Client, reconciler.dm, reconciler.pd)
+		ctx = util.SetNamespaceInCtx(ctx, app.Namespace)
+		generatedAppfile, err := appParser.GenerateAppFile(ctx, &app)
+		Expect(err).Should(Succeed())
+		comps, err = generatedAppfile.GenerateComponentManifests()
+		Expect(err).Should(Succeed())
+		Expect(handler.PrepareCurrentAppRevision(ctx, generatedAppfile)).Should(Succeed())
+		Expect(handler.FinalizeAndApplyAppRevision(ctx)).Should(Succeed())
+		prevHash := generatedAppfile.AppRevisionHash
+		handler.app.Status.LatestRevision = &common.Revision{Name: generatedAppfile.AppRevisionName, Revision: 1, RevisionHash: generatedAppfile.AppRevisionHash}
+		generatedAppfile.Workloads[0].FullTemplate.ComponentDefinition = nil
+		Expect(handler.PrepareCurrentAppRevision(ctx, generatedAppfile)).Should(Succeed())
+		nonChangeHash := generatedAppfile.AppRevisionHash
+		handler.app.Annotations = map[string]string{oam.AnnotationAutoUpdate: "true"}
+		Expect(handler.PrepareCurrentAppRevision(ctx, generatedAppfile)).Should(Succeed())
+		changedHash := generatedAppfile.AppRevisionHash
+		Expect(nonChangeHash).Should(Equal(prevHash))
+		Expect(changedHash).ShouldNot(Equal(prevHash))
 	})
 
 	It("Test apply success for none rollout case", func() {

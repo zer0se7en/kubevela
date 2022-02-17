@@ -20,16 +20,21 @@ import (
 	"context"
 
 	"github.com/pkg/errors"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
+	"github.com/oam-dev/kubevela/pkg/velaql/providers/query"
 	wfContext "github.com/oam-dev/kubevela/pkg/workflow/context"
 	"github.com/oam-dev/kubevela/pkg/workflow/providers"
-	"github.com/oam-dev/kubevela/pkg/workflow/providers/convert"
+	"github.com/oam-dev/kubevela/pkg/workflow/providers/email"
 	"github.com/oam-dev/kubevela/pkg/workflow/providers/http"
+	"github.com/oam-dev/kubevela/pkg/workflow/providers/kube"
+	"github.com/oam-dev/kubevela/pkg/workflow/providers/time"
+	"github.com/oam-dev/kubevela/pkg/workflow/providers/util"
 	"github.com/oam-dev/kubevela/pkg/workflow/providers/workspace"
 	"github.com/oam-dev/kubevela/pkg/workflow/tasks/custom"
 	"github.com/oam-dev/kubevela/pkg/workflow/tasks/template"
@@ -39,7 +44,7 @@ import (
 type taskDiscover struct {
 	builtins           map[string]types.TaskGenerator
 	remoteTaskDiscover *custom.TaskLoader
-	templateLoader     *template.Loader
+	templateLoader     template.Loader
 }
 
 // GetTaskGenerator get task generator by name.
@@ -72,14 +77,15 @@ func suspend(step v1beta1.WorkflowStep, opt *types.GeneratorOptions) (types.Task
 func NewTaskDiscover(providerHandlers providers.Providers, pd *packages.PackageDiscover, cli client.Client, dm discoverymapper.DiscoveryMapper) types.TaskDiscover {
 	// install builtin provider
 	workspace.Install(providerHandlers)
-	http.Install(providerHandlers)
-	convert.Install(providerHandlers)
-	templateLoader := template.NewTemplateLoader(cli, dm)
+	email.Install(providerHandlers)
+	util.Install(providerHandlers)
+
+	templateLoader := template.NewWorkflowStepTemplateLoader(cli, dm)
 	return &taskDiscover{
 		builtins: map[string]types.TaskGenerator{
 			"suspend": suspend,
 		},
-		remoteTaskDiscover: custom.NewTaskLoader(templateLoader.LoadTaskTemplate, pd, providerHandlers),
+		remoteTaskDiscover: custom.NewTaskLoader(templateLoader.LoadTaskTemplate, pd, providerHandlers, 0),
 		templateLoader:     templateLoader,
 	}
 }
@@ -107,4 +113,22 @@ func (tr *suspendTaskRunner) Run(ctx wfContext.Context, options *types.TaskRunOp
 // Pending check task should be executed or not.
 func (tr *suspendTaskRunner) Pending(ctx wfContext.Context) bool {
 	return false
+}
+
+// NewViewTaskDiscover will create a client for load task generator.
+func NewViewTaskDiscover(pd *packages.PackageDiscover, cli client.Client, cfg *rest.Config, apply kube.Dispatcher, delete kube.Deleter, viewNs string, logLevel int) types.TaskDiscover {
+	handlerProviders := providers.NewProviders()
+
+	// install builtin provider
+	query.Install(handlerProviders, cli, cfg)
+	time.Install(handlerProviders)
+	kube.Install(handlerProviders, cli, apply, delete)
+	http.Install(handlerProviders, cli, viewNs)
+	email.Install(handlerProviders)
+
+	templateLoader := template.NewViewTemplateLoader(cli, viewNs)
+	return &taskDiscover{
+		remoteTaskDiscover: custom.NewTaskLoader(templateLoader.LoadTaskTemplate, pd, handlerProviders, logLevel),
+		templateLoader:     templateLoader,
+	}
 }

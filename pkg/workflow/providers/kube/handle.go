@@ -19,12 +19,11 @@ package kube
 import (
 	"context"
 
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/pkg/cue/model"
 	"github.com/oam-dev/kubevela/pkg/cue/model/value"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
@@ -41,9 +40,13 @@ const (
 // Dispatcher is a client for apply resources.
 type Dispatcher func(ctx context.Context, cluster string, owner common.ResourceCreatorRole, manifests ...*unstructured.Unstructured) error
 
+// Deleter is a client for delete resources.
+type Deleter func(ctx context.Context, cluster string, owner common.ResourceCreatorRole, manifest *unstructured.Unstructured) error
+
 type provider struct {
-	apply Dispatcher
-	cli   client.Client
+	apply  Dispatcher
+	delete Deleter
+	cli    client.Client
 }
 
 // Apply create or update CR in cluster.
@@ -86,6 +89,40 @@ func (h *provider) Apply(ctx wfContext.Context, v *value.Value, act types.Action
 		return err
 	}
 	return v.FillObject(workload.Object, "value")
+}
+
+// ApplyInParallel create or update CRs in parallel.
+func (h *provider) ApplyInParallel(ctx wfContext.Context, v *value.Value, act types.Action) error {
+	val, err := v.LookupValue("value")
+	if err != nil {
+		return err
+	}
+	iter, err := val.CueValue().List()
+	if err != nil {
+		return err
+	}
+	workloadNum := 0
+	for iter.Next() {
+		workloadNum++
+	}
+	var workloads = make([]*unstructured.Unstructured, workloadNum)
+	if err = val.UnmarshalTo(&workloads); err != nil {
+		return err
+	}
+	for i := range workloads {
+		if workloads[i].GetNamespace() == "" {
+			workloads[i].SetNamespace("default")
+		}
+	}
+	cluster, err := v.GetString("cluster")
+	if err != nil {
+		return err
+	}
+	deployCtx := multicluster.ContextWithClusterName(context.Background(), cluster)
+	if err = h.apply(deployCtx, cluster, common.WorkflowResourceCreator, workloads...); err != nil {
+		return v.FillObject(err, "err")
+	}
+	return nil
 }
 
 // Read get CR from cluster.
@@ -170,23 +207,25 @@ func (h *provider) Delete(ctx wfContext.Context, v *value.Value, act types.Actio
 	if err != nil {
 		return err
 	}
-	readCtx := multicluster.ContextWithClusterName(context.Background(), cluster)
-	if err := h.cli.Delete(readCtx, obj); err != nil {
+	deleteCtx := multicluster.ContextWithClusterName(context.Background(), cluster)
+	if err := h.delete(deleteCtx, cluster, common.WorkflowResourceCreator, obj); err != nil {
 		return v.FillObject(err.Error(), "err")
 	}
 	return nil
 }
 
 // Install register handlers to provider discover.
-func Install(p providers.Providers, cli client.Client, apply Dispatcher) {
+func Install(p providers.Providers, cli client.Client, apply Dispatcher, deleter Deleter) {
 	prd := &provider{
-		apply: apply,
-		cli:   cli,
+		apply:  apply,
+		delete: deleter,
+		cli:    cli,
 	}
 	p.Register(ProviderName, map[string]providers.Handler{
-		"apply":  prd.Apply,
-		"read":   prd.Read,
-		"list":   prd.List,
-		"delete": prd.Delete,
+		"apply":             prd.Apply,
+		"apply-in-parallel": prd.ApplyInParallel,
+		"read":              prd.Read,
+		"list":              prd.List,
+		"delete":            prd.Delete,
 	})
 }
