@@ -30,6 +30,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/oam-dev/kubevela/pkg/utils/util"
+
 	"k8s.io/klog/v2"
 	"k8s.io/klog/v2/klogr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -194,17 +196,19 @@ func main() {
 	// wrapper the round tripper by multi cluster rewriter
 	if enableClusterGateway {
 		if _, err := multicluster.Initialize(restConfig, true); err != nil {
-			klog.ErrorS(err, "failed to enable multicluster")
+			klog.ErrorS(err, "failed to enable multi-cluster capability")
 			os.Exit(1)
 		}
 	}
 	ctrl.SetLogger(klogr.New())
+
+	leaderElectionID := util.GenerateLeaderElectionID(kubevelaName, controllerArgs.IgnoreAppWithoutControllerRequirement)
 	mgr, err := ctrl.NewManager(restConfig, ctrl.Options{
 		Scheme:                     scheme,
 		MetricsBindAddress:         metricsAddr,
 		LeaderElection:             enableLeaderElection,
 		LeaderElectionNamespace:    leaderElectionNamespace,
-		LeaderElectionID:           kubevelaName,
+		LeaderElectionID:           leaderElectionID,
 		Port:                       webhookPort,
 		CertDir:                    certDir,
 		HealthProbeBindAddress:     healthAddr,

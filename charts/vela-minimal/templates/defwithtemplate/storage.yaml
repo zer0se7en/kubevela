@@ -6,7 +6,7 @@ metadata:
   annotations:
     definition.oam.dev/description: Add storages on K8s pod for your workload which follows the pod spec in path 'spec.template'.
   name: storage
-  namespace: {{.Values.systemDefinitionNamespace}}
+  namespace: {{ include "systemDefinitionNamespace" . }}
 spec:
   appliesToWorkloads:
     - deployments.apps
@@ -154,7 +154,7 @@ spec:
         					}
 
         					if v.resources.requests.storage == _|_ {
-        						resources: requests: storage: "1Gi"
+        						resources: requests: storage: "8Gi"
         					}
         					if v.resources.requests.storage != _|_ {
         						resources: requests: storage: v.resources.requests.storage

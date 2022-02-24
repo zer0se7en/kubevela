@@ -3,8 +3,6 @@
 # Declare variables to be passed into your templates.
 
 replicaCount: 1
-# Valid applyOnceOnly values: true/false/on/off/force
-applyOnceOnly: "off"
 
 disableCaps: "rollout"
 
@@ -82,8 +80,6 @@ admissionWebhooks:
   certManager:
     enabled: false
     revisionHistoryLimit: 3
-  # If autoGenWorkloadDefinition is true, webhook will auto generated workloadDefinition which componentDefinition refers to
-  autoGenWorkloadDefinition: true
 
 #Enable debug logs for development purpose
 logDebug: false
@@ -95,7 +91,8 @@ logFilePath: ""
 #If the value is 0, the maximum file size is unlimited.
 logFileMaxSize: 1024
 
-systemDefinitionNamespace: vela-system
+#System definition namespace, if unspecified, will use built-in variable `.Release.Namespace`.
+systemDefinitionNamespace:
 
 applicationRevisionLimit: 10
 
@@ -103,6 +100,12 @@ definitionRevisionLimit: 20
 
 # concurrentReconciles is the concurrent reconcile number of the controller
 concurrentReconciles: 4
+
+kubeClient:
+  # the qps for reconcile clients, default is 50
+  qps: 50
+  # the burst for reconcile clients, default is 100
+  brust: 100
 
 # dependCheckWait is the time to wait for ApplicationConfiguration's dependent-resource ready
 dependCheckWait: 30s
@@ -134,3 +137,5 @@ test:
   k8s:
     repository: oamdev/alpine-k8s
     tag: 1.18.2
+
+enableFluxcdAddon: false

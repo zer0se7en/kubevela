@@ -120,14 +120,12 @@ spec:
             - "--use-webhook=true"
             - "--webhook-port={{ .Values.webhookService.port }}"
             - "--webhook-cert-dir={{ .Values.admissionWebhooks.certificate.mountPath }}"
-            - "--autogen-workload-definition={{ .Values.admissionWebhooks.autoGenWorkloadDefinition }}"
             {{ end }}
             - "--health-addr=:{{ .Values.healthCheck.port }}"
-            - "--apply-once-only={{ .Values.applyOnceOnly }}"
             {{ if ne .Values.disableCaps "" }}
             - "--disable-caps={{ .Values.disableCaps }}"
             {{ end }}
-            - "--system-definition-namespace={{ .Values.systemDefinitionNamespace }}"
+            - "--system-definition-namespace={{ include "systemDefinitionNamespace" . }}"
             - "--application-revision-limit={{ .Values.applicationRevisionLimit }}"
             - "--definition-revision-limit={{ .Values.definitionRevisionLimit }}"
             - "--oam-spec-ver={{ .Values.OAMSpecVer }}"
@@ -135,6 +133,9 @@ spec:
             - "--enable-cluster-gateway"
             {{ end }}
             - "--application-re-sync-period={{ .Values.controllerArgs.reSyncPeriod }}"
+            - "--concurrent-reconciles={{ .Values.concurrentReconciles }}"
+            - "--kube-api-qps={{ .Values.kubeClient.qps }}"
+            - "--kube-api-burst={{ .Values.kubeClient.brust }}"
           image: {{ .Values.imageRegistry }}{{ .Values.image.repository }}:{{ .Values.image.tag }}
           imagePullPolicy: {{ quote .Values.image.pullPolicy }}
           resources:
