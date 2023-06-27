@@ -3,12 +3,41 @@ task: {
 	annotations: {}
 	labels: {}
 	description: "Describes jobs that run code or a script to completion."
-	attributes: workload: {
-		definition: {
-			apiVersion: "batch/v1"
-			kind:       "Job"
+	attributes: {
+		workload: {
+			definition: {
+				apiVersion: "batch/v1"
+				kind:       "Job"
+			}
+			type: "jobs.batch"
 		}
-		type: "jobs.batch"
+		status: {
+			customStatus: #"""
+				status: {
+					active:    *0 | int
+					failed:    *0 | int
+					succeeded: *0 | int
+				} & {
+					if context.output.status.active != _|_ {
+						active: context.output.status.active
+					}
+					if context.output.status.failed != _|_ {
+						failed: context.output.status.failed
+					}
+					if context.output.status.succeeded != _|_ {
+						succeeded: context.output.status.succeeded
+					}
+				}
+				message: "Active/Failed/Succeeded:\(status.active)/\(status.failed)/\(status.succeeded)"
+				"""#
+			healthPolicy: #"""
+				succeeded: *0 | int
+				if context.output.status.succeeded != _|_ {
+					succeeded: context.output.status.succeeded
+				}
+				isHealth: succeeded == context.output.spec.parallelism
+				"""#
+		}
 	}
 }
 template: {
@@ -19,11 +48,17 @@ template: {
 			parallelism: parameter.count
 			completions: parameter.count
 			template: {
-				if parameter.labels != _|_ {
-					metadata: labels: parameter.labels
-				}
-				if parameter.annotations != _|_ {
-					metadata: annotations: parameter.annotations
+				metadata: {
+					labels: {
+						if parameter.labels != _|_ {
+							parameter.labels
+						}
+						"app.oam.dev/name":      context.appName
+						"app.oam.dev/component": context.name
+					}
+					if parameter.annotations != _|_ {
+						annotations: parameter.annotations
+					}
 				}
 				spec: {
 					restartPolicy: parameter.restart
@@ -145,14 +180,14 @@ template: {
 			// +usage=Specifies a source the value of this var should come from
 			valueFrom?: {
 				// +usage=Selects a key of a secret in the pod's namespace
-				secretKeyRef: {
+				secretKeyRef?: {
 					// +usage=The name of the secret in the pod's namespace to select from
 					name: string
 					// +usage=The key of the secret to select from. Must be a valid secret key
 					key: string
 				}
 				// +usage=Selects a key of a config map in the pod's namespace
-				configMapKeyRef: {
+				configMapKeyRef?: {
 					// +usage=The name of the config map in the pod's namespace to select from
 					name: string
 					// +usage=The key of the config map to select from. Must be a valid secret key
@@ -171,8 +206,8 @@ template: {
 		volumes?: [...{
 			name:      string
 			mountPath: string
-			// +usage=Specify volume type, options: "pvc","configMap","secret","emptyDir"
-			type: "pvc" | "configMap" | "secret" | "emptyDir"
+			// +usage=Specify volume type, options: "pvc","configMap","secret","emptyDir", default to emptyDir
+			type: *"emptyDir" | "pvc" | "configMap" | "secret"
 			if type == "pvc" {
 				claimName: string
 			}

@@ -22,15 +22,16 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/kubevela/workflow/pkg/cue/packages"
+
 	oamCore "github.com/oam-dev/kubevela/apis/core.oam.dev"
-	"github.com/oam-dev/kubevela/pkg/cue/packages"
 )
 
 var cfg *rest.Config
@@ -43,7 +44,7 @@ func TestCapability(t *testing.T) {
 	RunSpecs(t, "Capability Suite")
 }
 
-var _ = BeforeSuite(func(done Done) {
+var _ = BeforeSuite(func() {
 	By("Bootstrapping test environment")
 	useExistCluster := false
 	testEnv = &envtest.Environment{
@@ -69,9 +70,7 @@ var _ = BeforeSuite(func(done Done) {
 
 	pd, err = packages.NewPackageDiscover(cfg)
 	Expect(err).ToNot(HaveOccurred())
-
-	close(done)
-}, 60)
+})
 
 var _ = AfterSuite(func() {
 	By("Tearing down the test environment")

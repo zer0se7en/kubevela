@@ -4,9 +4,13 @@ import (
 
 "deploy-cloud-resource": {
 	type: "workflow-step"
-	annotations: {}
-	labels: {}
-	description: "Deploy cloud resource and bind secret to clusters"
+	annotations: {
+		"category": "Application Delivery"
+	}
+	labels: {
+		"scope": "Application"
+	}
+	description: "Deploy cloud resource and deliver secret to multi clusters."
 }
 template: {
 	app: op.#DeployCloudResource & {

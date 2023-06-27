@@ -18,40 +18,77 @@ package policy
 
 import (
 	"encoding/json"
+	"fmt"
 
-	"github.com/pkg/errors"
+	"github.com/kubevela/pkg/util/slices"
+	"k8s.io/apimachinery/pkg/runtime"
 
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 )
 
-// parsePolicy parse policy for application
-func parsePolicy(app *v1beta1.Application, policyType string, policySpec interface{}) (exists bool, err error) {
-	for _, policy := range app.Spec.Policies {
-		if policy.Type == policyType && policy.Properties != nil && policy.Properties.Raw != nil {
-			if err := json.Unmarshal(policy.Properties.Raw, policySpec); err != nil {
-				return true, errors.Wrapf(err, "invalid %s policy: %s", policy.Type, policy.Name)
-			}
-			return true, nil
+type typer[T any] interface {
+	*T
+	Type() string
+}
+
+// ParsePolicy parse policy for the given type
+func ParsePolicy[T any, P typer[T]](app *v1beta1.Application) (*T, error) {
+	base := new(T)
+	policies := slices.Filter(app.Spec.Policies, func(policy v1beta1.AppPolicy) bool {
+		return policy.Type == P(base).Type() && policy.Properties != nil && policy.Properties.Raw != nil
+	})
+	if len(policies) == 0 {
+		return nil, nil
+	}
+	props := slices.Map(policies, func(policy v1beta1.AppPolicy) *runtime.RawExtension { return policy.Properties })
+	arr := make([]map[string]interface{}, len(props))
+	if err := convertType(props, &arr); err != nil {
+		return nil, err
+	}
+	obj := slices.Reduce(arr[1:], mergePolicies, arr[0])
+	if err := convertType(obj, base); err != nil {
+		return nil, err
+	}
+	return base, nil
+}
+
+// mergePolicies merge two policy spec in place
+// 1. for array, concat them
+// 2. for bool, return if any of them is true
+// 3. otherwise, return base value
+func mergePolicies(base, patch map[string]interface{}) map[string]interface{} {
+	for k, v := range patch {
+		old, found := base[k]
+		if !found {
+			base[k] = v
+			continue
+		}
+		arr1, ok1 := old.([]interface{})
+		arr2, ok2 := v.([]interface{})
+		if ok1 && ok2 {
+			base[k] = append(arr1, arr2...)
+			continue
+		}
+		m1, ok1 := old.(map[string]interface{})
+		m2, ok2 := v.(map[string]interface{})
+		if ok1 && ok2 {
+			base[k] = mergePolicies(m1, m2)
+			continue
+		}
+		if old == false && v == true {
+			base[k] = true
 		}
 	}
-	return false, nil
+	return base
 }
 
-// ParseGarbageCollectPolicy parse garbage-collect policy
-func ParseGarbageCollectPolicy(app *v1beta1.Application) (*v1alpha1.GarbageCollectPolicySpec, error) {
-	spec := &v1alpha1.GarbageCollectPolicySpec{}
-	if exists, err := parsePolicy(app, v1alpha1.GarbageCollectPolicyType, spec); exists {
-		return spec, err
+func convertType(src, dest interface{}) error {
+	bs, err := json.Marshal(src)
+	if err != nil {
+		return fmt.Errorf("failed to marshal %T: %w", src, err)
 	}
-	return nil, nil
-}
-
-// ParseApplyOncePolicy parse apply-once policy
-func ParseApplyOncePolicy(app *v1beta1.Application) (*v1alpha1.ApplyOncePolicySpec, error) {
-	spec := &v1alpha1.ApplyOncePolicySpec{}
-	if exists, err := parsePolicy(app, v1alpha1.ApplyOncePolicyType, spec); exists {
-		return spec, err
+	if err = json.Unmarshal(bs, dest); err != nil {
+		return fmt.Errorf("failed to unmarshal %T: %w", dest, err)
 	}
-	return nil, nil
+	return nil
 }

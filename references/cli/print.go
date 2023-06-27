@@ -35,8 +35,10 @@ var (
 
 // emoji used in vela cmd for printing
 var (
-	emojiSucceed = emoji.Sprint(":check_mark_button:")
-	emojiFail    = emoji.Sprint(":cross_mark:")
+	emojiSucceed   = emoji.Sprint(":check_mark_button:")
+	emojiFail      = emoji.Sprint(":cross_mark:")
+	emojiExecuting = emoji.Sprint(":hourglass:")
+	emojiSkip      = emoji.Sprint(":no_entry:")
 )
 
 // newUITable creates a new table with fixed MaxColWidth
@@ -48,11 +50,11 @@ func newUITable() *uitable.Table {
 }
 
 func newTrackingSpinnerWithDelay(suffix string, interval time.Duration) *spinner.Spinner {
-	suffixColor := color.New(color.Bold, color.FgGreen)
+	suffixColor := color.New(color.Bold, color.FgWhite)
 	return spinner.New(
 		spinner.CharSets[14],
 		interval,
-		spinner.WithColor("green"),
+		spinner.WithColor("white"),
 		spinner.WithHiddenCursor(true),
 		spinner.WithSuffix(suffixColor.Sprintf(" %s", suffix)))
 }

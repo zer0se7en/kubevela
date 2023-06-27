@@ -18,7 +18,8 @@ package envbinding
 
 import (
 	"encoding/json"
-	"fmt"
+	"regexp"
+	"strings"
 
 	"github.com/imdario/mergo"
 	"github.com/pkg/errors"
@@ -28,6 +29,7 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
+	"github.com/oam-dev/kubevela/pkg/policy/utils"
 	errors2 "github.com/oam-dev/kubevela/pkg/utils/errors"
 )
 
@@ -113,31 +115,28 @@ func MergeComponent(base *common.ApplicationComponent, patch *v1alpha1.EnvCompon
 	return newComponent, nil
 }
 
-func filterComponents(components []string, selector *v1alpha1.EnvSelector) []string {
-	if selector != nil {
-		filter := map[string]bool{}
-		for _, compName := range selector.Components {
-			filter[compName] = true
-		}
-		var _comps []string
-		for _, compName := range components {
-			if _, ok := filter[compName]; ok {
-				_comps = append(_comps, compName)
-			}
-		}
-		return _comps
-	}
-	return components
-}
-
 // PatchApplication patch base application with patch and selector
 func PatchApplication(base *v1beta1.Application, patch *v1alpha1.EnvPatch, selector *v1alpha1.EnvSelector) (*v1beta1.Application, error) {
 	newApp := base.DeepCopy()
+	var err error
+	var compSelector []string
+	if selector != nil {
+		compSelector = selector.Components
+	}
+	var compPatch []v1alpha1.EnvComponentPatch
+	if patch != nil {
+		compPatch = patch.Components
+	}
+	newApp.Spec.Components, err = PatchComponents(base.Spec.Components, compPatch, compSelector)
+	return newApp, err
+}
 
+// PatchComponents patch base components with patch and selector
+func PatchComponents(baseComponents []common.ApplicationComponent, patchComponents []v1alpha1.EnvComponentPatch, selector []string) ([]common.ApplicationComponent, error) {
 	// init components
 	compMaps := map[string]*common.ApplicationComponent{}
 	var compOrders []string
-	for _, comp := range base.Spec.Components {
+	for _, comp := range baseComponents {
 		compMaps[comp.Name] = comp.DeepCopy()
 		compOrders = append(compOrders, comp.Name)
 	}
@@ -145,8 +144,11 @@ func PatchApplication(base *v1beta1.Application, patch *v1alpha1.EnvPatch, selec
 	// patch components
 	var errs errors2.ErrorList
 	var err error
-	for _, comp := range patch.Components {
+	for _, comp := range patchComponents {
 		if comp.Name == "" {
+			// when no component name specified in the patch
+			// 1. if no type name specified in the patch, it will merge all components
+			// 2. if type name specified, it will merge components with the specified type
 			for compName, baseComp := range compMaps {
 				if comp.Type == "" || comp.Type == baseComp.Type {
 					compMaps[compName], err = MergeComponent(baseComp, comp.DeepCopy())
@@ -155,47 +157,45 @@ func PatchApplication(base *v1beta1.Application, patch *v1alpha1.EnvPatch, selec
 					}
 				}
 			}
-		} else if baseComp, exists := compMaps[comp.Name]; exists {
-			if baseComp.Type != comp.Type && comp.Type != "" {
-				compMaps[comp.Name] = comp.ToApplicationComponent()
-			} else {
-				compMaps[comp.Name], err = MergeComponent(baseComp, comp.DeepCopy())
-				if err != nil {
-					errs = append(errs, errors.Wrapf(err, "failed to merge component %s", comp.Name))
+		} else {
+			// when component name (pattern) specified in the patch, it will find the component with the matched name
+			// 1. if the component type is not specified in the patch, the matched component will be merged with the patch
+			// 2. if the matched component uses the same type, the matched component will be merged with the patch
+			// 3. if the matched component uses a different type, the matched component will be overridden by the patch
+			// 4. if no component matches, and the component name is a valid kubernetes name, a new component will be added
+			addComponent := regexp.MustCompile("[a-z]([a-z-]{0,61}[a-z])?").MatchString(comp.Name)
+			if re, err := regexp.Compile(strings.ReplaceAll(comp.Name, "*", ".*")); err == nil {
+				for compName, baseComp := range compMaps {
+					if re.MatchString(compName) {
+						addComponent = false
+						if baseComp.Type != comp.Type && comp.Type != "" {
+							compMaps[compName] = comp.ToApplicationComponent()
+						} else {
+							compMaps[compName], err = MergeComponent(baseComp, comp.DeepCopy())
+							if err != nil {
+								errs = append(errs, errors.Wrapf(err, "failed to merge component %s", comp.Name))
+							}
+						}
+					}
 				}
 			}
-		} else {
-			compMaps[comp.Name] = comp.ToApplicationComponent()
-			compOrders = append(compOrders, comp.Name)
+			if addComponent {
+				compMaps[comp.Name] = comp.ToApplicationComponent()
+				compOrders = append(compOrders, comp.Name)
+			}
 		}
 	}
 	if errs.HasError() {
 		return nil, errors.Wrapf(err, "failed to merge application components")
 	}
-	newApp.Spec.Components = []common.ApplicationComponent{}
 
 	// if selector is enabled, filter
-	compOrders = filterComponents(compOrders, selector)
+	compOrders = utils.FilterComponents(compOrders, selector)
 
 	// fill in new application
+	newComponents := []common.ApplicationComponent{}
 	for _, compName := range compOrders {
-		newApp.Spec.Components = append(newApp.Spec.Components, *compMaps[compName])
+		newComponents = append(newComponents, *compMaps[compName])
 	}
-	return newApp, nil
-}
-
-// PatchApplicationByEnvBindingEnv get patched application directly through policyName and envName
-func PatchApplicationByEnvBindingEnv(app *v1beta1.Application, policyName string, envName string) (*v1beta1.Application, error) {
-	policy, err := GetEnvBindingPolicy(app, policyName)
-	if err != nil {
-		return nil, err
-	}
-	if policy != nil {
-		for _, env := range policy.Envs {
-			if env.Name == envName {
-				return PatchApplication(app, &env.Patch, env.Selector)
-			}
-		}
-	}
-	return nil, fmt.Errorf("target env %s in policy %s not found", envName, policyName)
+	return newComponents, nil
 }

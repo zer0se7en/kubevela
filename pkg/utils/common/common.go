@@ -19,29 +19,28 @@ package common
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 
 	"cuelang.org/go/cue"
-	"cuelang.org/go/cue/ast"
-	"cuelang.org/go/cue/build"
-	"cuelang.org/go/cue/format"
+	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/encoding/openapi"
 	"github.com/AlecAivazis/survey/v2"
 	"github.com/hashicorp/hcl/v2/hclparse"
-	clustergatewayapi "github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
 	"github.com/oam-dev/terraform-config-inspect/tfconfig"
-	terraformv1beta1 "github.com/oam-dev/terraform-controller/api/v1beta1"
 	kruise "github.com/openkruise/kruise-api/apps/v1alpha1"
-	errors2 "github.com/pkg/errors"
-	certmanager "github.com/wonderflow/cert-manager-api/pkg/apis/certmanager/v1"
-	istioclientv1beta1 "istio.io/client-go/pkg/apis/networking/v1beta1"
+	kruisev1alpha1 "github.com/openkruise/rollouts/api/v1alpha1"
+	yamlv3 "gopkg.in/yaml.v3"
 	v1 "k8s.io/api/core/v1"
 	crdv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -49,34 +48,31 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
+	metricsV1beta1api "k8s.io/metrics/pkg/apis/metrics/v1beta1"
 	ocmclusterv1 "open-cluster-management.io/api/cluster/v1"
 	ocmclusterv1alpha1 "open-cluster-management.io/api/cluster/v1alpha1"
 	ocmworkv1 "open-cluster-management.io/api/work/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
+	gatewayv1beta1 "sigs.k8s.io/gateway-api/apis/v1beta1"
 	"sigs.k8s.io/yaml"
 
+	"github.com/kubevela/workflow/pkg/cue/model/value"
+	"github.com/kubevela/workflow/pkg/cue/packages"
+	clustergatewayapi "github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
+	terraformapiv1 "github.com/oam-dev/terraform-controller/api/v1beta1"
+	terraformapi "github.com/oam-dev/terraform-controller/api/v1beta2"
+
 	oamcore "github.com/oam-dev/kubevela/apis/core.oam.dev"
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
-	oamstandard "github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/types"
 	velacue "github.com/oam-dev/kubevela/pkg/cue"
-	"github.com/oam-dev/kubevela/pkg/cue/model"
-	"github.com/oam-dev/kubevela/pkg/cue/packages"
+	"github.com/oam-dev/kubevela/pkg/cue/process"
 	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 var (
 	// Scheme defines the default KubeVela schema
 	Scheme = k8sruntime.NewScheme()
-)
-
-const (
-	// AddonObservabilityApplication is the application name for Addon Observability
-	AddonObservabilityApplication = "addon-observability"
-	// AddonObservabilityGrafanaSvc is grafana service name for Addon Observability
-	AddonObservabilityGrafanaSvc = "grafana"
 )
 
 // CreateCustomNamespace display the create namespace message
@@ -87,16 +83,27 @@ func init() {
 	_ = apiregistrationv1.AddToScheme(Scheme)
 	_ = crdv1.AddToScheme(Scheme)
 	_ = oamcore.AddToScheme(Scheme)
-	_ = oamstandard.AddToScheme(Scheme)
-	_ = istioclientv1beta1.AddToScheme(Scheme)
-	_ = certmanager.AddToScheme(Scheme)
 	_ = kruise.AddToScheme(Scheme)
-	_ = terraformv1beta1.AddToScheme(Scheme)
+	_ = terraformapi.AddToScheme(Scheme)
+	_ = terraformapiv1.AddToScheme(Scheme)
 	_ = ocmclusterv1alpha1.Install(Scheme)
 	_ = ocmclusterv1.Install(Scheme)
 	_ = ocmworkv1.Install(Scheme)
 	_ = clustergatewayapi.AddToScheme(Scheme)
+	_ = metricsV1beta1api.AddToScheme(Scheme)
+	_ = kruisev1alpha1.AddToScheme(Scheme)
+	_ = gatewayv1beta1.AddToScheme(Scheme)
 	// +kubebuilder:scaffold:scheme
+}
+
+// HTTPOption define the https options
+type HTTPOption struct {
+	Username        string `json:"username,omitempty"`
+	Password        string `json:"password,omitempty"`
+	CaFile          string `json:"caFile,omitempty"`
+	CertFile        string `json:"certFile,omitempty"`
+	KeyFile         string `json:"keyFile,omitempty"`
+	InsecureSkipTLS bool   `json:"insecureSkipTLS,omitempty"`
 }
 
 // InitBaseRestConfig will return reset config for create controller runtime client
@@ -114,31 +121,52 @@ func InitBaseRestConfig() (Args, error) {
 	return args, nil
 }
 
-// globalClient will be a client for whole command lifecycle
-var globalClient client.Client
-
-// SetGlobalClient will set a client for one cli command
-func SetGlobalClient(clt client.Client) error {
-	globalClient = clt
-	return nil
-}
-
-// GetClient will K8s client in args
-func GetClient() (client.Client, error) {
-	if globalClient != nil {
-		return globalClient, nil
-	}
-	return nil, errors.New("client not set, call SetGlobalClient first")
-}
-
-// HTTPGet will send GET http request with context
-func HTTPGet(ctx context.Context, url string) ([]byte, error) {
+// HTTPGetResponse use HTTP option and default client to send request and get raw response
+func HTTPGetResponse(ctx context.Context, url string, opts *HTTPOption) (*http.Response, error) {
 	// Change NewRequest to NewRequestWithContext and pass context it
+	if _, err := neturl.ParseRequestURI(url); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	httpClient := &http.Client{}
+	if opts != nil && len(opts.Username) != 0 && len(opts.Password) != 0 {
+		req.SetBasicAuth(opts.Username, opts.Password)
+	}
+	if opts != nil && opts.InsecureSkipTLS {
+		httpClient.Transport = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}} // nolint
+	}
+	// if specify the caFile, we cannot re-use the default httpClient, so create a new one.
+	if opts != nil && (len(opts.CaFile) != 0 || len(opts.KeyFile) != 0 || len(opts.CertFile) != 0) {
+		// must set MinVersion of TLS, otherwise will report GoSec error G402
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		tr := http.Transport{}
+		if len(opts.CaFile) != 0 {
+			c := x509.NewCertPool()
+			if !(c.AppendCertsFromPEM([]byte(opts.CaFile))) {
+				return nil, fmt.Errorf("failed to append certificates")
+			}
+			tlsConfig.RootCAs = c
+		}
+		if len(opts.CertFile) != 0 && len(opts.KeyFile) != 0 {
+			cert, err := tls.X509KeyPair([]byte(opts.CertFile), []byte(opts.KeyFile))
+			if err != nil {
+				return nil, err
+			}
+			tlsConfig.Certificates = append(tlsConfig.Certificates, cert)
+		}
+		tr.TLSClientConfig = tlsConfig
+		defer tr.CloseIdleConnections()
+		httpClient.Transport = &tr
+	}
+	return httpClient.Do(req)
+}
+
+// HTTPGetWithOption use HTTP option and default client to send get request
+func HTTPGetWithOption(ctx context.Context, url string, opts *HTTPOption) ([]byte, error) {
+	resp, err := HTTPGetResponse(ctx, url, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -147,61 +175,61 @@ func HTTPGet(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// GetCUEParameterValue converts definitions to cue format
-func GetCUEParameterValue(cueStr string, pd *packages.PackageDiscover) (cue.Value, error) {
-	var template *cue.Instance
-	var err error
-	if pd != nil {
-		bi := build.NewContext().NewInstance("", nil)
-		err := bi.AddFile("-", cueStr+velacue.BaseTemplate)
-		if err != nil {
-			return cue.Value{}, err
-		}
-
-		template, err = pd.ImportPackagesAndBuildInstance(bi)
-		if err != nil {
-			return cue.Value{}, err
-		}
-	} else {
-		r := cue.Runtime{}
-		template, err = r.Compile("", cueStr+velacue.BaseTemplate)
-		if err != nil {
-			return cue.Value{}, err
-		}
-	}
-	tempStruct, err := template.Value().Struct()
-	if err != nil {
-		return cue.Value{}, err
-	}
-	// find the parameter definition
-	var paraDef cue.FieldInfo
-	var found bool
-	for i := 0; i < tempStruct.Len(); i++ {
-		paraDef = tempStruct.Field(i)
-		if paraDef.Name == model.ParameterFieldName {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return cue.Value{}, errors.New("parameter not exist")
-	}
-	arguments := paraDef.Value
-
-	return arguments, nil
-}
-
-// GenOpenAPI generates OpenAPI json schema from cue.Instance
-func GenOpenAPI(inst *cue.Instance) ([]byte, error) {
-	if inst.Err != nil {
-		return nil, inst.Err
-	}
-	paramOnlyIns, err := RefineParameterInstance(inst)
+// HTTPGetKubernetesObjects use HTTP requests to load resources from remote url
+func HTTPGetKubernetesObjects(ctx context.Context, url string) ([]*unstructured.Unstructured, error) {
+	resp, err := HTTPGetResponse(ctx, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	defaultConfig := &openapi.Config{}
-	b, err := openapi.Gen(paramOnlyIns, defaultConfig)
+	//nolint:errcheck
+	defer resp.Body.Close()
+	decoder := yamlv3.NewDecoder(resp.Body)
+	var uns []*unstructured.Unstructured
+	for {
+		obj := &unstructured.Unstructured{Object: map[string]interface{}{}}
+		if err := decoder.Decode(obj.Object); err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return nil, fmt.Errorf("failed to decode object: %w", err)
+		}
+		uns = append(uns, obj)
+	}
+	return uns, nil
+}
+
+// GetCUEParameterValue converts definitions to cue format
+func GetCUEParameterValue(cueStr string, pd *packages.PackageDiscover) (cue.Value, error) {
+	template, err := value.NewValue(cueStr+velacue.BaseTemplate, pd, "")
+	if err != nil {
+		return cue.Value{}, err
+	}
+	val, err := template.LookupValue(process.ParameterFieldName)
+	if err != nil || !val.CueValue().Exists() {
+		return cue.Value{}, velacue.ErrParameterNotExist
+	}
+
+	return val.CueValue(), nil
+}
+
+// GenOpenAPI generates OpenAPI json schema from cue.Instance
+func GenOpenAPI(val *value.Value) (b []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("invalid cue definition to generate open api: %v", r)
+			debug.PrintStack()
+			return
+		}
+	}()
+	if val.CueValue().Err() != nil {
+		return nil, val.CueValue().Err()
+	}
+	paramOnlyVal, err := RefineParameterValue(val)
+	if err != nil {
+		return nil, err
+	}
+	defaultConfig := &openapi.Config{ExpandReferences: true}
+	b, err = openapi.Gen(paramOnlyVal, defaultConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -210,44 +238,63 @@ func GenOpenAPI(inst *cue.Instance) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// extractParameterDefinitionNodeFromInstance extracts the `#parameter` ast.Node from root instance, if failed fall back to `parameter` by LookUpDef
-func extractParameterDefinitionNodeFromInstance(inst *cue.Instance) ast.Node {
-	opts := []cue.Option{cue.All(), cue.DisallowCycles(true), cue.ResolveReferences(true), cue.Docs(true)}
-	node := inst.Value().Syntax(opts...)
-	if fileNode, ok := node.(*ast.File); ok {
-		for _, decl := range fileNode.Decls {
-			if field, ok := decl.(*ast.Field); ok {
-				if label, ok := field.Label.(*ast.Ident); ok && label.Name == "#"+model.ParameterFieldName {
-					return decl.(*ast.Field).Value
-				}
-			}
+// GenOpenAPIWithCueX generates OpenAPI json schema from cue.Instance
+func GenOpenAPIWithCueX(val cue.Value) (b []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("invalid cue definition to generate open api: %v", r)
+			debug.PrintStack()
+			return
 		}
+	}()
+	if val.Err() != nil {
+		return nil, val.Err()
 	}
-	paramVal := inst.LookupDef(model.ParameterFieldName)
-	return paramVal.Syntax(opts...)
-}
-
-// RefineParameterInstance refines cue instance to merely include `parameter` identifier
-func RefineParameterInstance(inst *cue.Instance) (*cue.Instance, error) {
-	r := cue.Runtime{}
-	paramVal := inst.LookupDef(model.ParameterFieldName)
-	var paramOnlyStr string
-	switch k := paramVal.IncompleteKind(); k {
-	case cue.StructKind, cue.ListKind:
-		paramSyntax, _ := format.Node(extractParameterDefinitionNodeFromInstance(inst))
-		paramOnlyStr = fmt.Sprintf("#%s: %s\n", model.ParameterFieldName, string(paramSyntax))
-	case cue.IntKind, cue.StringKind, cue.FloatKind, cue.BoolKind:
-		paramOnlyStr = fmt.Sprintf("#%s: %v", model.ParameterFieldName, paramVal)
-	case cue.BottomKind:
-		paramOnlyStr = fmt.Sprintf("#%s: {}", model.ParameterFieldName)
-	default:
-		return nil, fmt.Errorf("unsupport parameter kind: %s", k.String())
-	}
-	paramOnlyIns, err := r.Compile("-", paramOnlyStr)
+	paramOnlyVal := FillParameterDefinitionFieldIfNotExist(val)
+	defaultConfig := &openapi.Config{ExpandReferences: true}
+	b, err = openapi.Gen(paramOnlyVal, defaultConfig)
 	if err != nil {
 		return nil, err
 	}
-	return paramOnlyIns, nil
+	var out = &bytes.Buffer{}
+	_ = json.Indent(out, b, "", "   ")
+	return out.Bytes(), nil
+}
+
+// RefineParameterValue refines cue value to merely include `parameter` identifier
+func RefineParameterValue(val *value.Value) (cue.Value, error) {
+	defaultValue := cuecontext.New().CompileString("#parameter: {}")
+	parameterPath := cue.MakePath(cue.Def(process.ParameterFieldName))
+	v, err := val.MakeValue("{}")
+	if err != nil {
+		return defaultValue, err
+	}
+	paramVal, err := val.LookupValue(process.ParameterFieldName)
+	if err != nil {
+		// nolint:nilerr
+		return defaultValue, nil
+	}
+	switch k := paramVal.CueValue().IncompleteKind(); k {
+	case cue.BottomKind:
+		return defaultValue, nil
+	default:
+		paramOnlyVal := v.CueValue().FillPath(parameterPath, paramVal.CueValue())
+		return paramOnlyVal, nil
+	}
+}
+
+// FillParameterDefinitionFieldIfNotExist refines cue value to merely include `parameter` identifier
+func FillParameterDefinitionFieldIfNotExist(val cue.Value) cue.Value {
+	defaultValue := cuecontext.New().CompileString("#parameter: {}")
+	defPath := cue.ParsePath("#" + process.ParameterFieldName)
+	if paramVal := val.LookupPath(cue.ParsePath(process.ParameterFieldName)); paramVal.Exists() {
+		if paramVal.IncompleteKind() == cue.BottomKind {
+			return defaultValue
+		}
+		paramOnlyVal := val.Context().CompileString("{}").FillPath(defPath, paramVal)
+		return paramOnlyVal
+	}
+	return defaultValue
 }
 
 // RealtimePrintCommandOutput prints command output in real time
@@ -272,96 +319,6 @@ func RealtimePrintCommandOutput(cmd *exec.Cmd, logFile string) error {
 		return err
 	}
 	return nil
-}
-
-// ClusterObject2Map convert ClusterObjectReference to a readable map
-func ClusterObject2Map(refs []common.ClusterObjectReference) map[string]string {
-	clusterResourceRefTmpl := "Cluster: %s | Namespace: %s | Component: %s | Kind: %s"
-	objs := make(map[string]string, len(refs))
-	for _, r := range refs {
-		if r.Cluster == "" {
-			r.Cluster = "local"
-		}
-		objs[r.Cluster+"/"+r.Namespace+"/"+r.Name+"/"+r.Kind] = fmt.Sprintf(clusterResourceRefTmpl, r.Cluster, r.Namespace, r.Name, r.Kind)
-	}
-	return objs
-}
-
-// ResourceLocation indicates the resource location
-type ResourceLocation struct {
-	Cluster   string
-	Namespace string
-}
-
-type clusterObjectReferenceFilter func(common.ClusterObjectReference) bool
-
-func clusterObjectReferenceTypeFilterGenerator(allowedKinds ...string) clusterObjectReferenceFilter {
-	allowedKindMap := map[string]bool{}
-	for _, allowedKind := range allowedKinds {
-		allowedKindMap[allowedKind] = true
-	}
-	return func(item common.ClusterObjectReference) bool {
-		_, exists := allowedKindMap[item.Kind]
-		return exists
-	}
-}
-
-var isWorkloadClusterObjectReferenceFilter = clusterObjectReferenceTypeFilterGenerator("Deployment", "StatefulSet", "CloneSet", "Job", "Configuration")
-var isPortForwardEndpointClusterObjectReferenceFilter = clusterObjectReferenceTypeFilterGenerator("Deployment",
-	"StatefulSet", "CloneSet", "Job", "Service", "HelmRelease")
-
-func filterResource(inputs []common.ClusterObjectReference, filters ...clusterObjectReferenceFilter) (outputs []common.ClusterObjectReference) {
-	for _, item := range inputs {
-		flag := true
-		for _, filter := range filters {
-			if !filter(item) {
-				flag = false
-				break
-			}
-		}
-		if flag {
-			outputs = append(outputs, item)
-		}
-	}
-	return
-}
-
-func askToChooseOneResource(app *v1beta1.Application, filters ...clusterObjectReferenceFilter) (*common.ClusterObjectReference, error) {
-	resources := app.Status.AppliedResources
-	if len(resources) == 0 {
-		return nil, fmt.Errorf("no resources in the application deployed yet")
-	}
-	resources = filterResource(resources, filters...)
-	if app.Name == AddonObservabilityApplication {
-		resources = filterClusterObjectRefFromAddonObservability(resources)
-	}
-	// filter locations
-	if len(resources) == 0 {
-		return nil, fmt.Errorf("no supported resources detected in deployed resources")
-	}
-	if len(resources) == 1 {
-		return &resources[0], nil
-	}
-	opMap := ClusterObject2Map(resources)
-	var ops []string
-	for _, r := range opMap {
-		ops = append(ops, r)
-	}
-	prompt := &survey.Select{
-		Message: fmt.Sprintf("You have %d deployed resources in your app. Please choose one:", len(ops)),
-		Options: ops,
-	}
-	var selectedRsc string
-	err := survey.AskOne(prompt, &selectedRsc)
-	if err != nil {
-		return nil, fmt.Errorf("choosing resource err %w", err)
-	}
-	for k, resource := range ops {
-		if selectedRsc == resource {
-			return &resources[k], nil
-		}
-	}
-	return nil, fmt.Errorf("choosing resource err %w", err)
 }
 
 // AskToChooseOneNamespace ask for choose one namespace as env
@@ -398,58 +355,6 @@ func AskToChooseOneNamespace(c client.Client, envMeta *types.EnvMeta) error {
 		}
 	}
 	return nil
-}
-
-func filterClusterObjectRefFromAddonObservability(resources []common.ClusterObjectReference) []common.ClusterObjectReference {
-	var observabilityResources []common.ClusterObjectReference
-	for _, res := range resources {
-		if res.Namespace == types.DefaultKubeVelaNS && res.Name == AddonObservabilityGrafanaSvc {
-			res.Kind = "Service"
-			res.APIVersion = "v1"
-			observabilityResources = append(observabilityResources, res)
-		}
-	}
-	resources = observabilityResources
-	return resources
-}
-
-// AskToChooseOneEnvResource will ask users to select one applied resource of the application if more than one
-// resource is a map for component to applied resources
-// return the selected ClusterObjectReference
-func AskToChooseOneEnvResource(app *v1beta1.Application) (*common.ClusterObjectReference, error) {
-	return askToChooseOneResource(app, isWorkloadClusterObjectReferenceFilter)
-}
-
-// AskToChooseOnePortForwardEndpoint will ask user to select one applied resource as port forward endpoint
-func AskToChooseOnePortForwardEndpoint(app *v1beta1.Application) (*common.ClusterObjectReference, error) {
-	return askToChooseOneResource(app, isPortForwardEndpointClusterObjectReferenceFilter)
-}
-
-func askToChooseOneInApplication(category string, options []string) (decision string, err error) {
-	if len(options) == 0 {
-		return "", fmt.Errorf("no %s exists in the application", category)
-	}
-	if len(options) == 1 {
-		return options[0], nil
-	}
-	prompt := &survey.Select{
-		Message: fmt.Sprintf("You have multiple %ss in your app. Please choose one %s: ", category, category),
-		Options: options,
-	}
-	if err = survey.AskOne(prompt, &decision); err != nil {
-		return "", errors2.Wrapf(err, "choosing %s failed", category)
-	}
-	return
-}
-
-// AskToChooseOneService will ask users to select one service of the application if more than one
-func AskToChooseOneService(svcNames []string) (string, error) {
-	return askToChooseOneInApplication("service", svcNames)
-}
-
-// AskToChooseOnePods will ask users to select one pods of the resource if more than one
-func AskToChooseOnePods(podNames []string) (string, error) {
-	return askToChooseOneInApplication("pod", podNames)
 }
 
 // ReadYamlToObject will read a yaml K8s object to runtime.Object

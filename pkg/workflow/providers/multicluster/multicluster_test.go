@@ -21,109 +21,24 @@ import (
 	"encoding/json"
 	"testing"
 
-	v1alpha12 "github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
 	"github.com/stretchr/testify/require"
-	v1 "k8s.io/api/core/v1"
-	v12 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	common2 "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
+	"github.com/kubevela/workflow/pkg/cue/model/value"
+	"github.com/kubevela/workflow/pkg/mock"
+	clusterv1alpha1 "github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
+	clustercommon "github.com/oam-dev/cluster-gateway/pkg/common"
+
+	apicommon "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/cue/model/value"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
-	"github.com/oam-dev/kubevela/pkg/workflow/providers/mock"
 )
-
-func TestReadPlacementDecisions(t *testing.T) {
-	testCases := []struct {
-		InputVal             map[string]interface{}
-		OldCluster           string
-		OldNamespace         string
-		ExpectError          string
-		ExpectDecisionExists bool
-		ExpectCluster        string
-		ExpectNamespace      string
-	}{{
-		InputVal:    map[string]interface{}{},
-		ExpectError: "var(path=inputs.policyName) not exist",
-	}, {
-		InputVal: map[string]interface{}{
-			"policyName": "example-policy",
-		},
-		ExpectError: "var(path=inputs.envName) not exist",
-	}, {
-		InputVal: map[string]interface{}{
-			"policyName": "example-policy",
-			"envName":    "example-env",
-		},
-		ExpectError:          "",
-		ExpectDecisionExists: false,
-	}, {
-		InputVal: map[string]interface{}{
-			"policyName": "example-policy",
-			"envName":    "example-env",
-		},
-		OldCluster:           "example-cluster",
-		OldNamespace:         "example-namespace",
-		ExpectError:          "",
-		ExpectDecisionExists: true,
-		ExpectCluster:        "example-cluster",
-		ExpectNamespace:      "example-namespace",
-	}}
-	r := require.New(t)
-	for _, testCase := range testCases {
-		cli := fake.NewClientBuilder().WithScheme(common.Scheme).Build()
-		app := &v1beta1.Application{}
-		p := &provider{
-			Client: cli,
-			app:    app,
-		}
-		act := &mock.Action{}
-		v, err := value.NewValue("", nil, "")
-		r.NoError(err)
-		r.NoError(v.FillObject(testCase.InputVal, "inputs"))
-		if testCase.ExpectCluster != "" || testCase.ExpectNamespace != "" {
-			pd := v1alpha1.PlacementDecision{
-				Cluster:   testCase.OldCluster,
-				Namespace: testCase.OldNamespace,
-			}
-			bs, err := json.Marshal(&v1alpha1.EnvBindingStatus{
-				Envs: []v1alpha1.EnvStatus{{
-					Env:        "example-env",
-					Placements: []v1alpha1.PlacementDecision{pd},
-				}},
-			})
-			r.NoError(err)
-			app.Status.PolicyStatus = []common2.PolicyStatus{{
-				Name:   "example-policy",
-				Type:   v1alpha1.EnvBindingPolicyType,
-				Status: &runtime.RawExtension{Raw: bs},
-			}}
-		}
-		err = p.ReadPlacementDecisions(nil, v, act)
-		if testCase.ExpectError == "" {
-			r.NoError(err)
-		} else {
-			r.Contains(err.Error(), testCase.ExpectError)
-			continue
-		}
-		outputs, err := v.LookupValue("outputs")
-		r.NoError(err)
-		md := map[string][]v1alpha1.PlacementDecision{}
-		r.NoError(outputs.UnmarshalTo(&md))
-		if !testCase.ExpectDecisionExists {
-			r.Equal(0, len(md))
-		} else {
-			r.Equal(1, len(md["decisions"]))
-			r.Equal(testCase.ExpectCluster, md["decisions"][0].Cluster)
-			r.Equal(testCase.ExpectNamespace, md["decisions"][0].Namespace)
-		}
-	}
-}
 
 func TestMakePlacementDecisions(t *testing.T) {
 	multicluster.ClusterGatewaySecretNamespace = types.DefaultKubeVelaNS
@@ -269,11 +184,11 @@ func TestMakePlacementDecisions(t *testing.T) {
 		r.NoError(err)
 		r.NoError(v.FillObject(testCase.InputVal, "inputs"))
 		if testCase.PreAddCluster != "" {
-			r.NoError(cli.Create(context.Background(), &v1.Secret{
-				ObjectMeta: v12.ObjectMeta{
+			r.NoError(cli.Create(context.Background(), &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
 					Namespace: multicluster.ClusterGatewaySecretNamespace,
 					Name:      testCase.PreAddCluster,
-					Labels:    map[string]string{v1alpha12.LabelKeyClusterCredentialType: string(v1alpha12.CredentialTypeX509Certificate)},
+					Labels:    map[string]string{clustercommon.LabelKeyClusterCredentialType: string(clusterv1alpha1.CredentialTypeX509Certificate)},
 				},
 			}))
 		}
@@ -289,13 +204,13 @@ func TestMakePlacementDecisions(t *testing.T) {
 				}},
 			})
 			r.NoError(err)
-			app.Status.PolicyStatus = []common2.PolicyStatus{{
+			app.Status.PolicyStatus = []apicommon.PolicyStatus{{
 				Name:   "example-policy",
 				Type:   v1alpha1.EnvBindingPolicyType,
 				Status: &runtime.RawExtension{Raw: bs},
 			}}
 		}
-		err = p.MakePlacementDecisions(nil, v, act)
+		err = p.MakePlacementDecisions(nil, nil, v, act)
 		if testCase.ExpectError == "" {
 			r.NoError(err)
 		} else {
@@ -324,7 +239,7 @@ func TestMakePlacementDecisions(t *testing.T) {
 
 func TestPatchApplication(t *testing.T) {
 	baseApp := &v1beta1.Application{Spec: v1beta1.ApplicationSpec{
-		Components: []common2.ApplicationComponent{{
+		Components: []apicommon.ApplicationComponent{{
 			Name:       "comp-1",
 			Type:       "webservice",
 			Properties: &runtime.RawExtension{Raw: []byte(`{"image":"base"}`)},
@@ -332,7 +247,7 @@ func TestPatchApplication(t *testing.T) {
 			Name:       "comp-3",
 			Type:       "webservice",
 			Properties: &runtime.RawExtension{Raw: []byte(`{"image":"ext"}`)},
-			Traits: []common2.ApplicationTrait{{
+			Traits: []apicommon.ApplicationTrait{{
 				Type:       "scaler",
 				Properties: &runtime.RawExtension{Raw: []byte(`{"replicas":3}`)},
 			}, {
@@ -347,7 +262,7 @@ func TestPatchApplication(t *testing.T) {
 	testCases := []struct {
 		InputVal         map[string]interface{}
 		ExpectError      string
-		ExpectComponents []common2.ApplicationComponent
+		ExpectComponents []apicommon.ApplicationComponent
 	}{{
 		InputVal:    map[string]interface{}{},
 		ExpectError: "var(path=inputs.envName) not exist",
@@ -408,7 +323,7 @@ func TestPatchApplication(t *testing.T) {
 				"components": []string{"comp-2", "comp-1", "comp-3", "comp-0"},
 			},
 		},
-		ExpectComponents: []common2.ApplicationComponent{{
+		ExpectComponents: []apicommon.ApplicationComponent{{
 			Name:       "comp-1",
 			Type:       "worker",
 			Properties: &runtime.RawExtension{Raw: []byte(`{"image":"patch","port":8080}`)},
@@ -416,7 +331,7 @@ func TestPatchApplication(t *testing.T) {
 			Name:       "comp-3",
 			Type:       "webservice",
 			Properties: &runtime.RawExtension{Raw: []byte(`{"image":"patch","port":8090}`)},
-			Traits: []common2.ApplicationTrait{{
+			Traits: []apicommon.ApplicationTrait{{
 				Type:       "scaler",
 				Properties: &runtime.RawExtension{Raw: []byte(`{"replicas":5}`)},
 			}, {
@@ -445,7 +360,7 @@ func TestPatchApplication(t *testing.T) {
 		v, err := value.NewValue("", nil, "")
 		r.NoError(err)
 		r.NoError(v.FillObject(testCase.InputVal, "inputs"))
-		err = p.PatchApplication(nil, v, act)
+		err = p.PatchApplication(nil, nil, v, act)
 		if testCase.ExpectError == "" {
 			r.NoError(err)
 		} else {
@@ -486,10 +401,10 @@ func TestListClusters(t *testing.T) {
 	cli := fake.NewClientBuilder().WithScheme(common.Scheme).Build()
 	clusterNames := []string{"cluster-a", "cluster-b"}
 	for _, secretName := range clusterNames {
-		secret := &v1.Secret{}
+		secret := &corev1.Secret{}
 		secret.Name = secretName
 		secret.Namespace = multicluster.ClusterGatewaySecretNamespace
-		secret.Labels = map[string]string{v1alpha12.LabelKeyClusterCredentialType: "X509"}
+		secret.Labels = map[string]string{clustercommon.LabelKeyClusterCredentialType: string(clusterv1alpha1.CredentialTypeX509Certificate)}
 		r.NoError(cli.Create(context.Background(), secret))
 	}
 	app := &v1beta1.Application{}
@@ -500,7 +415,7 @@ func TestListClusters(t *testing.T) {
 	act := &mock.Action{}
 	v, err := value.NewValue("", nil, "")
 	r.NoError(err)
-	r.NoError(p.ListClusters(nil, v, act))
+	r.NoError(p.ListClusters(nil, nil, v, act))
 	outputs, err := v.LookupValue("outputs")
 	r.NoError(err)
 	obj := struct {

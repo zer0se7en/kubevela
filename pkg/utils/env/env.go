@@ -24,23 +24,23 @@ import (
 	"path/filepath"
 
 	"github.com/AlecAivazis/survey/v2"
+	"github.com/kubevela/pkg/util/singleton"
 	"github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/oam"
+	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
 )
 
 const (
-	// IndicatingLabel is label key indicating application is an env
-	IndicatingLabel = "cli.env.oam.dev/name"
-	// RawType is component type of raw
-	RawType = "raw"
 	// DefaultEnvNamespace is namespace of default env
 	DefaultEnvNamespace = "default"
 )
@@ -49,11 +49,8 @@ const (
 
 // CreateEnv will create e env.
 // Because Env equals to namespace, one env should not be updated
-func CreateEnv(envArgs *types.EnvMeta) error {
-	c, err := common.GetClient()
-	if err != nil {
-		return err
-	}
+func CreateEnv(envArgs *types.EnvMeta) (err error) {
+	c := singleton.KubeClient.Get()
 	if envArgs.Namespace == "" {
 		err = common.AskToChooseOneNamespace(c, envArgs)
 		if err != nil {
@@ -69,7 +66,29 @@ func CreateEnv(envArgs *types.EnvMeta) error {
 			return err
 		}
 	}
-	err = utils.CreateOrUpdateNamespace(context.TODO(), c, envArgs.Namespace, utils.MergeOverrideLabels(map[string]string{
+	ctx := context.TODO()
+
+	var nsList v1.NamespaceList
+	err = c.List(ctx, &nsList, client.MatchingLabels{oam.LabelControlPlaneNamespaceUsage: oam.VelaNamespaceUsageEnv,
+		oam.LabelNamespaceOfEnvName: envArgs.Name})
+	if err != nil {
+		return err
+	}
+	if len(nsList.Items) > 0 {
+		return fmt.Errorf("env name %s already exists", envArgs.Name)
+	}
+
+	namespace, err := utils.GetNamespace(ctx, c, envArgs.Namespace)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+	if namespace != nil {
+		existedEnv := namespace.GetLabels()[oam.LabelNamespaceOfEnvName]
+		if existedEnv != "" && existedEnv != envArgs.Name {
+			return fmt.Errorf("the namespace %s was already assigned to env %s", envArgs.Namespace, existedEnv)
+		}
+	}
+	err = utils.CreateOrUpdateNamespace(ctx, c, envArgs.Namespace, utils.MergeOverrideLabels(map[string]string{
 		oam.LabelControlPlaneNamespaceUsage: oam.VelaNamespaceUsageEnv,
 	}), utils.MergeNoConflictLabels(map[string]string{
 		oam.LabelNamespaceOfEnvName: envArgs.Name,
@@ -86,22 +105,13 @@ func GetEnvByName(name string) (*types.EnvMeta, error) {
 	if name == DefaultEnvNamespace {
 		return &types.EnvMeta{Name: DefaultEnvNamespace, Namespace: DefaultEnvNamespace}, nil
 	}
-	clt, err := common.GetClient()
+	namespace, err := getEnvNamespaceByName(name)
 	if err != nil {
 		return nil, err
-	}
-	ctx := context.Background()
-	var nsList v1.NamespaceList
-	err = clt.List(ctx, &nsList, client.MatchingLabels{oam.LabelNamespaceOfEnvName: name})
-	if err != nil {
-		return nil, err
-	}
-	if len(nsList.Items) < 1 {
-		return nil, errors.Errorf("Env %s not exist", name)
 	}
 	return &types.EnvMeta{
 		Name:      name,
-		Namespace: nsList.Items[0].Name,
+		Namespace: namespace.Name,
 	}, nil
 }
 
@@ -120,14 +130,11 @@ func ListEnvs(envName string) ([]*types.EnvMeta, error) {
 		envList = append(envList, env)
 		return envList, err
 	}
-	clt, err := common.GetClient()
-	if err != nil {
-		return nil, err
-	}
+	clt := singleton.KubeClient.Get()
 
 	ctx := context.Background()
 	var nsList v1.NamespaceList
-	err = clt.List(ctx, &nsList, client.MatchingLabels{oam.LabelControlPlaneNamespaceUsage: oam.VelaNamespaceUsageEnv})
+	err := clt.List(ctx, &nsList, client.MatchingLabels{oam.LabelControlPlaneNamespaceUsage: oam.VelaNamespaceUsageEnv})
 	if err != nil {
 		return nil, err
 	}
@@ -164,10 +171,7 @@ func DeleteEnv(envName string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	clt, err := common.GetClient()
-	if err != nil {
-		return "", err
-	}
+	clt := singleton.KubeClient.Get()
 	var appList v1beta1.ApplicationList
 	err = clt.List(context.TODO(), &appList, client.InNamespace(envMeta.Namespace))
 	if err != nil {
@@ -225,6 +229,41 @@ func SetCurrentEnv(meta *types.EnvMeta) error {
 	//nolint:gosec
 	if err = os.WriteFile(currentEnvPath, data, 0644); err != nil {
 		return err
+	}
+	return nil
+}
+
+// getEnvNamespaceByName get v1.Namespace object by env name
+func getEnvNamespaceByName(name string) (*v1.Namespace, error) {
+	ctx := context.Background()
+	var nsList v1.NamespaceList
+	err := singleton.KubeClient.Get().List(ctx, &nsList, client.MatchingLabels{oam.LabelNamespaceOfEnvName: name})
+	if err != nil {
+		return nil, err
+	}
+	if len(nsList.Items) < 1 {
+		return nil, errors.Errorf("Env %s not exist", name)
+	}
+
+	return &nsList.Items[0], nil
+}
+
+// SetEnvLabels set labels for namespace
+func SetEnvLabels(envArgs *types.EnvMeta) error {
+	namespace, err := getEnvNamespaceByName(envArgs.Name)
+	if err != nil {
+		return err
+	}
+	labelsMap, err := labels.ConvertSelectorToLabelsMap(envArgs.Labels)
+	if err != nil {
+		return err
+	}
+
+	namespace.Labels = util.MergeMapOverrideWithDst(namespace.GetLabels(), labelsMap)
+
+	err = singleton.KubeClient.Get().Update(context.Background(), namespace)
+	if err != nil {
+		return errors.Wrapf(err, "fail to set env labelsMap")
 	}
 	return nil
 }

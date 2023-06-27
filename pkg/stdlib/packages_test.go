@@ -19,31 +19,37 @@ package stdlib
 import (
 	"testing"
 
-	"cuelang.org/go/cue/build"
-
 	"cuelang.org/go/cue"
-	"gotest.tools/assert"
+	"cuelang.org/go/cue/build"
+	"cuelang.org/go/cue/cuecontext"
+	"cuelang.org/go/cue/parser"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/kubevela/workflow/pkg/stdlib"
 )
 
 func TestGetPackages(t *testing.T) {
-	pkgs, err := GetPackages("context: _")
-	assert.NilError(t, err)
-	var r cue.Runtime
+	pkgs, err := getPackages()
+	assert.NoError(t, err)
+	cuectx := cuecontext.New()
 	for path, content := range pkgs {
-		_, err := r.Compile(path, content)
-		assert.NilError(t, err)
+		file, err := parser.ParseFile(path, content)
+		assert.NoError(t, err)
+		_ = cuectx.BuildFile(file)
 	}
 
+	file, err := parser.ParseFile("-", `
+import "vela/custom"
+out: custom.context`)
+	assert.NoError(t, err)
 	builder := &build.Instance{}
-	builder.AddFile("-", `
-import "vela/op"
-out: op.context`)
-	err = AddImportsFor(builder, "context: id: \"xxx\"")
-	assert.NilError(t, err)
+	err = builder.AddSyntax(file)
+	assert.NoError(t, err)
+	err = stdlib.AddImportsFor(builder, "context: id: \"xxx\"")
+	assert.NoError(t, err)
 
-	insts := cue.Build([]*build.Instance{builder})
-	assert.Equal(t, len(insts), 1)
-	str, err := insts[0].Lookup("out", "id").String()
-	assert.NilError(t, err)
+	inst := cuectx.BuildInstance(builder)
+	str, err := inst.LookupPath(cue.ParsePath("out.id")).String()
+	assert.NoError(t, err)
 	assert.Equal(t, str, "xxx")
 }

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
 	"cuelang.org/go/cue"
 	"github.com/AlecAivazis/survey/v2"
@@ -39,7 +40,7 @@ import (
 	"github.com/oam-dev/kubevela/references/appfile"
 	"github.com/oam-dev/kubevela/references/appfile/api"
 	"github.com/oam-dev/kubevela/references/common"
-	"github.com/oam-dev/kubevela/references/plugins"
+	"github.com/oam-dev/kubevela/references/docgen"
 )
 
 type appInitOptions struct {
@@ -107,18 +108,18 @@ func NewInitCommand(c common2.Args, order string, ioStreams cmdutil.IOStreams) *
 			}
 
 			ctx := context.Background()
-			err = common.BuildRun(ctx, o.app, o.client, o.Namespace, o.IOStreams)
+			err = appfile.BuildRun(ctx, o.app, o.client, o.Namespace, o.IOStreams)
 			if err != nil {
 				return err
 			}
-			deployStatus, err := printTrackingDeployStatus(c, o.IOStreams, o.appName, o.Namespace)
+			deployStatus, err := printTrackingDeployStatus(c, o.IOStreams, o.appName, o.Namespace, 300*time.Second)
 			if err != nil {
 				return err
 			}
-			if deployStatus != compStatusDeployed {
+			if deployStatus != appDeployedHealthy {
 				return nil
 			}
-			return printAppStatus(context.Background(), newClient, ioStreams, o.appName, o.Namespace, cmd, c)
+			return printAppStatus(context.Background(), newClient, ioStreams, o.appName, o.Namespace, cmd, c, false)
 		},
 		Annotations: map[string]string{
 			types.TagCommandOrder: order,
@@ -193,7 +194,7 @@ func formatAndGetUsage(p *types.Parameter) string {
 
 // Workload asks user to choose workload type from installed workloads
 func (o *appInitOptions) Workload() error {
-	workloads, err := plugins.LoadInstalledCapabilityWithType(o.Namespace, o.c, types.TypeComponentDefinition)
+	workloads, err := docgen.LoadInstalledCapabilityWithType(o.Namespace, o.c, types.TypeComponentDefinition)
 	if err != nil {
 		return err
 	}

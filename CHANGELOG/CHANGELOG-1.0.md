@@ -15,7 +15,7 @@ This is a minor fix for release-1.0, please refer to release-1.1.x for the lates
 # v1.0.5
 
 1. Fix Terraform application status issue (#1611)
-2. applicaiton supports specifying different versions of Definition (#1597)
+2. application supports specifying different versions of Definition (#1597)
 3. Enable Dynamic Admission Control for Application (#1619)
 4. Update inner samples for "vela show xxx --web" (#1616)
 5. fix empty rolloutBatch will panic whole controller bug (#1646)
@@ -30,7 +30,7 @@ This is a minor fix for release-1.0, please refer to release-1.1.x for the lates
 **Please update Application CRD to upgrade from v1.0.3 to this release**
 
 ```
-kubectl apply -f https://raw.githubusercontent.com/oam-dev/kubevela/master/charts/vela-core/crds/core.oam.dev_applications.yaml
+kubectl apply -f https://raw.githubusercontent.com/kubevela/kubevela/master/charts/vela-core/crds/core.oam.dev_applications.yaml
 ```
 
 **Check the upgrade docs to upgrade from other release: https://kubevela.io/docs/advanced-install#upgrade**

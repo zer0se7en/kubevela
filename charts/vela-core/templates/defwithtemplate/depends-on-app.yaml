@@ -4,9 +4,8 @@ apiVersion: core.oam.dev/v1beta1
 kind: WorkflowStepDefinition
 metadata:
   annotations:
-    definition.oam.dev/description: check or install depends-on Application
-  labels:
-    custom.definition.oam.dev/ui-hidden: "true"
+    custom.definition.oam.dev/category: Application Delivery
+    definition.oam.dev/description: Wait for the specified Application to complete.
   name: depends-on-app
   namespace: {{ include "systemDefinitionNamespace" . }}
 spec:

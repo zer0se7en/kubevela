@@ -22,70 +22,43 @@ import (
 	"strings"
 
 	"cuelang.org/go/cue"
-	"cuelang.org/go/cue/build"
+
+	"github.com/kubevela/workflow/pkg/cue/model/value"
+	"github.com/kubevela/workflow/pkg/cue/packages"
 
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/cue/model"
-	"github.com/oam-dev/kubevela/pkg/cue/packages"
+	"github.com/oam-dev/kubevela/pkg/cue/process"
 )
+
+// ErrParameterNotExist represents the parameter field is not exist in CUE template
+var ErrParameterNotExist = errors.New("parameter not exist")
 
 // GetParameters get parameter from cue template
 func GetParameters(templateStr string, pd *packages.PackageDiscover) ([]types.Parameter, error) {
-	var template *cue.Instance
-	var err error
-	if pd != nil {
-		bi := build.NewContext().NewInstance("", nil)
-		err := bi.AddFile("-", templateStr+BaseTemplate)
-		if err != nil {
-			return nil, err
-		}
-
-		template, err = pd.ImportPackagesAndBuildInstance(bi)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		r := cue.Runtime{}
-		template, err = r.Compile("", templateStr+BaseTemplate)
-		if err != nil {
-			return nil, err
-		}
+	template, err := value.NewValue(templateStr+BaseTemplate, pd, "")
+	if err != nil {
+		return nil, fmt.Errorf("error in template: %w", err)
 	}
-	tempStruct, err := template.Value().Struct()
+	paramVal, err := template.LookupValue(process.ParameterFieldName)
+	if err != nil || !paramVal.CueValue().Exists() {
+		return nil, ErrParameterNotExist
+	}
+	iter, err := paramVal.CueValue().Fields(cue.Definitions(true), cue.Hidden(true), cue.All())
 	if err != nil {
 		return nil, err
 	}
-	// find the parameter definition
-	var paraDef cue.FieldInfo
-	var found bool
-	for i := 0; i < tempStruct.Len(); i++ {
-		paraDef = tempStruct.Field(i)
-		if paraDef.Name == model.ParameterFieldName {
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil, errors.New("arguments not exist")
-	}
-	arguments, err := paraDef.Value.Struct()
-	if err != nil {
-		return nil, fmt.Errorf("arguments not defined as struct %w", err)
-	}
 	// parse each fields in the parameter fields
 	var params []types.Parameter
-	for i := 0; i < arguments.Len(); i++ {
-		fi := arguments.Field(i)
-		if fi.IsDefinition {
+	for iter.Next() {
+		if iter.Selector().IsDefinition() {
 			continue
 		}
 		var param = types.Parameter{
-
-			Name:     fi.Name,
-			Required: !fi.IsOptional,
+			Name:     iter.Label(),
+			Required: !iter.IsOptional(),
 		}
-		val := fi.Value
-		param.Type = fi.Value.IncompleteKind()
+		val := iter.Value()
+		param.Type = val.IncompleteKind()
 		if def, ok := val.Default(); ok && def.IsConcrete() {
 			param.Required = false
 			param.Type = def.Kind()
@@ -184,4 +157,9 @@ func RetrieveComments(value cue.Value) (string, string, string, bool) {
 		}
 	}
 	return short, usage, alias, ignore
+}
+
+// IsFieldNotExist check whether the error type is the field not found
+func IsFieldNotExist(err error) bool {
+	return strings.Contains(err.Error(), "not exist")
 }

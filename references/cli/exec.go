@@ -18,6 +18,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -27,11 +28,14 @@ import (
 	cmdexec "k8s.io/kubectl/pkg/cmd/exec"
 	k8scmdutil "k8s.io/kubectl/pkg/cmd/util"
 
+	pkgmulticluster "github.com/kubevela/pkg/multicluster"
+
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
+	querytypes "github.com/oam-dev/kubevela/pkg/velaql/providers/query/types"
 	"github.com/oam-dev/kubevela/references/appfile"
 )
 
@@ -49,17 +53,22 @@ type VelaExecOptions struct {
 	Stdin bool
 	TTY   bool
 
+	ComponentName string
+	PodName       string
+	ClusterName   string
+	ContainerName string
+
 	Ctx   context.Context
 	VelaC common.Args
 	Env   *types.EnvMeta
 	App   *v1beta1.Application
 
-	namespace         string
-	resourceName      string
-	resourceNamespace string
-	f                 k8scmdutil.Factory
-	kcExecOptions     *cmdexec.ExecOptions
-	ClientSet         kubernetes.Interface
+	namespace     string
+	podName       string
+	podNamespace  string
+	f             k8scmdutil.Factory
+	kcExecOptions *cmdexec.ExecOptions
+	ClientSet     kubernetes.Interface
 }
 
 // NewExecCommand creates `exec` command
@@ -77,8 +86,8 @@ func NewExecCommand(c common.Args, order string, ioStreams util.IOStreams) *cobr
 		},
 	}
 	cmd := &cobra.Command{
-		Use:   "exec [flags] APP_NAME -- COMMAND [args...]",
-		Short: "Execute command in a container",
+		Use:   "exec",
+		Short: "Execute command in a container.",
 		Long:  "Execute command inside container based vela application.",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			o.VelaC = c
@@ -119,6 +128,8 @@ func NewExecCommand(c common.Args, order string, ioStreams util.IOStreams) *cobr
 			types.TagCommandType:  types.TypeApp,
 		},
 		Example: `
+		exec [flags] APP_NAME -- COMMAND [args...]
+
 		# Get output from running 'date' command from app pod, using the first container by default
 		vela exec my-app -- date
 
@@ -132,6 +143,10 @@ func NewExecCommand(c common.Args, order string, ioStreams util.IOStreams) *cobr
 	cmd.Flags().Duration(podRunningTimeoutFlag, defaultPodExecTimeout,
 		"The length of time (like 5s, 2m, or 3h, higher than zero) to wait until at least one pod is running",
 	)
+	cmd.Flags().StringVarP(&o.ComponentName, "component", "c", "", "filter the pod by the component name")
+	cmd.Flags().StringVarP(&o.ClusterName, "cluster", "", "", "filter the pod by the cluster name")
+	cmd.Flags().StringVarP(&o.PodName, "pod", "p", "", "specify the pod name")
+	cmd.Flags().StringVarP(&o.ContainerName, "container", "", "", "specify the container name")
 	addNamespaceAndEnvArg(cmd)
 
 	return cmd
@@ -148,26 +163,52 @@ func (o *VelaExecOptions) Init(ctx context.Context, c *cobra.Command, argsIn []s
 	}
 	o.App = app
 
-	targetResource, err := common.AskToChooseOneEnvResource(o.App)
+	pods, err := GetApplicationPods(ctx, app.Name, app.Namespace, o.VelaC, Filter{
+		Component: o.ComponentName,
+		Cluster:   o.ClusterName,
+	})
 	if err != nil {
 		return err
 	}
+	var selectPod *querytypes.PodBase
+	if o.PodName != "" {
+		for i, pod := range pods {
+			if pod.Metadata.Name == o.PodName {
+				selectPod = &pods[i]
+				break
+			}
+		}
+		if selectPod == nil {
+			fmt.Println("The Pod you specified does not exist, please select it from the list.")
+		}
+	}
+	if selectPod == nil {
+		selectPod, err = AskToChooseOnePod(pods)
+		if err != nil {
+			return err
+		}
+	}
+
+	if selectPod == nil {
+		return nil
+	}
 
 	cf := genericclioptions.NewConfigFlags(true)
-	cf.Namespace = &targetResource.Namespace
+	var namespace = selectPod.Metadata.Namespace
+	cf.Namespace = &namespace
 	cf.WrapConfigFn = func(cfg *rest.Config) *rest.Config {
-		cfg.Wrap(multicluster.NewClusterGatewayRoundTripperWrapperGenerator(targetResource.Cluster))
+		cfg.Wrap(pkgmulticluster.NewTransportWrapper(pkgmulticluster.ForCluster(selectPod.Cluster)))
 		return cfg
 	}
 	o.f = k8scmdutil.NewFactory(k8scmdutil.NewMatchVersionFlags(cf))
-	o.resourceName = targetResource.Name
-	o.Ctx = multicluster.ContextWithClusterName(ctx, targetResource.Cluster)
-	o.resourceNamespace = targetResource.Namespace
+	o.podName = selectPod.Metadata.Name
+	o.Ctx = multicluster.ContextWithClusterName(ctx, selectPod.Cluster)
+	o.podNamespace = namespace
 	config, err := o.VelaC.GetConfig()
 	if err != nil {
 		return err
 	}
-	config.Wrap(multicluster.NewSecretModeMultiClusterRoundTripper)
+	config.Wrap(pkgmulticluster.NewTransportWrapper())
 	k8sClient, err := kubernetes.NewForConfig(config)
 	if err != nil {
 		return err
@@ -182,23 +223,16 @@ func (o *VelaExecOptions) Init(ctx context.Context, c *cobra.Command, argsIn []s
 
 // Complete loads data from the command environment
 func (o *VelaExecOptions) Complete() error {
-	podName, err := o.getPodName(o.resourceName)
-	if err != nil {
-		return err
-	}
 	o.kcExecOptions.StreamOptions.Stdin = o.Stdin
 	o.kcExecOptions.StreamOptions.TTY = o.TTY
+	o.kcExecOptions.StreamOptions.ContainerName = o.ContainerName
 
 	args := make([]string, len(o.Args))
 	copy(args, o.Args)
 	// args for kcExecOptions MUST be in such format:
 	// [podName, COMMAND...]
-	args[0] = podName
+	args[0] = o.podName
 	return o.kcExecOptions.Complete(o.f, o.Cmd, args, 1)
-}
-
-func (o *VelaExecOptions) getPodName(resourceName string) (string, error) {
-	return getPodNameForResource(o.Ctx, o.ClientSet, resourceName, o.resourceNamespace)
 }
 
 // Run executes a validated remote execution against a pod

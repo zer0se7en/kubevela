@@ -26,20 +26,6 @@ import (
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 )
 
-// ReadPlacementDecisions read placement decisions from application status, return (decisions, if decision is made, error)
-func ReadPlacementDecisions(app *v1beta1.Application, policyName string, envName string) ([]v1alpha1.PlacementDecision, bool, error) {
-	envBindingStatus, err := GetEnvBindingPolicyStatus(app, policyName)
-	if err != nil || envBindingStatus == nil {
-		return nil, false, err
-	}
-	for _, envStatus := range envBindingStatus.Envs {
-		if envStatus.Env == envName {
-			return envStatus.Placements, true, nil
-		}
-	}
-	return nil, false, nil
-}
-
 // updateClusterConnections update cluster connection in envbinding status with decisions
 func updateClusterConnections(status *v1alpha1.EnvBindingStatus, decisions []v1alpha1.PlacementDecision, app *v1beta1.Application) {
 	var currentRev string
@@ -69,6 +55,7 @@ func updateClusterConnections(status *v1alpha1.EnvBindingStatus, decisions []v1a
 }
 
 // WritePlacementDecisions write placement decisions into application status
+// Deprecated As it is only used in EnvBinding policy
 func WritePlacementDecisions(app *v1beta1.Application, policyName string, envName string, decisions []v1alpha1.PlacementDecision) error {
 	statusExists := false
 	for idx, policyStatus := range app.Status.PolicyStatus {

@@ -19,26 +19,31 @@ package common
 import (
 	"fmt"
 
-	"k8s.io/client-go/discovery"
-
+	pkgmulticluster "github.com/kubevela/pkg/multicluster"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/clientcmd/api"
 	"k8s.io/client-go/util/flowcontrol"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"github.com/oam-dev/kubevela/pkg/cue/packages"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
+	"github.com/kubevela/workflow/pkg/cue/packages"
+
+	"github.com/oam-dev/kubevela/pkg/oam"
 )
 
 // Args is args for controller-runtime client
 type Args struct {
-	config *rest.Config
-	Schema *runtime.Scheme
-	client client.Client
-	dm     discoverymapper.DiscoveryMapper
-	pd     *packages.PackageDiscover
-	dc     *discovery.DiscoveryClient
+	config    *rest.Config
+	rawConfig *api.Config
+	Schema    *runtime.Scheme
+	client    client.Client
+	pd        *packages.PackageDiscover
+	dc        *discovery.DiscoveryClient
 }
 
 // SetConfig insert kubeconfig into Args
@@ -67,6 +72,33 @@ func (a *Args) GetConfig() (*rest.Config, error) {
 	return a.config, nil
 }
 
+// GetRawConfig get raw kubeconfig, if not exist, will create
+func (a *Args) GetRawConfig() (*api.Config, error) {
+	if a.rawConfig != nil {
+		return a.rawConfig, nil
+	}
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
+	raw, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		loadingRules, nil).RawConfig()
+	if err != nil {
+		return nil, err
+	}
+	return &raw, nil
+}
+
+// GetNamespaceFromConfig will get namespace from kube config
+func (a *Args) GetNamespaceFromConfig() string {
+	conf, err := a.GetRawConfig()
+	if err != nil || conf == nil || conf.Contexts == nil {
+		return ""
+	}
+	ctx, ok := conf.Contexts[conf.CurrentContext]
+	if !ok {
+		return ""
+	}
+	return ctx.Namespace
+}
+
 // SetClient set custom client
 func (a *Args) SetClient(c client.Client) {
 	a.client = c
@@ -82,7 +114,9 @@ func (a *Args) GetClient() (client.Client, error) {
 			return nil, err
 		}
 	}
-	newClient, err := client.New(a.config, client.Options{Scheme: a.Schema})
+	newClient, err := pkgmulticluster.NewClient(a.config,
+		pkgmulticluster.ClientOptions{
+			Options: client.Options{Scheme: a.Schema}})
 	if err != nil {
 		return nil, err
 	}
@@ -90,22 +124,23 @@ func (a *Args) GetClient() (client.Client, error) {
 	return a.client, nil
 }
 
-// GetDiscoveryMapper get discoveryMapper client if exist, create if not exist.
-func (a *Args) GetDiscoveryMapper() (discoverymapper.DiscoveryMapper, error) {
+// GetFakeClient returns a fake client with the definition objects preloaded
+func (a *Args) GetFakeClient(defs []oam.Object) (client.Client, error) {
+	if a.client != nil {
+		return a.client, nil
+	}
 	if a.config == nil {
 		if err := a.SetConfig(nil); err != nil {
 			return nil, err
 		}
 	}
-	if a.dm != nil {
-		return a.dm, nil
+	objs := make([]client.Object, 0, len(defs))
+	for _, def := range defs {
+		if unstructDef, ok := def.(*unstructured.Unstructured); ok {
+			objs = append(objs, unstructDef)
+		}
 	}
-	dm, err := discoverymapper.New(a.config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create CRD discovery client %w", err)
-	}
-	a.dm = dm
-	return dm, nil
+	return fake.NewClientBuilder().WithObjects(objs...).WithScheme(a.Schema).Build(), nil
 }
 
 // GetPackageDiscover get PackageDiscover client if exist, create if not exist.
@@ -140,5 +175,6 @@ func (a *Args) GetDiscoveryClient() (*discovery.DiscoveryClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.dc = dc
 	return dc, nil
 }

@@ -19,10 +19,9 @@ package stdlib
 import (
 	"embed"
 	"fmt"
-	"path/filepath"
 	"strings"
 
-	"cuelang.org/go/cue/build"
+	"github.com/kubevela/workflow/pkg/stdlib"
 )
 
 var (
@@ -30,9 +29,17 @@ var (
 	fs embed.FS
 )
 
-// GetPackages Get Stdlib packages
-func GetPackages(tagTempl string) (map[string]string, error) {
+// SetupBuiltinImports set up builtin imports
+func SetupBuiltinImports() error {
+	pkgs, err := getPackages()
+	if err != nil {
+		return err
+	}
+	return stdlib.SetupBuiltinImports(pkgs)
+}
 
+// getPackages get stdlib packages
+func getPackages() (map[string]string, error) {
 	files, err := fs.ReadDir("pkgs")
 	if err != nil {
 		return nil, err
@@ -63,26 +70,7 @@ func GetPackages(tagTempl string) (map[string]string, error) {
 	}
 
 	return map[string]string{
-		"vela/op": opContent + "\n" + tagTempl,
-		"vela/ql": qlContent + "\n" + tagTempl,
+		"vela/op": opContent,
+		"vela/ql": qlContent,
 	}, nil
-}
-
-// AddImportsFor install imports for build.Instance.
-func AddImportsFor(inst *build.Instance, tagTempl string) error {
-	pkgs, err := GetPackages(tagTempl)
-	if err != nil {
-		return err
-	}
-	for path, content := range pkgs {
-		p := &build.Instance{
-			PkgName:    filepath.Base(path),
-			ImportPath: path,
-		}
-		if err := p.AddFile("-", content); err != nil {
-			return err
-		}
-		inst.Imports = append(inst.Imports, p)
-	}
-	return nil
 }

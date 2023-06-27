@@ -21,8 +21,11 @@ import (
 	"os"
 	"time"
 
-	"github.com/oam-dev/kubevela/apis/types"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/klog/v2"
 
+	"github.com/oam-dev/kubevela/pkg/stdlib"
+	"github.com/oam-dev/kubevela/pkg/utils/system"
 	"github.com/oam-dev/kubevela/references/a/preimport"
 	"github.com/oam-dev/kubevela/references/cli"
 )
@@ -30,14 +33,17 @@ import (
 func main() {
 	preimport.ResumeLogging()
 	rand.Seed(time.Now().UnixNano())
-
-	if ns := os.Getenv("DEFAULT_VELA_NS"); len(ns) != 0 {
-		types.DefaultKubeVelaNS = ns
-	}
+	_ = utilfeature.DefaultMutableFeatureGate.Set("AllAlpha=true")
+	system.BindEnvironmentVariables()
 
 	command := cli.NewCommand()
 
 	if err := command.Execute(); err != nil {
+		os.Exit(1)
+	}
+
+	if err := stdlib.SetupBuiltinImports(); err != nil {
+		klog.ErrorS(err, "Unable to set up builtin imports on package initialization")
 		os.Exit(1)
 	}
 }

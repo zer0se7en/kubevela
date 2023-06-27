@@ -26,7 +26,7 @@ import (
 	"time"
 
 	terraformv1beta1 "github.com/oam-dev/terraform-controller/api/v1beta1"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -88,13 +88,13 @@ var _ = Describe("Addon tests", func() {
 
 	It("Addon Terraform is successfully enabled and Terraform application works", func() {
 		By("Install Addon Terraform")
-		output, err := exec.Command("bash", "-c", "/tmp/vela addon enable terraform-alibaba ALICLOUD_ACCESS_KEY=xxx ALICLOUD_SECRET_KEY=yyy ALICLOUD_REGION=cn-beijing").Output()
+		output, err := exec.Command("bash", "-c", "/tmp/vela addon enable terraform-alibaba").Output()
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			fmt.Println("exit code error:", string(ee.Stderr))
 		}
 		Expect(err).Should(BeNil())
-		Expect(string(output)).Should(ContainSubstring("enabled Successfully"))
+		Expect(string(output)).Should(ContainSubstring("enabled successfully"))
 
 		By("Checking Provider")
 		Eventually(func() error {
@@ -130,6 +130,6 @@ var _ = Describe("Addon tests", func() {
 			fmt.Println("exit code error:", string(ee.Stderr))
 		}
 		Expect(err).Should(BeNil())
-		Expect(string(output)).Should(ContainSubstring("enabled Successfully"))
+		Expect(string(output)).Should(ContainSubstring("enabled successfully"))
 	})
 })

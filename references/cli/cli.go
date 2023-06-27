@@ -25,13 +25,19 @@ import (
 	gov "github.com/hashicorp/go-version"
 	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
-	"k8s.io/klog"
+	"github.com/spf13/pflag"
+	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
+
+	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 
 	"github.com/oam-dev/kubevela/apis/types"
+	velacmd "github.com/oam-dev/kubevela/pkg/cmd"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/helm"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
+	velalog "github.com/oam-dev/kubevela/references/cli/log"
 	"github.com/oam-dev/kubevela/version"
 )
 
@@ -39,23 +45,16 @@ var assumeYes bool
 
 // NewCommand will contain all commands
 func NewCommand() *cobra.Command {
-	ioStream := util.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr}
+	return NewCommandWithIOStreams(util.NewDefaultIOStreams())
+}
 
+// NewCommandWithIOStreams will contain all commands and initialize them with given ioStream
+func NewCommandWithIOStreams(ioStream util.IOStreams) *cobra.Command {
 	cmds := &cobra.Command{
 		Use:                "vela",
 		DisableFlagParsing: true,
 		Run: func(cmd *cobra.Command, args []string) {
-			allCommands := cmd.Commands()
-			cmd.Printf("A Highly Extensible Platform Engine based on Kubernetes and Open Application Model.\n\nUsage:\n  vela [flags]\n  vela [command]\n\nAvailable Commands:\n\n")
-			PrintHelpByTag(cmd, allCommands, types.TypeStart)
-			PrintHelpByTag(cmd, allCommands, types.TypeApp)
-			PrintHelpByTag(cmd, allCommands, types.TypeCD)
-			PrintHelpByTag(cmd, allCommands, types.TypeExtension)
-			PrintHelpByTag(cmd, allCommands, types.TypeSystem)
-			cmd.Println("Flags:")
-			cmd.Println("  -h, --help   help for vela")
-			cmd.Println()
-			cmd.Println(`Use "vela [command] --help" for more information about a command.`)
+			runHelp(cmd, cmd.Commands(), nil)
 		},
 		SilenceUsage: true,
 		ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -63,9 +62,15 @@ func NewCommand() *cobra.Command {
 		},
 	}
 
-	commandArgs := common.Args{
-		Schema: common.Scheme,
+	scheme := common.Scheme
+	err := workflowv1alpha1.AddToScheme(scheme)
+	if err != nil {
+		klog.Fatal(err)
 	}
+	commandArgs := common.Args{
+		Schema: scheme,
+	}
+	f := velacmd.NewDeferredFactory(config.GetConfig)
 
 	if err := system.InitDirs(); err != nil {
 		fmt.Println("InitDir err", err)
@@ -74,64 +79,85 @@ func NewCommand() *cobra.Command {
 
 	cmds.AddCommand(
 		// Getting Start
-		NewEnvCommand(commandArgs, "3", ioStream),
-		NewInitCommand(commandArgs, "2", ioStream),
-		NewUpCommand(commandArgs, "1", ioStream),
-		NewCapabilityShowCommand(commandArgs, ioStream),
+		NewInitCommand(commandArgs, "1", ioStream),
+		NewUpCommand(f, "2", commandArgs, ioStream),
+		NewAppStatusCommand(commandArgs, "3", ioStream),
+		NewListCommand(commandArgs, "4", ioStream),
+		NewDeleteCommand(f, "5"),
+		NewEnvCommand(commandArgs, "6", ioStream),
+		NewCapabilityShowCommand(commandArgs, "7", ioStream),
 
 		// Manage Apps
-		NewListCommand(commandArgs, "9", ioStream),
-		NewAppStatusCommand(commandArgs, "8", ioStream),
-		NewDeleteCommand(commandArgs, "7", ioStream),
-		NewExecCommand(commandArgs, "6", ioStream),
-		NewPortForwardCommand(commandArgs, "5", ioStream),
-		NewLogsCommand(commandArgs, "4", ioStream),
-		NewLiveDiffCommand(commandArgs, "3", ioStream),
-		NewDryRunCommand(commandArgs, ioStream),
+		NewDryRunCommand(commandArgs, "1", ioStream),
+		NewLiveDiffCommand(commandArgs, "2", ioStream),
+		NewLogsCommand(commandArgs, "3", ioStream),
+		NewPortForwardCommand(commandArgs, "4", ioStream),
+		NewExecCommand(commandArgs, "5", ioStream),
+		RevisionCommandGroup(commandArgs, "6"),
+		NewDebugCommand(commandArgs, "7", ioStream),
 
-		// Workflows
-		NewWorkflowCommand(commandArgs, ioStream),
-		ClusterCommandGroup(commandArgs, ioStream),
+		// Continuous Delivery
+		NewWorkflowCommand(commandArgs, "1", ioStream),
+		NewAdoptCommand(f, "2", ioStream),
+
+		// Platform
+		NewTopCommand(commandArgs, "1", ioStream),
+		ClusterCommandGroup(f, "2", commandArgs, ioStream),
+		AuthCommandGroup(f, "3", ioStream),
+		// Config management
+		ConfigCommandGroup(f, "4", ioStream),
+		TemplateCommandGroup(f, "5", ioStream),
 
 		// Extension
-		NewAddonCommand(commandArgs, "9", ioStream),
-		NewUISchemaCommand(commandArgs, "8", ioStream),
-		DefinitionCommandGroup(commandArgs, "7"),
-		NewRegistryCommand(ioStream, "6"),
-		NewTraitCommand(commandArgs, ioStream),
-		NewComponentsCommand(commandArgs, ioStream),
+		// Addon
+		NewAddonCommand(commandArgs, "1", ioStream),
+		NewUISchemaCommand(commandArgs, "2", ioStream),
+		// Definitions
+		NewComponentsCommand(commandArgs, "3", ioStream),
+		NewTraitCommand(commandArgs, "4", ioStream),
+		DefinitionCommandGroup(commandArgs, "5", ioStream),
 
 		// System
 		NewInstallCommand(commandArgs, "1", ioStream),
 		NewUnInstallCommand(commandArgs, "2", ioStream),
-		NewExportCommand(commandArgs, ioStream),
-		NewCUEPackageCommand(commandArgs, ioStream),
-		NewVersionCommand(ioStream),
-		NewCompletionCommand(),
+		NewSystemCommand(commandArgs, "3"),
+		NewVersionCommand(ioStream, "4"),
 
-		// helper
-		NewHelpCommand(),
+		// aux
+		KubeCommandGroup(f, "1", ioStream),
+		CueXCommandGroup(f, "2"),
+		NewQlCommand(commandArgs, "3", ioStream),
+		NewCompletionCommand("4"),
+		NewHelpCommand("5"),
 
-		// hide
-		NewTemplateCommand(ioStream),
+		// hide (below commands will not be displayed in help command but still
+		// can be used by direct call)
 		NewWorkloadsCommand(commandArgs, ioStream),
+		NewExportCommand(commandArgs, ioStream),
+		NewRegistryCommand(ioStream, ""),
+		NewProviderCommand(commandArgs, "", ioStream),
 	)
 
-	// this is for mute klog
 	fset := flag.NewFlagSet("logs", flag.ContinueOnError)
 	klog.InitFlags(fset)
-	_ = fset.Set("v", "-1")
+	pfset := pflag.NewFlagSet("logs", pflag.ContinueOnError)
+	pfset.AddGoFlagSet(fset)
+	pflg := pfset.Lookup("v")
+	pflg.Name = "verbosity"
+	pflg.Shorthand = "V"
 
+	klog.SetLogger(velalog.NewLogger("vela-cli"))
 	// init global flags
 	cmds.PersistentFlags().BoolVarP(&assumeYes, "yes", "y", false, "Assume yes for all user prompts")
+	cmds.PersistentFlags().AddFlag(pflg)
 	return cmds
 }
 
 // NewVersionCommand print client version
-func NewVersionCommand(ioStream util.IOStreams) *cobra.Command {
+func NewVersionCommand(ioStream util.IOStreams, order string) *cobra.Command {
 	version := &cobra.Command{
 		Use:   "version",
-		Short: "Prints vela build version information",
+		Short: "Prints vela build version information.",
 		Long:  "Prints vela build version information.",
 		Run: func(cmd *cobra.Command, args []string) {
 			clusterVersion, _ := GetOAMReleaseVersion(types.DefaultKubeVelaNS)
@@ -146,7 +172,8 @@ GolangVersion: %v
 				runtime.Version())
 		},
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeSystem,
+			types.TagCommandType:  types.TypeSystem,
+			types.TagCommandOrder: order,
 		},
 	}
 	version.AddCommand(NewVersionListCommand(ioStream))
@@ -163,7 +190,7 @@ func NewVersionListCommand(ioStream util.IOStreams) *cobra.Command {
 		Args:  cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			helmHelper := helm.NewHelper()
-			versions, err := helmHelper.ListVersions(kubevelaInstallerHelmRepoURL, kubeVelaChartName)
+			versions, err := helmHelper.ListVersions(kubevelaInstallerHelmRepoURL, kubeVelaChartName, true, nil)
 			if err != nil {
 				return err
 			}

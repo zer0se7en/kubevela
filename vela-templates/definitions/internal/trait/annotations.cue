@@ -1,29 +1,29 @@
 annotations: {
 	type: "trait"
 	annotations: {}
-	labels: {
-		"ui-hidden": "true"
-	}
-	description: "Add annotations on K8s pod for your workload which follows the pod spec in path 'spec.template'."
+	description: "Add annotations on your workload. if it generates pod, add same annotations for generated pods."
 	attributes: {
 		podDisruptive: true
 		appliesToWorkloads: ["*"]
 	}
 }
 template: {
+	// +patchStrategy=jsonMergePatch
 	patch: {
 		metadata: {
 			annotations: {
 				for k, v in parameter {
-					"\(k)": v
+					(k): v
 				}
 			}
 		}
-		spec: template: metadata: annotations: {
-			for k, v in parameter {
-				"\(k)": v
+		if context.output.spec != _|_ && context.output.spec.template != _|_ {
+			spec: template: metadata: annotations: {
+				for k, v in parameter {
+					(k): v
+				}
 			}
 		}
 	}
-	parameter: [string]: string
+	parameter: [string]: string | null
 }

@@ -23,7 +23,9 @@ import (
 	"fmt"
 	"time"
 
+	pkgmulticluster "github.com/kubevela/pkg/multicluster"
 	"github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
+	clustercommon "github.com/oam-dev/cluster-gateway/pkg/common"
 	errors2 "github.com/pkg/errors"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -33,50 +35,36 @@ import (
 	"k8s.io/klog/v2"
 	apiregistrationv1 "k8s.io/kube-aggregator/pkg/apis/apiregistration/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	errors3 "github.com/oam-dev/kubevela/pkg/utils/errors"
 )
 
-type contextKey string
-
 const (
-	// ClusterContextKey is the name of cluster using in client http context
-	ClusterContextKey = contextKey("ClusterName")
 	// ClusterLocalName specifies the local cluster
-	ClusterLocalName = "local"
+	ClusterLocalName = pkgmulticluster.Local
 )
 
 var (
 	// ClusterGatewaySecretNamespace the namespace where cluster-gateway secret locates
-	ClusterGatewaySecretNamespace string
+	ClusterGatewaySecretNamespace = "vela-system"
 )
 
 // ClusterNameInContext extract cluster name from context
 func ClusterNameInContext(ctx context.Context) string {
-	clusterName := ctx.Value(ClusterContextKey)
-	if clusterName != nil {
-		return clusterName.(string)
-	}
-	return ""
+	cluster, _ := pkgmulticluster.ClusterFrom(ctx)
+	return cluster
 }
 
 // ContextWithClusterName create context with multi-cluster by cluster name
 func ContextWithClusterName(ctx context.Context, clusterName string) context.Context {
-	return context.WithValue(ctx, ClusterContextKey, clusterName)
-}
-
-// IsInLocalCluster check if target cluster is local cluster
-func IsInLocalCluster(ctx context.Context) bool {
-	clusterName := ClusterNameInContext(ctx)
-	return clusterName == "" || clusterName == ClusterLocalName
+	return pkgmulticluster.WithCluster(ctx, clusterName)
 }
 
 // ContextInLocalCluster create context in local cluster
 func ContextInLocalCluster(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ClusterContextKey, ClusterLocalName)
+	return pkgmulticluster.WithCluster(ctx, ClusterLocalName)
 }
 
 // ResourcesWithClusterName set cluster name for resources
@@ -84,7 +72,7 @@ func ResourcesWithClusterName(clusterName string, objs ...*unstructured.Unstruct
 	var _objs []*unstructured.Unstructured
 	for _, obj := range objs {
 		if obj != nil {
-			oam.SetCluster(obj, clusterName)
+			oam.SetClusterIfEmpty(obj, clusterName)
 			_objs = append(_objs, obj)
 		}
 	}
@@ -143,11 +131,9 @@ func Initialize(restConfig *rest.Config, autoUpgrade bool) (client.Client, error
 	}
 	svc, err := WaitUntilClusterGatewayReady(context.Background(), c, 60, 5*time.Second)
 	if err != nil {
-		return nil, errors2.Wrapf(err, "failed to wait for cluster gateway, unable to use multi-cluster")
+		return nil, ErrDetectClusterGateway
 	}
 	ClusterGatewaySecretNamespace = svc.Namespace
-	klog.Infof("find cluster gateway service %s/%s:%d", svc.Namespace, svc.Name, *svc.Port)
-	restConfig.Wrap(NewSecretModeMultiClusterRoundTripper)
 	if autoUpgrade {
 		if err = UpgradeExistingClusterSecret(context.Background(), c); err != nil {
 			// this error do not affect the running of current version
@@ -168,9 +154,9 @@ func UpgradeExistingClusterSecret(ctx context.Context, c client.Client) error {
 	}
 	errs := errors3.ErrorList{}
 	for _, item := range secrets.Items {
-		credType := item.Labels[v1alpha1.LabelKeyClusterCredentialType]
+		credType := item.Labels[clustercommon.LabelKeyClusterCredentialType]
 		if credType == "" && item.Type == v1.SecretTypeTLS {
-			item.Labels[v1alpha1.LabelKeyClusterCredentialType] = string(v1alpha1.CredentialTypeX509Certificate)
+			item.Labels[clustercommon.LabelKeyClusterCredentialType] = string(v1alpha1.CredentialTypeX509Certificate)
 			if err := c.Update(ctx, item.DeepCopy()); err != nil {
 				errs = append(errs, errors2.Wrapf(err, "failed to update outdated secret %s", item.Name))
 			}
@@ -182,20 +168,10 @@ func UpgradeExistingClusterSecret(ctx context.Context, c client.Client) error {
 	return nil
 }
 
-// GetMulticlusterKubernetesClient get client with multicluster function enabled
-func GetMulticlusterKubernetesClient() (client.Client, *rest.Config, error) {
-	k8sConfig, err := config.GetConfig()
-	if err != nil {
-		return nil, nil, err
-	}
-	k8sClient, err := Initialize(k8sConfig, false)
-	return k8sClient, k8sConfig, err
-}
-
 // ListExistingClusterSecrets list existing cluster secrets
 func ListExistingClusterSecrets(ctx context.Context, c client.Client) ([]v1.Secret, error) {
 	secrets := &v1.SecretList{}
-	if err := c.List(ctx, secrets, client.InNamespace(ClusterGatewaySecretNamespace), client.HasLabels{v1alpha1.LabelKeyClusterCredentialType}); err != nil {
+	if err := c.List(ctx, secrets, client.InNamespace(ClusterGatewaySecretNamespace), client.HasLabels{clustercommon.LabelKeyClusterCredentialType}); err != nil {
 		return nil, errors2.Wrapf(err, "failed to list cluster secrets")
 	}
 	return secrets.Items, nil

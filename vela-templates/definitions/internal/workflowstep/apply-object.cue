@@ -4,10 +4,10 @@ import (
 
 "apply-object": {
 	type: "workflow-step"
-	annotations: {}
-	labels: {
-		"ui-hidden": "true"
+	annotations: {
+		"category": "Resource Management"
 	}
+	labels: {}
 	description: "Apply raw kubernetes objects for your workflow steps"
 }
 template: {
@@ -16,9 +16,9 @@ template: {
 		cluster: parameter.cluster
 	}
 	parameter: {
-		// +usage=Specify the value of the object
+		// +usage=Specify Kubernetes native resource object to be applied
 		value: {...}
-		// +usage=Specify the cluster of the object
+		// +usage=The cluster you want to apply the resource to, default is the current control plane cluster
 		cluster: *"" | string
 	}
 }

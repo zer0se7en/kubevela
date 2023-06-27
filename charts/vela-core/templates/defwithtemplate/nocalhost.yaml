@@ -11,7 +11,10 @@ metadata:
   namespace: {{ include "systemDefinitionNamespace" . }}
 spec:
   appliesToWorkloads:
-    - '*'
+    - deployments.apps
+    - statefulsets.apps
+    - daemonsets.apps
+    - jobs.batch
   podDisruptive: true
   schematic:
     cue:
@@ -35,6 +38,7 @@ spec:
         		type: "ClusterIP"
         	}
         }
+
         patch: metadata: annotations: {
         	"dev.nocalhost/application-name":      context.appName
         	"dev.nocalhost/application-namespace": context.namespace
@@ -105,7 +109,7 @@ spec:
         						portForward: parameter.portForward
         					}
         					if parameter.portForward == _|_ {
-        						portForward: ["\(parameter.port)" + ":" + "\(parameter.port)"]
+        						portForward: ["\(parameter.port):\(parameter.port)"]
         					}
         				}
         			},

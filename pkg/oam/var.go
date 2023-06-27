@@ -16,7 +16,10 @@ limitations under the License.
 
 package oam
 
-// SystemDefinitonNamespace golbal value for controller and webhook systemlevel namespace
 var (
-	SystemDefinitonNamespace string = "vela-system"
+	// SystemDefinitionNamespace global value for controller and webhook system-level namespace
+	SystemDefinitionNamespace = "vela-system"
+
+	// ApplicationControllerName means the controller is application
+	ApplicationControllerName = "vela-core"
 )

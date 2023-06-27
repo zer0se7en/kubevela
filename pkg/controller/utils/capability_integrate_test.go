@@ -20,7 +20,7 @@ package utils
 import (
 	"context"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -54,7 +54,7 @@ var _ = Describe("Test Capability", func() {
 		It("Test CapabilityComponentDefinition", func() {
 			By("Apply ComponentDefinition")
 			var validComponentDefinition = `
-apiVersion: core.oam.dev/v1alpha2
+apiVersion: core.oam.dev/v1beta1
 kind: ComponentDefinition
 metadata:
   name: web1
@@ -111,59 +111,9 @@ spec:
 			def := &CapabilityComponentDefinition{Name: componentDefinitionName, ComponentDefinition: *componentDefinition.DeepCopy()}
 
 			By("Test GetOpenAPISchema")
-			schema, err := def.GetOpenAPISchema(pd, namespace)
+			schema, err := def.GetOpenAPISchema(namespace)
 			Expect(err).Should(BeNil())
 			Expect(schema).Should(Not(BeNil()))
-		})
-	})
-
-	Context("When the definition is TraitDefinition", func() {
-		var traitDefinitionName = "scaler1"
-
-		It("Test CapabilityTraitDefinition", func() {
-			By("Apply TraitDefinition")
-			var validTraitDefinition = `
-apiVersion: core.oam.dev/v1alpha2
-kind: TraitDefinition
-metadata:
-  namespace: ns-cap
-  annotations:
-    definition.oam.dev/description: "Configures replicas for your service."
-  name: scaler1
-spec:
-  appliesToWorkloads:
-    - deployments.apps
-  definitionRef:
-    name: manualscalertraits.core.oam.dev
-  workloadRefPath: spec.workloadRef
-  schematic:
-    cue:
-      template: |
-        outputs: scaler: {
-        	apiVersion: "core.oam.dev/v1alpha2"
-        	kind:       "ManualScalerTrait"
-        	spec: {
-        		replicaCount: parameter.replicas
-        	}
-        }
-        parameter: {
-        	//+short=r
-        	//+usage=Replicas of the workload
-        	replicas: *1 | int
-        }
-`
-
-			var traitDefinition v1beta1.TraitDefinition
-			Expect(yaml.Unmarshal([]byte(validTraitDefinition), &traitDefinition)).Should(BeNil())
-			Expect(k8sClient.Create(ctx, &traitDefinition)).Should(Succeed())
-
-			def := &CapabilityTraitDefinition{Name: traitDefinitionName, TraitDefinition: *traitDefinition.DeepCopy()}
-
-			By("Test GetOpenAPISchema")
-			var expectedSchema = "{\"properties\":{\"replicas\":{\"default\":1,\"description\":\"Replicas of the workload\",\"title\":\"replicas\",\"type\":\"integer\"}},\"required\":[\"replicas\"],\"type\":\"object\"}"
-			schema, err := def.GetOpenAPISchema(pd, traitDefinitionName)
-			Expect(err).Should(BeNil())
-			Expect(string(schema)).Should(Equal(expectedSchema))
 		})
 	})
 
@@ -178,8 +128,8 @@ spec:
 				Kind:               "k1",
 				Name:               definitionName,
 				UID:                "123456",
-				Controller:         pointer.BoolPtr(true),
-				BlockOwnerDeletion: pointer.BoolPtr(true),
+				Controller:         pointer.Bool(true),
+				BlockOwnerDeletion: pointer.Bool(true),
 			}}
 			_, err := def.CreateOrUpdateConfigMap(ctx, k8sClient, namespace, definitionName, typeTraitDefinition, nil, nil, []byte(""), ownerReference)
 			Expect(err).Should(BeNil())

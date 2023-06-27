@@ -15,139 +15,156 @@ worker: {
 		}
 		status: {
 			customStatus: #"""
-				import "strconv"
 				ready: {
-					if context.output.status.readyReplicas == _|_ {
-						replica: "0"
-					}
+					readyReplicas: *0 | int
+				} & {
 					if context.output.status.readyReplicas != _|_ {
-						replica:  strconv.FormatInt(context.output.status.readyReplicas, 10)
+						readyReplicas: context.output.status.readyReplicas
 					}
 				}
-				message: "Ready:" + ready.replica + "/" + strconv.FormatInt(context.output.spec.replicas, 10)
+				message: "Ready:\(ready.readyReplicas)/\(context.output.spec.replicas)"
 				"""#
 			healthPolicy: #"""
 				ready: {
-					if context.output.status.readyReplicas == _|_ {
-						replica: 0
+					updatedReplicas:    *0 | int
+					readyReplicas:      *0 | int
+					replicas:           *0 | int
+					observedGeneration: *0 | int
+				} & {
+					if context.output.status.updatedReplicas != _|_ {
+						updatedReplicas: context.output.status.updatedReplicas
 					}
 					if context.output.status.readyReplicas != _|_ {
-						replica:  context.output.status.readyReplicas
+						readyReplicas: context.output.status.readyReplicas
+					}
+					if context.output.status.replicas != _|_ {
+						replicas: context.output.status.replicas
+					}
+					if context.output.status.observedGeneration != _|_ {
+						observedGeneration: context.output.status.observedGeneration
 					}
 				}
-				isHealth: context.output.spec.replicas == ready.replica
+				isHealth: (context.output.spec.replicas == ready.readyReplicas) && (context.output.spec.replicas == ready.updatedReplicas) && (context.output.spec.replicas == ready.replicas) && (ready.observedGeneration == context.output.metadata.generation || ready.observedGeneration > context.output.metadata.generation)
 				"""#
 		}
 	}
 }
 template: {
-	mountsArray: {
-		pvc: *[
-			for v in parameter.volumeMounts.pvc {
-				{
-					mountPath: v.mountPath
-					name:      v.name
+	mountsArray: [
+		if parameter.volumeMounts != _|_ && parameter.volumeMounts.pvc != _|_ for v in parameter.volumeMounts.pvc {
+			{
+				mountPath: v.mountPath
+				if v.subPath != _|_ {
+					subPath: v.subPath
 				}
-			},
-		] | []
+				name: v.name
+			}
+		},
 
-		configMap: *[
-				for v in parameter.volumeMounts.configMap {
-				{
-					mountPath: v.mountPath
-					name:      v.name
+		if parameter.volumeMounts != _|_ && parameter.volumeMounts.configMap != _|_ for v in parameter.volumeMounts.configMap {
+			{
+				mountPath: v.mountPath
+				if v.subPath != _|_ {
+					subPath: v.subPath
 				}
-			},
-		] | []
+				name: v.name
+			}
+		},
 
-		secret: *[
-			for v in parameter.volumeMounts.secret {
-				{
-					mountPath: v.mountPath
-					name:      v.name
+		if parameter.volumeMounts != _|_ && parameter.volumeMounts.secret != _|_ for v in parameter.volumeMounts.secret {
+			{
+				mountPath: v.mountPath
+				if v.subPath != _|_ {
+					subPath: v.subPath
 				}
-			},
-		] | []
+				name: v.name
+			}
+		},
 
-		emptyDir: *[
-				for v in parameter.volumeMounts.emptyDir {
-				{
-					mountPath: v.mountPath
-					name:      v.name
+		if parameter.volumeMounts != _|_ && parameter.volumeMounts.emptyDir != _|_ for v in parameter.volumeMounts.emptyDir {
+			{
+				mountPath: v.mountPath
+				if v.subPath != _|_ {
+					subPath: v.subPath
 				}
-			},
-		] | []
+				name: v.name
+			}
+		},
 
-		hostPath: *[
-				for v in parameter.volumeMounts.hostPath {
-				{
-					mountPath: v.mountPath
-					name:      v.name
+		if parameter.volumeMounts != _|_ && parameter.volumeMounts.hostPath != _|_ for v in parameter.volumeMounts.hostPath {
+			{
+				mountPath: v.mountPath
+				if v.subPath != _|_ {
+					subPath: v.subPath
 				}
-			},
-		] | []
-	}
+				name: v.name
+			}
+		},
+	]
 
-	volumesArray: {
-		pvc: *[
-			for v in parameter.volumeMounts.pvc {
-				{
-					name: v.name
-					persistentVolumeClaim: claimName: v.claimName
-				}
-			},
-		] | []
+	volumesList: [
+		if parameter.volumeMounts != _|_ && parameter.volumeMounts.pvc != _|_ for v in parameter.volumeMounts.pvc {
+			{
+				name: v.name
+				persistentVolumeClaim: claimName: v.claimName
+			}
+		},
 
-		configMap: *[
-				for v in parameter.volumeMounts.configMap {
-				{
-					name: v.name
-					configMap: {
-						defaultMode: v.defaultMode
-						name:        v.cmName
-						if v.items != _|_ {
-							items: v.items
-						}
+		if parameter.volumeMounts != _|_ && parameter.volumeMounts.configMap != _|_ for v in parameter.volumeMounts.configMap {
+			{
+				name: v.name
+				configMap: {
+					defaultMode: v.defaultMode
+					name:        v.cmName
+					if v.items != _|_ {
+						items: v.items
 					}
 				}
-			},
-		] | []
+			}
+		},
 
-		secret: *[
-			for v in parameter.volumeMounts.secret {
-				{
-					name: v.name
-					secret: {
-						defaultMode: v.defaultMode
-						secretName:  v.secretName
-						if v.items != _|_ {
-							items: v.items
-						}
+		if parameter.volumeMounts != _|_ && parameter.volumeMounts.secret != _|_ for v in parameter.volumeMounts.secret {
+			{
+				name: v.name
+				secret: {
+					defaultMode: v.defaultMode
+					secretName:  v.secretName
+					if v.items != _|_ {
+						items: v.items
 					}
 				}
-			},
-		] | []
+			}
+		},
 
-		emptyDir: *[
-				for v in parameter.volumeMounts.emptyDir {
-				{
-					name: v.name
-					emptyDir: medium: v.medium
-				}
-			},
-		] | []
+		if parameter.volumeMounts != _|_ && parameter.volumeMounts.emptyDir != _|_ for v in parameter.volumeMounts.emptyDir {
+			{
+				name: v.name
+				emptyDir: medium: v.medium
+			}
+		},
 
-		hostPath: *[
-				for v in parameter.volumeMounts.hostPath {
-				{
-					name: v.name
-					hostPath: {
-						path: v.path
-					}
+		if parameter.volumeMounts != _|_ && parameter.volumeMounts.hostPath != _|_ for v in parameter.volumeMounts.hostPath {
+			{
+				name: v.name
+				hostPath: {
+					path: v.path
 				}
+			}
+		},
+	]
+
+	deDupVolumesArray: [
+		for val in [
+			for i, vi in volumesList {
+				for j, vj in volumesList if j < i && vi.name == vj.name {
+					_ignore: true
+				}
+				vi
 			},
-		] | []
-	}
+		] if val._ignore == _|_ {
+			val
+		},
+	]
 
 	output: {
 		apiVersion: "apps/v1"
@@ -156,7 +173,12 @@ template: {
 			selector: matchLabels: "app.oam.dev/component": context.name
 
 			template: {
-				metadata: labels: "app.oam.dev/component": context.name
+				metadata: {
+					labels: {
+						"app.oam.dev/name":      context.appName
+						"app.oam.dev/component": context.name
+					}
+				}
 
 				spec: {
 					containers: [{
@@ -198,7 +220,7 @@ template: {
 						}
 
 						if parameter["volumeMounts"] != _|_ {
-							volumeMounts: mountsArray.pvc + mountsArray.configMap + mountsArray.secret + mountsArray.emptyDir + mountsArray.hostPath
+							volumeMounts: mountsArray
 						}
 
 						if parameter["livenessProbe"] != _|_ {
@@ -250,7 +272,7 @@ template: {
 						}]
 					}
 					if parameter["volumeMounts"] != _|_ {
-						volumes: volumesArray.pvc + volumesArray.configMap + volumesArray.secret + volumesArray.emptyDir + volumesArray.hostPath
+						volumes: deDupVolumesArray
 					}
 				}
 			}
@@ -352,8 +374,8 @@ template: {
 		volumes?: [...{
 			name:      string
 			mountPath: string
-			// +usage=Specify volume type, options: "pvc","configMap","secret","emptyDir"
-			type: "pvc" | "configMap" | "secret" | "emptyDir"
+			// +usage=Specify volume type, options: "pvc","configMap","secret","emptyDir", default to emptyDir
+			type: *"emptyDir" | "pvc" | "configMap" | "secret"
 			if type == "pvc" {
 				claimName: string
 			}

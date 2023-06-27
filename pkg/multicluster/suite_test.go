@@ -21,13 +21,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/client-go/rest"
 	"k8s.io/utils/pointer"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
 
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 )
@@ -41,14 +42,14 @@ func TestUtils(t *testing.T) {
 	RunSpecs(t, "Utils Suite")
 }
 
-var _ = BeforeSuite(func(done Done) {
+var _ = BeforeSuite(func() {
 	rand.Seed(time.Now().UnixNano())
 	By("bootstrapping test environment for utils test")
 
 	testEnv = &envtest.Environment{
 		ControlPlaneStartTimeout: time.Minute * 3,
 		ControlPlaneStopTimeout:  time.Minute,
-		UseExistingCluster:       pointer.BoolPtr(false),
+		UseExistingCluster:       pointer.Bool(false),
 		CRDDirectoryPaths:        []string{"./testdata"},
 	}
 
@@ -64,8 +65,7 @@ var _ = BeforeSuite(func(done Done) {
 	k8sClient, err = client.New(cfg, client.Options{Scheme: common.Scheme})
 	Expect(err).Should(BeNil())
 	Expect(k8sClient).ToNot(BeNil())
-	close(done)
-}, 240)
+})
 
 var _ = AfterSuite(func() {
 	By("tearing down the test environment")

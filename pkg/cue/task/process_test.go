@@ -24,11 +24,13 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/oam-dev/kubevela/pkg/cue/model"
+	"github.com/kubevela/workflow/pkg/cue/model/value"
 
-	"cuelang.org/go/cue"
+	"cuelang.org/go/cue/cuecontext"
 	cueJson "cuelang.org/go/pkg/encoding/json"
-	"github.com/bmizerany/assert"
+	"github.com/stretchr/testify/assert"
+
+	"github.com/oam-dev/kubevela/pkg/cue/process"
 )
 
 const TaskTemplate = `
@@ -64,20 +66,16 @@ func TestProcess(t *testing.T) {
 	s := NewMock()
 	defer s.Close()
 
-	r := cue.Runtime{}
-	taskTemplate, err := r.Compile("", TaskTemplate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	taskTemplate, _ = taskTemplate.Fill(map[string]interface{}{
+	taskTemplate := cuecontext.New().CompileString(TaskTemplate)
+	taskTemplate = taskTemplate.FillPath(value.FieldPath(process.ParameterFieldName), map[string]interface{}{
 		"serviceURL": "http://127.0.0.1:8090/api/v1/token?val=test-token",
-	}, model.ParameterFieldName)
+	})
 
 	inst, err := Process(taskTemplate)
 	if err != nil {
 		t.Fatal(err)
 	}
-	output := inst.Lookup("output")
+	output := inst.LookupPath(value.FieldPath("output"))
 	data, _ := cueJson.Marshal(output)
 	assert.Equal(t, "{\"data\":\"test-token\"}", data)
 }
@@ -90,7 +88,7 @@ func NewMock() *httptest.Server {
 		if r.URL.EscapedPath() != "/api/v1/token" {
 			fmt.Printf("Expected request to '/person', got '%s'", r.URL.EscapedPath())
 		}
-		r.ParseForm()
+		_ = r.ParseForm()
 		token := r.Form.Get("val")
 		tokenBytes, _ := json.Marshal(map[string]interface{}{"token": token})
 
@@ -98,7 +96,7 @@ func NewMock() *httptest.Server {
 		w.Write(tokenBytes)
 	}))
 	l, _ := net.Listen("tcp", "127.0.0.1:8090")
-	ts.Listener.Close()
+	_ = ts.Listener.Close()
 	ts.Listener = l
 	ts.Start()
 	return ts

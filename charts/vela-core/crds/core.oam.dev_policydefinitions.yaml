@@ -1,10 +1,9 @@
-
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.6.2
+    controller-gen.kubebuilder.io/version: v0.11.4
   name: policydefinitions.core.oam.dev
 spec:
   group: core.oam.dev
@@ -15,7 +14,7 @@ spec:
     listKind: PolicyDefinitionList
     plural: policydefinitions
     shortNames:
-    - policy
+    - def-policy
     singular: policydefinition
   scope: Namespaced
   versions:
@@ -60,7 +59,8 @@ spec:
                 type: boolean
               schematic:
                 description: Schematic defines the data format and template of the
-                  encapsulation of the policy definition
+                  encapsulation of the policy definition. Only CUE schematic is supported
+                  for now.
                 properties:
                   cue:
                     description: CUE defines the encapsulation in CUE format
@@ -74,76 +74,6 @@ spec:
                     required:
                     - template
                     type: object
-                  helm:
-                    description: A Helm represents resources used by a Helm module
-                    properties:
-                      release:
-                        description: Release records a Helm release used by a Helm
-                          module workload.
-                        type: object
-                        x-kubernetes-preserve-unknown-fields: true
-                      repository:
-                        description: HelmRelease records a Helm repository used by
-                          a Helm module workload.
-                        type: object
-                        x-kubernetes-preserve-unknown-fields: true
-                    required:
-                    - release
-                    - repository
-                    type: object
-                  kube:
-                    description: Kube defines the encapsulation in raw Kubernetes
-                      resource format
-                    properties:
-                      parameters:
-                        description: Parameters defines configurable parameters
-                        items:
-                          description: A KubeParameter defines a configurable parameter
-                            of a component.
-                          properties:
-                            description:
-                              description: Description of this parameter.
-                              type: string
-                            fieldPaths:
-                              description: "FieldPaths specifies an array of fields
-                                within this workload that will be overwritten by the
-                                value of this parameter. \tAll fields must be of the
-                                same type. Fields are specified as JSON field paths
-                                without a leading dot, for example 'spec.replicas'."
-                              items:
-                                type: string
-                              type: array
-                            name:
-                              description: Name of this parameter
-                              type: string
-                            required:
-                              default: false
-                              description: Required specifies whether or not a value
-                                for this parameter must be supplied when authoring
-                                an Application.
-                              type: boolean
-                            type:
-                              description: 'ValueType indicates the type of the parameter
-                                value, and only supports basic data types: string,
-                                number, boolean.'
-                              enum:
-                              - string
-                              - number
-                              - boolean
-                              type: string
-                          required:
-                          - fieldPaths
-                          - name
-                          - type
-                          type: object
-                        type: array
-                      template:
-                        description: Template defines the raw Kubernetes resource
-                        type: object
-                        x-kubernetes-preserve-unknown-fields: true
-                    required:
-                    - template
-                    type: object
                   terraform:
                     description: Terraform is the struct to describe cloud resources
                       managed by Hashicorp Terraform
@@ -151,11 +81,29 @@ spec:
                       configuration:
                         description: Configuration is Terraform Configuration
                         type: string
+                      customRegion:
+                        description: Region is cloud provider's region. It will override
+                          the region in the region field of ProviderReference
+                        type: string
                       deleteResource:
                         default: true
                         description: DeleteResource will determine whether provisioned
                           cloud resources will be deleted when CR is deleted
                         type: boolean
+                      gitCredentialsSecretReference:
+                        description: GitCredentialsSecretReference specifies the reference
+                          to the secret containing the git credentials
+                        properties:
+                          name:
+                            description: name is unique within a namespace to reference
+                              a secret resource.
+                            type: string
+                          namespace:
+                            description: namespace defines the space within which
+                              the secret name must be unique.
+                            type: string
+                        type: object
+                        x-kubernetes-map-type: atomic
                       path:
                         description: Path is the sub-directory of remote git repository.
                           It's valid when remote is set
@@ -174,10 +122,6 @@ spec:
                         required:
                         - name
                         type: object
-                      region:
-                        description: Region is cloud provider's region. It will override
-                          the region in the region field of ProviderReference
-                        type: string
                       type:
                         default: hcl
                         description: Type specifies which Terraform configuration
@@ -244,6 +188,10 @@ spec:
                   - type
                   type: object
                 type: array
+              configMapRef:
+                description: ConfigMapRef refer to a ConfigMap which contains OpenAPI
+                  V3 JSON schema of Component parameters.
+                type: string
               latestRevision:
                 description: LatestRevision of the component definition
                 properties:
@@ -266,9 +214,3 @@ spec:
     storage: true
     subresources:
       status: {}
-status:
-  acceptedNames:
-    kind: ""
-    plural: ""
-  conditions: []
-  storedVersions: []

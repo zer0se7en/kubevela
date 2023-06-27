@@ -17,13 +17,11 @@
 package velaql
 
 import (
-	"encoding/json"
-
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/oam-dev/kubevela/pkg/cue/model/value"
-	wfContext "github.com/oam-dev/kubevela/pkg/workflow/context"
+	wfContext "github.com/kubevela/workflow/pkg/context"
+	"github.com/kubevela/workflow/pkg/cue/model/value"
 )
 
 // NewViewContext new view context
@@ -37,21 +35,6 @@ func NewViewContext() (wfContext.Context, error) {
 // ViewContext is view context
 type ViewContext struct {
 	vars *value.Value
-}
-
-// GetComponent Get ComponentManifest from workflow context.
-func (c ViewContext) GetComponent(name string) (*wfContext.ComponentManifest, error) {
-	return nil, errors.New("not support func GetComponent")
-}
-
-// GetComponents Get All ComponentManifest from workflow context.
-func (c ViewContext) GetComponents() map[string]*wfContext.ComponentManifest {
-	return nil
-}
-
-// PatchComponent patch component with value.
-func (c ViewContext) PatchComponent(name string, patchValue *value.Value) error {
-	return errors.New("not support func PatchComponent")
 }
 
 // GetVar get variable from workflow context.
@@ -112,18 +95,13 @@ func (c ViewContext) Commit() error {
 	return errors.New("not support func Commit")
 }
 
-// MakeParameter make 'value' with interface{}
-func (c ViewContext) MakeParameter(parameter interface{}) (*value.Value, error) {
-	var s = "{}"
-	if parameter != nil {
-		bt, err := json.Marshal(parameter)
-		if err != nil {
-			return nil, err
-		}
-		s = string(bt)
+// MakeParameter make 'value' with string
+func (c ViewContext) MakeParameter(parameter string) (*value.Value, error) {
+	if parameter == "" {
+		parameter = "{}"
 	}
 
-	return c.vars.MakeValue(s)
+	return c.vars.MakeValue(parameter)
 }
 
 // StoreRef return the store reference of workflow context.

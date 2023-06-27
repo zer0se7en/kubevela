@@ -31,6 +31,7 @@ import (
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
+	velacmd "github.com/oam-dev/kubevela/pkg/cmd"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
 	"github.com/oam-dev/kubevela/references/common"
 )
@@ -41,6 +42,7 @@ func TestUp(t *testing.T) {
 	app.Name = "app-up"
 	msg := common.Info(app)
 	assert.Contains(t, msg, "App has been deployed")
+	// This test case can not run in the TERM with the color.
 	assert.Contains(t, msg, fmt.Sprintf("App status: vela status %s", app.Name))
 }
 
@@ -128,7 +130,10 @@ spec:
 			}))
 
 			var buf bytes.Buffer
-			cmd := NewUpCommand(args, "", util.IOStreams{In: os.Stdin, Out: &buf, ErrOut: &buf})
+			cmd := NewUpCommand(velacmd.NewDelegateFactory(args.GetClient, args.GetConfig), "", args, util.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
+			cmd.SetArgs([]string{})
+			cmd.SetOut(&buf)
+			cmd.SetErr(&buf)
 			if c.namespace != "" {
 				require.NoError(t, cmd.Flags().Set(FlagNamespace, c.namespace))
 			}

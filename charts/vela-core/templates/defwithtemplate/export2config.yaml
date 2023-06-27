@@ -4,9 +4,8 @@ apiVersion: core.oam.dev/v1beta1
 kind: WorkflowStepDefinition
 metadata:
   annotations:
-    definition.oam.dev/description: Export data to config map for your workflow steps
-  labels:
-    custom.definition.oam.dev/ui-hidden: "true"
+    custom.definition.oam.dev/category: Resource Management
+    definition.oam.dev/description: Export data to specified Kubernetes ConfigMap in your workflow.
   name: export2config
   namespace: {{ include "systemDefinitionNamespace" . }}
 spec:

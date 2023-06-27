@@ -21,7 +21,7 @@ import (
 	"os"
 	"time"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -41,26 +41,28 @@ var _ = Describe("Test Kubectl Plugin", func() {
 			Eventually(func() error {
 				err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: componentDefName}, &cd)
 				return err
-			}, 5*time.Second).Should(BeNil())
+			}, 5*time.Second, time.Second).Should(BeNil())
 
 			var td v1beta1.TraitDefinition
 			Eventually(func() error {
 				err := k8sClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: traitDefName}, &td)
 				return err
-			}, 5*time.Second).Should(BeNil())
+			}, 5*time.Second, time.Second).Should(BeNil())
 
 			By("dry-run application")
 			err := os.WriteFile("dry-run-app.yaml", []byte(application), 0644)
 			Expect(err).NotTo(HaveOccurred())
-			output, err := e2e.Exec("kubectl-vela dry-run -f dry-run-app.yaml -n vela-system")
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).Should(ContainSubstring(dryRunResult))
+			Eventually(func() string {
+				output, _ := e2e.Exec("kubectl-vela dry-run -f dry-run-app.yaml -n vela-system")
+				return output
+			}, 10*time.Second, time.Second).Should(ContainSubstring(dryRunResult))
 		})
 
 		It("Test dry-run application use definitions in local", func() {
-			output, err := e2e.Exec("kubectl-vela dry-run -f dry-run-app.yaml -d definitions")
-			Expect(output).Should(ContainSubstring(dryRunResult))
-			Expect(err).NotTo(HaveOccurred())
+			Eventually(func() string {
+				output, _ := e2e.Exec("kubectl-vela dry-run -f dry-run-app.yaml -d definitions")
+				return output
+			}, 10*time.Second, time.Second).Should(ContainSubstring(dryRunResult))
 		})
 	})
 
@@ -93,7 +95,7 @@ var _ = Describe("Test Kubectl Plugin", func() {
 				var tempApp v1beta1.Application
 				_ = k8sClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: app.Name}, &tempApp)
 				return tempApp.Status.LatestRevision != nil
-			}, 20*time.Second).Should(BeTrue())
+			}, 20*time.Second, time.Second).Should(BeTrue())
 
 			By("live-diff application")
 			err := os.WriteFile("live-diff-app.yaml", []byte(newApplication), 0644)
@@ -108,7 +110,7 @@ var _ = Describe("Test Kubectl Plugin", func() {
 				var tempApp v1beta1.Application
 				_ = k8sClient.Get(ctx, client.ObjectKey{Namespace: "default", Name: app.Name}, &tempApp)
 				return tempApp.Status.LatestRevision != nil
-			}, 20*time.Second).Should(BeTrue())
+			}, 20*time.Second, time.Second).Should(BeTrue())
 
 			output, err := e2e.Exec("kubectl-vela live-diff -f live-diff-app.yaml -d definitions")
 			Expect(err).NotTo(HaveOccurred())
@@ -129,34 +131,11 @@ var _ = Describe("Test Kubectl Plugin", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(output).Should(ContainSubstring(showTdResult))
 		})
-		It("Test show componentDefinition use Helm Charts as Workload", func() {
-			Eventually(func() string {
-				cdName := "test-webapp-chart"
-				output, _ := e2e.Exec(fmt.Sprintf("kubectl-vela show %s -n default", cdName))
-				return output
-			}, 20*time.Second).Should(ContainSubstring("Properties"))
-		})
-		It("Test show componentDefinition def with raw Kube mode", func() {
-			cdName := "kube-worker"
-			output, err := e2e.Exec(fmt.Sprintf("kubectl-vela show %s -n default", cdName))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).Should(ContainSubstring("image"))
-			Expect(output).Should(ContainSubstring("The value will be applied to fields: [spec.template.spec.containers[0].image]."))
-			Expect(output).Should(ContainSubstring("port"))
-			Expect(output).Should(ContainSubstring("the specific container port num which can accept external request."))
-		})
-		It("Test show traitDefinition def with raw Kube mode", func() {
-			tdName := "service-kube"
-			output, err := e2e.Exec(fmt.Sprintf("kubectl-vela show %s -n default", tdName))
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).Should(ContainSubstring("targetPort"))
-			Expect(output).Should(ContainSubstring("target port num for service provider."))
-		})
 		It("Test show traitDefinition def with cue single map parameter", func() {
 			tdName := "annotations"
 			output, err := e2e.Exec(fmt.Sprintf("kubectl-vela show %s -n default", tdName))
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).Should(ContainSubstring("map[string]string"))
+			Expect(output).Should(ContainSubstring("map[string]:(null|string)"))
 		})
 		It("Test show webservice def with cue ignore annotation ", func() {
 			tdName := "webservice"
@@ -395,73 +374,6 @@ spec:
 
 `
 
-var componentDefWithHelm = `
-apiVersion: core.oam.dev/v1beta1
-kind: ComponentDefinition
-metadata:
-  name: test-webapp-chart
-  namespace: default
-  annotations:
-    definition.oam.dev/description: helm chart for webapp
-spec:
-  workload:
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-  schematic:
-    helm:
-      release:
-        chart:
-          spec:
-            chart: "podinfo"
-            version: "5.1.4"
-      repository:
-        url: "https://charts.kubevela.net/example/"
-`
-
-var componentDefWithKube = `
-apiVersion: core.oam.dev/v1beta1
-kind: ComponentDefinition
-metadata:
-  name: kube-worker
-  namespace: default
-spec:
-  workload:
-    definition:
-      apiVersion: apps/v1
-      kind: Deployment
-  schematic:
-    kube:
-      template:
-        apiVersion: apps/v1
-        kind: Deployment
-        spec:
-          selector:
-            matchLabels:
-              app: nginx
-          template:
-            metadata:
-              labels:
-                app: nginx
-            spec:
-              containers:
-                - name: nginx
-                  ports:
-                    - containerPort: 80
-      parameters:
-        - name: image
-          required: true
-          type: string
-          fieldPaths:
-            - "spec.template.spec.containers[0].image"
-        - name: port
-          required: true
-          type: string
-          fieldPaths:
-            - "spec.template.spec.containers[0].ports[0].containerPort"
-          description: "the specific container port num which can accept external request."
-`
-
 var traitDef = `
 apiVersion: core.oam.dev/v1beta1
 kind: TraitDefinition
@@ -679,6 +591,7 @@ spec:
         - containerPort: 80
 
 ---
+## From the trait test-ingress 
 apiVersion: v1
 kind: Service
 metadata:
@@ -701,6 +614,7 @@ spec:
     app.oam.dev/component: express-server
 
 ---
+## From the trait test-ingress 
 apiVersion: networking.k8s.io/v1beta1
 kind: Ingress
 metadata:
@@ -728,9 +642,7 @@ spec:
 ---
 `
 
-var livediffResult = `---
-# Application (test-vela-app) has been modified(*)
----
+var livediffResult = `Application (test-vela-app) has been modified(*)
   apiVersion: core.oam.dev/v1beta1
   kind: Application
   metadata:
@@ -759,15 +671,11 @@ var livediffResult = `---
       type: test-webservice
   status: {}
   
----
-## Component (express-server) has been removed(-)
----
+* Component (express-server) has been removed(-)
 - apiVersion: apps/v1
 - kind: Deployment
 - metadata:
--   annotations: {}
 -   labels:
--     app.oam.dev/appRevision: ""
 -     app.oam.dev/component: express-server
 -     app.oam.dev/name: test-vela-app
 -     app.oam.dev/namespace: default
@@ -790,15 +698,11 @@ var livediffResult = `---
 -         ports:
 -         - containerPort: 80
   
----
-### Component (express-server) / Trait (test-ingress/service) has been removed(-)
----
+* Component (express-server) / Trait (test-ingress/service) has been removed(-)
 - apiVersion: v1
 - kind: Service
 - metadata:
--   annotations: {}
 -   labels:
--     app.oam.dev/appRevision: ""
 -     app.oam.dev/component: express-server
 -     app.oam.dev/name: test-vela-app
 -     app.oam.dev/namespace: default
@@ -814,15 +718,11 @@ var livediffResult = `---
 -   selector:
 -     app.oam.dev/component: express-server
   
----
-### Component (express-server) / Trait (test-ingress/ingress) has been removed(-)
----
+* Component (express-server) / Trait (test-ingress/ingress) has been removed(-)
 - apiVersion: networking.k8s.io/v1beta1
 - kind: Ingress
 - metadata:
--   annotations: {}
 -   labels:
--     app.oam.dev/appRevision: ""
 -     app.oam.dev/component: express-server
 -     app.oam.dev/name: test-vela-app
 -     app.oam.dev/namespace: default
@@ -841,15 +741,11 @@ var livediffResult = `---
 -           servicePort: 80
 -         path: /
   
----
-## Component (new-express-server) has been added(+)
----
+* Component (new-express-server) has been added(+)
 + apiVersion: apps/v1
 + kind: Deployment
 + metadata:
-+   annotations: {}
 +   labels:
-+     app.oam.dev/appRevision: ""
 +     app.oam.dev/component: new-express-server
 +     app.oam.dev/name: test-vela-app
 +     app.oam.dev/namespace: default
@@ -877,15 +773,11 @@ var livediffResult = `---
 +           requests:
 +             cpu: "0.5"
   
----
-### Component (new-express-server) / Trait (test-ingress/service) has been added(+)
----
+* Component (new-express-server) / Trait (test-ingress/service) has been added(+)
 + apiVersion: v1
 + kind: Service
 + metadata:
-+   annotations: {}
 +   labels:
-+     app.oam.dev/appRevision: ""
 +     app.oam.dev/component: new-express-server
 +     app.oam.dev/name: test-vela-app
 +     app.oam.dev/namespace: default
@@ -901,15 +793,11 @@ var livediffResult = `---
 +   selector:
 +     app.oam.dev/component: new-express-server
   
----
-### Component (new-express-server) / Trait (test-ingress/ingress) has been added(+)
----
+* Component (new-express-server) / Trait (test-ingress/ingress) has been added(+)
 + apiVersion: networking.k8s.io/v1beta1
 + kind: Ingress
 + metadata:
-+   annotations: {}
 +   labels:
-+     app.oam.dev/appRevision: ""
 +     app.oam.dev/component: new-express-server
 +     app.oam.dev/name: test-vela-app
 +     app.oam.dev/namespace: default
@@ -1002,20 +890,20 @@ spec:
         }
 `
 
-var showCdResult = `# Properties
+var showCdResult = `# Specification
 +---------+--------------------------------------------------------------------------------------------------+----------+----------+---------+
 |  NAME   |                                           DESCRIPTION                                            |   TYPE   | REQUIRED | DEFAULT |
 +---------+--------------------------------------------------------------------------------------------------+----------+----------+---------+
-| cmd     | Commands to run in the container                                                                 | []string | false    |         |
-| count   | specify number of tasks to run in parallel                                                       | int      | true     |       1 |
-| restart | Define the job restart policy, the value can only be Never or OnFailure. By default, it's Never. | string   | true     | Never   |
-| image   | Which image would you like to use for your service                                               | string   | true     |         |
+| count   | specify number of tasks to run in parallel.                                                      | int      | false    |       1 |
+| image   | Which image would you like to use for your service.                                              | string   | true     |         |
+| restart | Define the job restart policy, the value can only be Never or OnFailure. By default, it's Never. | string   | false    | Never   |
+| cmd     | Commands to run in the container.                                                                | []string | false    |         |
 +---------+--------------------------------------------------------------------------------------------------+----------+----------+---------+
 
 
 `
 
-var showTdResult = `# Properties
+var showTdResult = `# Specification
 +---------+-------------+----------+----------+---------+
 |  NAME   | DESCRIPTION |   TYPE   | REQUIRED | DEFAULT |
 +---------+-------------+----------+----------+---------+

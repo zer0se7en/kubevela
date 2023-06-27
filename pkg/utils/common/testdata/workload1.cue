@@ -1,4 +1,4 @@
-#parameter: {
+parameter: {
 	// +usage=Which image would you like to use for your service
 	// +short=i
 	image: string
@@ -7,6 +7,8 @@
 	cmd?: [...string]
 
 	cpu?: string
+
+	http: [string]: int
 }
 
 #routeName: "\(context.appName)-\(context.name)"

@@ -22,6 +22,10 @@ import (
 	"strings"
 
 	"github.com/pkg/errors"
+
+	"github.com/kubevela/workflow/pkg/cue/model/value"
+
+	"github.com/oam-dev/kubevela/pkg/utils"
 )
 
 // QueryView contains query data
@@ -33,13 +37,15 @@ type QueryView struct {
 
 const (
 	// PatternQL is the pattern string of velaQL, velaQL's query syntax is `ViewName{key1=value1 ,key2="value2",}.Export`
-	PatternQL = `(?P<view>[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?)(?P<parameter>{.*?})?\.?(?P<export>[_a-zA-Z][\._a-zA-Z0-9]*)?`
+	PatternQL = `(?P<view>[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?)(?P<parameter>{.*?})?\.?(?P<export>[_a-zA-Z][\._a-zA-Z0-9\[\]]*)?`
 	// PatternKV is the pattern string of parameter
 	PatternKV = `(?P<key>[^=]+)=(?P<value>[^=]*?)(?:,|$)`
 	// KeyWordView represent view keyword
 	KeyWordView = "view"
 	// KeyWordParameter represent parameter keyword
 	KeyWordParameter = "parameter"
+	// KeyWordTemplate represents template keyword
+	KeyWordTemplate = "template"
 	// KeyWordExport represent export keyword
 	KeyWordExport = "export"
 	// DefaultExportValue is the default Export value
@@ -89,6 +95,36 @@ func ParseVelaQL(ql string) (QueryView, error) {
 		return qv, err
 	}
 	return qv, nil
+}
+
+// ParseVelaQLFromPath will parse a velaQL file path to QueryView
+func ParseVelaQLFromPath(velaQLViewPath string) (*QueryView, error) {
+	body, err := utils.ReadRemoteOrLocalPath(velaQLViewPath, false)
+	if err != nil {
+		return nil, errors.Errorf("read view file from %s: %v", velaQLViewPath, err)
+	}
+
+	val, err := value.NewValue(string(body), nil, "")
+	if err != nil {
+		return nil, errors.Errorf("new value for view: %v", err)
+	}
+
+	var expStr string
+	exp, err := val.LookupValue(KeyWordExport)
+	if err == nil {
+		expStr, err = exp.String()
+		if err != nil {
+			expStr = DefaultExportValue
+		}
+	} else {
+		expStr = DefaultExportValue
+	}
+
+	return &QueryView{
+		View:      string(body),
+		Parameter: nil,
+		Export:    strings.Trim(strings.TrimSpace(expStr), `"`),
+	}, nil
 }
 
 // ParseParameter parse parameter to map[string]interface{}

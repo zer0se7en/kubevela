@@ -19,7 +19,7 @@ package cli
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
+	"github.com/kubevela/pkg/util/singleton"
 	"github.com/spf13/cobra"
 
 	"github.com/oam-dev/kubevela/apis/types"
@@ -59,10 +59,7 @@ func NewEnvListCommand(c common.Args, ioStream cmdutil.IOStreams) *cobra.Command
 			if err != nil {
 				return err
 			}
-			err = common.SetGlobalClient(clt)
-			if err != nil {
-				return err
-			}
+			singleton.KubeClient.Set(clt)
 			return ListEnvs(args, ioStream)
 		},
 		Annotations: map[string]string{
@@ -87,10 +84,7 @@ func NewEnvInitCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Comman
 			if err != nil {
 				return err
 			}
-			err = common.SetGlobalClient(clt)
-			if err != nil {
-				return err
-			}
+			singleton.KubeClient.Set(clt)
 			return CreateEnv(&envArgs, args, ioStreams)
 		},
 		Annotations: map[string]string{
@@ -115,10 +109,7 @@ func NewEnvDeleteCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Comm
 			if err != nil {
 				return err
 			}
-			err = common.SetGlobalClient(clt)
-			if err != nil {
-				return err
-			}
+			singleton.KubeClient.Set(clt)
 			return DeleteEnv(args, ioStreams)
 		},
 		Annotations: map[string]string{
@@ -131,6 +122,7 @@ func NewEnvDeleteCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Comm
 
 // NewEnvSetCommand creates `env set` command for setting current environment
 func NewEnvSetCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+	var envArgs types.EnvMeta
 	cmd := &cobra.Command{
 		Use:                   "set",
 		Aliases:               []string{"sw"},
@@ -143,17 +135,15 @@ func NewEnvSetCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command
 			if err != nil {
 				return err
 			}
-			err = common.SetGlobalClient(clt)
-			if err != nil {
-				return err
-			}
-			return SetEnv(args, ioStreams)
+			singleton.KubeClient.Set(clt)
+			return SetEnv(&envArgs, args, ioStreams)
 		},
 		Annotations: map[string]string{
 			types.TagCommandType: types.TypeStart,
 		},
 	}
 	cmd.SetOut(ioStreams.Out)
+	cmd.Flags().StringVar(&envArgs.Labels, "labels", "", "set labels for namespace")
 	return cmd
 }
 
@@ -169,8 +159,8 @@ func ListEnvs(args []string, ioStreams cmdutil.IOStreams) error {
 	if err != nil {
 		return err
 	}
-	for _, env := range envList {
-		table.AddRow(env.Name, env.Namespace, env.Current)
+	for _, envMeta := range envList {
+		table.AddRow(envMeta.Name, envMeta.Namespace, envMeta.Current)
 	}
 	ioStreams.Info(table.String())
 	return nil
@@ -205,7 +195,7 @@ func CreateEnv(envArgs *types.EnvMeta, args []string, ioStreams cmdutil.IOStream
 }
 
 // SetEnv sets current environment
-func SetEnv(args []string, ioStreams cmdutil.IOStreams) error {
+func SetEnv(envArgs *types.EnvMeta, args []string, ioStreams cmdutil.IOStreams) error {
 	if len(args) < 1 {
 		return fmt.Errorf("you must specify environment name for vela env command")
 	}
@@ -213,6 +203,11 @@ func SetEnv(args []string, ioStreams cmdutil.IOStreams) error {
 	envMeta, err := env.GetEnvByName(envName)
 	if err != nil {
 		return err
+	}
+	if envArgs.Labels != "" {
+		envArgs.Name = envMeta.Name
+		// just set labels, not change current env
+		return env.SetEnvLabels(envArgs)
 	}
 	err = env.SetCurrentEnv(envMeta)
 	if err != nil {
@@ -229,10 +224,7 @@ func GetFlagEnvOrCurrent(cmd *cobra.Command, args common.Args) (*types.EnvMeta, 
 	if err != nil {
 		return nil, err
 	}
-	err = common.SetGlobalClient(clt)
-	if err != nil {
-		return nil, errors.Wrap(err, "get flag env fail")
-	}
+	singleton.KubeClient.Set(clt)
 	var envName string
 	if cmd != nil {
 		envName = cmd.Flag("env").Value.String()
@@ -244,7 +236,11 @@ func GetFlagEnvOrCurrent(cmd *cobra.Command, args common.Args) (*types.EnvMeta, 
 	if err != nil {
 		// ignore this error and return a default value
 		// nolint:nilerr
-		return &types.EnvMeta{Name: "", Namespace: "default"}, nil
+		ns := args.GetNamespaceFromConfig()
+		if ns == "" {
+			ns = types.DefaultAppNamespace
+		}
+		return &types.EnvMeta{Name: "", Namespace: ns}, nil
 	}
 	return cur, nil
 }

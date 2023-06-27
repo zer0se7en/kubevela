@@ -19,14 +19,23 @@ package definition
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/yaml"
 
+	common2 "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	addonutils "github.com/oam-dev/kubevela/pkg/utils/addon"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
+	"github.com/oam-dev/kubevela/pkg/utils/filters"
 )
 
 func TestDefinitionBasicFunctions(t *testing.T) {
@@ -42,6 +51,9 @@ func TestDefinitionBasicFunctions(t *testing.T) {
 	})
 	def.SetName("test-trait")
 	def.SetGVK("TraitDefinition")
+	def.SetOwnerReferences([]v1.OwnerReference{{
+		Name: addonutils.Addon2AppName("test-addon"),
+	}})
 	if _type := def.GetType(); _type != "trait" {
 		t.Fatalf("set gvk invalid, expected trait got %s", _type)
 	}
@@ -73,8 +85,8 @@ func TestDefinitionBasicFunctions(t *testing.T) {
 	if err = def.FromCUEString("template:"+parts[1], nil); err == nil {
 		t.Fatalf("should encounter no metadata found error but not found error")
 	}
-	if err = def.FromCUEString("import \"strconv\"\n"+cueString, nil); err == nil {
-		t.Fatalf("should encounter cue compile error due to useless import but not found error")
+	if err = def.FromCUEString("import \"strconv\"\n"+cueString, nil); err != nil {
+		t.Fatalf("should not encounter cue compile error due to useless import")
 	}
 	if err = def.FromCUEString("abc: {}\n"+cueString, nil); err == nil {
 		t.Fatalf("should encounter duplicated object name error but not found error")
@@ -107,10 +119,146 @@ func TestDefinitionBasicFunctions(t *testing.T) {
 	_ = GetDefinitionDefaultSpec("WorkloadDefinition")
 	_ = ValidDefinitionTypes()
 
-	if _, err = SearchDefinition("*", c, "", ""); err != nil {
+	if _, err = SearchDefinition(c, "", ""); err != nil {
 		t.Fatalf("failed to search definition: %v", err)
 	}
-	if _, err = SearchDefinition("*", c, "trait", "default"); err != nil {
+	if _, err = SearchDefinition(c, "trait", "default"); err != nil {
 		t.Fatalf("failed to search definition: %v", err)
+	}
+	res, err := SearchDefinition(c, "", "", filters.ByOwnerAddon("test-addon"))
+	if err != nil {
+		t.Fatalf("failed to search definition: %v", err)
+	}
+	if len(res) < 1 {
+		t.Fatalf("failed to search definition with addon filter applied: %s", "no result returned")
+	}
+	res, err = SearchDefinition(c, "", "", filters.ByName("test-trait"), filters.ByOwnerAddon("test-addon"))
+	if err != nil {
+		t.Fatalf("failed to search definition: %v", err)
+	}
+	if len(res) < 1 {
+		t.Fatalf("failed to search definition with addon filter applied: %s", "no result returned")
+	}
+	res, err = SearchDefinition(c, "", "", filters.ByOwnerAddon("this-is-a-non-existent-addon"))
+	if err != nil {
+		t.Fatalf("failed to search definition: %v", err)
+	}
+	if len(res) >= 1 {
+		t.Fatalf("failed to search definition with addon filter applied: %s", "too many results returned")
+	}
+}
+
+func TestDefinitionRevisionSearch(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(common.Scheme).Build()
+
+	var err error
+
+	// Load test DefinitionRevisions files into client
+	testFiles, err := os.ReadDir("testdata")
+	assert.NoError(t, err, "read testdata failed")
+	for _, file := range testFiles {
+		if !strings.HasSuffix(file.Name(), ".yaml") {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join("testdata", file.Name()))
+		assert.NoError(t, err)
+		def := &v1beta1.DefinitionRevision{}
+		err = yaml.Unmarshal(content, def)
+		assert.NoError(t, err)
+		err = c.Create(context.TODO(), def)
+		assert.NoError(t, err, "cannot create "+file.Name())
+	}
+
+	var defrevs []v1beta1.DefinitionRevision
+
+	// Read with no conditions, should at least have 4 defrevs
+	defrevs, err = SearchDefinitionRevisions(context.TODO(), c, "", "", "", 0)
+	assert.NoError(t, err)
+	assert.Equal(t, true, len(defrevs) >= 4)
+
+	// Restrict namespace
+	defrevs, err = SearchDefinitionRevisions(context.TODO(), c, "rev-test-custom-ns", "", "", 0)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(defrevs))
+
+	// Restrict type
+	defrevs, err = SearchDefinitionRevisions(context.TODO(), c, "rev-test-ns", "", common2.ComponentType, 0)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(defrevs))
+
+	// Restrict revision
+	defrevs, err = SearchDefinitionRevisions(context.TODO(), c, "rev-test-ns", "", "", 1)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, len(defrevs))
+
+	// Restrict name
+	defrevs, err = SearchDefinitionRevisions(context.TODO(), c, "rev-test-ns", "webservice", "", 1)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(defrevs))
+
+	// Test GetDefinitionFromDefinitionRevision
+	defrev := defrevs[0]
+
+	// Simulate ComponentDefinition
+	defrev.Spec.DefinitionType = common2.ComponentType
+	_, err = GetDefinitionFromDefinitionRevision(&defrev)
+	assert.NoError(t, err)
+
+	// Simulate TraitDefinition
+	defrev.Spec.DefinitionType = common2.TraitType
+	_, err = GetDefinitionFromDefinitionRevision(&defrev)
+	assert.NoError(t, err)
+
+	// Simulate PolicyDefinition
+	defrev.Spec.DefinitionType = common2.PolicyType
+	_, err = GetDefinitionFromDefinitionRevision(&defrev)
+	assert.NoError(t, err)
+
+	// Simulate WorkflowStepDefinition
+	defrev.Spec.DefinitionType = common2.WorkflowStepType
+	_, err = GetDefinitionFromDefinitionRevision(&defrev)
+	assert.NoError(t, err)
+}
+
+func TestValidateSpec(t *testing.T) {
+	testcases := map[string]struct {
+		Input  string
+		Type   string
+		HasErr bool
+	}{
+		"comp": {
+			Input: `{"podSpecPath": "a"}`,
+			Type:  "component",
+		},
+		"trait": {
+			Input: `{"appliesToWorkloads":["deployments"]}`,
+			Type:  "trait",
+		},
+		"workflow-step": {
+			Input: `{"definitionRef":{"name":"v"}}`,
+			Type:  "workflow-step",
+		},
+		"bad-policy": {
+			Input:  `{"definitionRef":{"invalid":5}}`,
+			Type:   "policy",
+			HasErr: true,
+		},
+		"unknown": {
+			Input:  `{}`,
+			Type:   "unknown",
+			HasErr: false,
+		},
+	}
+	for name, tt := range testcases {
+		t.Run(name, func(t *testing.T) {
+			spec := map[string]interface{}{}
+			require.NoError(t, json.Unmarshal([]byte(tt.Input), &spec))
+			err := validateSpec(spec, tt.Type)
+			if tt.HasErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
 	}
 }

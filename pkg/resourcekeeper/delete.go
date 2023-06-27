@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
+	"github.com/oam-dev/kubevela/pkg/auth"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
 	"github.com/oam-dev/kubevela/pkg/oam"
 	"github.com/oam-dev/kubevela/pkg/resourcetracker"
@@ -48,6 +49,10 @@ func newDeleteConfig(options ...DeleteOption) *deleteConfig {
 
 // Delete delete resources
 func (h *resourceKeeper) Delete(ctx context.Context, manifests []*unstructured.Unstructured, options ...DeleteOption) (err error) {
+	h.ClearNamespaceForClusterScopedResources(manifests)
+	if err = h.AdmissionCheck(ctx, manifests); err != nil {
+		return err
+	}
 	for _, manifest := range manifests {
 		if manifest != nil {
 			_options := options
@@ -67,22 +72,22 @@ func (h *resourceKeeper) Delete(ctx context.Context, manifests []*unstructured.U
 
 func (h *resourceKeeper) delete(ctx context.Context, manifest *unstructured.Unstructured, cfg *deleteConfig) (err error) {
 	// 1. mark manifests as deleted in resourcetracker
-	if !cfg.skipRT {
-		var rt *v1beta1.ResourceTracker
-		if cfg.useRoot {
-			rt, err = h.getRootRT(ctx)
-		} else {
-			rt, err = h.getCurrentRT(ctx)
-		}
-		if err != nil {
-			return errors.Wrapf(err, "failed to get resourcetracker")
-		}
-		if err = resourcetracker.DeletedManifestInResourceTracker(multicluster.ContextInLocalCluster(ctx), h.Client, rt, manifest, false); err != nil {
-			return errors.Wrapf(err, "failed to delete resources in resourcetracker")
-		}
+	var rt *v1beta1.ResourceTracker
+	if cfg.useRoot || cfg.skipGC {
+		rt, err = h.getRootRT(ctx)
+	} else {
+		rt, err = h.getCurrentRT(ctx)
+	}
+	if err != nil {
+		return errors.Wrapf(err, "failed to get resourcetracker")
+	}
+	if err = resourcetracker.DeletedManifestInResourceTracker(multicluster.ContextInLocalCluster(ctx), h.Client, rt, manifest, false); err != nil {
+		return errors.Wrapf(err, "failed to delete resources in resourcetracker")
 	}
 	// 2. delete manifests
-	if err = h.Client.Delete(multicluster.ContextWithClusterName(ctx, oam.GetCluster(manifest)), manifest); err != nil && !kerrors.IsNotFound(err) {
+	deleteCtx := multicluster.ContextWithClusterName(ctx, oam.GetCluster(manifest))
+	deleteCtx = auth.ContextWithUserInfo(deleteCtx, h.app)
+	if err = h.Client.Delete(deleteCtx, manifest); err != nil && !kerrors.IsNotFound(err) {
 		return errors.Wrapf(err, "cannot delete manifest, name: %s apiVersion: %s kind: %s", manifest.GetName(), manifest.GetAPIVersion(), manifest.GetKind())
 	}
 	return nil

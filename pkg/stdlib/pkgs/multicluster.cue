@@ -1,3 +1,4 @@
+// deprecated
 #Placement: {
 	clusterSelector?: {
 		labels?: [string]: string
@@ -9,11 +10,13 @@
 	}
 }
 
+// deprecated
 #PlacementDecision: {
 	namespace?: string
 	cluster?:   string
 }
 
+// deprecated
 #Component: {
 	name?: string
 	type?: string
@@ -24,22 +27,10 @@
 		properties: {...}
 	}]
 	externalRevision?: string
+	dependsOn?: [...string]
 }
 
-#ReadPlacementDecisions: {
-	#provider: "multicluster"
-	#do:       "read-placement-decisions"
-
-	inputs: {
-		policyName: string
-		envName:    string
-	}
-
-	outputs: {
-		decisions?: [...#PlacementDecision]
-	}
-}
-
+// deprecated
 #MakePlacementDecisions: {
 	#provider: "multicluster"
 	#do:       "make-placement-decisions"
@@ -55,6 +46,7 @@
 	}
 }
 
+// deprecated
 #PatchApplication: {
 	#provider: "multicluster"
 	#do:       "patch-application"
@@ -69,6 +61,7 @@
 	...
 }
 
+// deprecated
 #LoadEnvBindingEnv: #Steps & {
 	inputs: {
 		env:    string
@@ -77,7 +70,8 @@
 
 	loadPolicies: oam.#LoadPolicies @step(1)
 	policy_:      string
-	if inputs.policy == "" {
+	envBindingPolicies: []
+	if inputs.policy == "" && loadPolicies.value != _|_ {
 		envBindingPolicies: [ for k, v in loadPolicies.value if v.type == "env-binding" {k}]
 		policy_: envBindingPolicies[0]
 	}
@@ -100,6 +94,7 @@
 	}
 }
 
+// deprecated
 #PrepareEnvBinding: #Steps & {
 	inputs: {
 		env:    string
@@ -142,6 +137,7 @@
 	}
 }
 
+// deprecated
 #ApplyComponentsToEnv: #Steps & {
 	inputs: {
 		decisions: [...#PlacementDecision]
@@ -169,6 +165,7 @@
 	} @step(2)
 }
 
+// deprecated
 #ApplyEnvBindApp: {
 	#do: "steps"
 
@@ -215,4 +212,23 @@
 	outputs: {
 		clusters: [...string]
 	}
+}
+
+#GetPlacementsFromTopologyPolicies: {
+	#provider: "multicluster"
+	#do:       "get-placements-from-topology-policies"
+	policies: [...string]
+	placements: [...{
+		cluster:   string
+		namespace: string
+	}]
+}
+
+#Deploy: {
+	#provider: "multicluster"
+	#do:       "deploy"
+	policies: [...string]
+	parallelism:              int
+	ignoreTerraformComponent: bool
+	inlinePolicies:           *[] | [...{...}]
 }

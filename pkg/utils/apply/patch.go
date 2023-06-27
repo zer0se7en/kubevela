@@ -18,6 +18,9 @@ package apply
 
 import (
 	"encoding/json"
+	"time"
+
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/pkg/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -147,6 +150,7 @@ func getModifiedConfiguration(obj runtime.Object, updateAnnotation bool) ([]byte
 
 	// restore original annotations back to the object
 	annots[oam.AnnotationLastAppliedConfig] = original
+	annots[oam.AnnotationLastAppliedTime] = time.Now().Format(time.RFC3339)
 	_ = metadataAccessor.SetAnnotations(obj, annots)
 	return modified, nil
 }
@@ -161,9 +165,26 @@ func getOriginalConfiguration(obj runtime.Object) ([]byte, error) {
 	if annots == nil {
 		return nil, nil
 	}
-	original, ok := annots[oam.AnnotationLastAppliedConfig]
-	if !ok {
-		return nil, nil
+
+	oamOriginal, oamOk := annots[oam.AnnotationLastAppliedConfig]
+	if oamOk {
+		if oamOriginal == "-" || oamOriginal == "skip" {
+			return nil, nil
+		}
+		return []byte(oamOriginal), nil
 	}
-	return []byte(original), nil
+
+	kubectlOriginal, kubectlOK := annots[corev1.LastAppliedConfigAnnotation]
+	if kubectlOK {
+		return []byte(kubectlOriginal), nil
+	}
+	return nil, nil
+}
+
+func isEmptyPatch(patch client.Patch) bool {
+	if patch == nil {
+		return true
+	}
+	data, _ := patch.Data(nil)
+	return data != nil && string(data) == "{}"
 }

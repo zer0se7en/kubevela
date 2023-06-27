@@ -19,12 +19,20 @@ package multicluster
 import (
 	"context"
 
-	"github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	clusterv1 "open-cluster-management.io/api/cluster/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/oam-dev/cluster-gateway/pkg/apis/cluster/v1alpha1"
+	clustercommon "github.com/oam-dev/cluster-gateway/pkg/common"
+
+	"github.com/oam-dev/kubevela/apis/types"
 )
 
 var _ = Describe("Test Virtual Cluster", func() {
@@ -40,10 +48,11 @@ var _ = Describe("Test Virtual Cluster", func() {
 				Name:      "test-cluster",
 				Namespace: ClusterGatewaySecretNamespace,
 				Labels: map[string]string{
-					v1alpha1.LabelKeyClusterCredentialType: string(v1alpha1.CredentialTypeX509Certificate),
-					v1alpha1.LabelKeyClusterEndpointType:   v1alpha1.ClusterEndpointTypeConst,
-					"key":                                  "value",
+					clustercommon.LabelKeyClusterCredentialType: string(v1alpha1.CredentialTypeX509Certificate),
+					clustercommon.LabelKeyClusterEndpointType:   string(v1alpha1.ClusterEndpointTypeConst),
+					"key": "value",
 				},
+				Annotations: map[string]string{v1alpha1.AnnotationClusterAlias: "test-alias"},
 			},
 		})).Should(Succeed())
 		Expect(k8sClient.Create(ctx, &v1.Secret{
@@ -51,7 +60,7 @@ var _ = Describe("Test Virtual Cluster", func() {
 				Name:      "cluster-no-label",
 				Namespace: ClusterGatewaySecretNamespace,
 				Labels: map[string]string{
-					v1alpha1.LabelKeyClusterCredentialType: string(v1alpha1.CredentialTypeX509Certificate),
+					clustercommon.LabelKeyClusterCredentialType: string(v1alpha1.CredentialTypeX509Certificate),
 				},
 			},
 		})).Should(Succeed())
@@ -85,9 +94,10 @@ var _ = Describe("Test Virtual Cluster", func() {
 		})).Should(Succeed())
 		Expect(k8sClient.Create(ctx, &clusterv1.ManagedCluster{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "ocm-cluster",
-				Namespace: ClusterGatewaySecretNamespace,
-				Labels:    map[string]string{"key": "value"},
+				Name:        "ocm-cluster",
+				Namespace:   ClusterGatewaySecretNamespace,
+				Labels:      map[string]string{"key": "value"},
+				Annotations: map[string]string{v1alpha1.AnnotationClusterAlias: "ocm-alias"},
 			},
 			Spec: clusterv1.ManagedClusterSpec{
 				ManagedClusterClientConfigs: []clusterv1.ClientConfig{{URL: "test-url"}},
@@ -102,17 +112,76 @@ var _ = Describe("Test Virtual Cluster", func() {
 
 		vc, err = GetVirtualCluster(ctx, k8sClient, "ocm-cluster")
 		Expect(err).Should(Succeed())
-		Expect(vc.Type).Should(Equal(CredentialTypeOCMManagedCluster))
+		Expect(vc.Type).Should(Equal(types.CredentialTypeOCMManagedCluster))
 
 		By("Test List Virtual Clusters")
 
 		vcs, err := ListVirtualClusters(ctx, k8sClient)
 		Expect(err).Should(Succeed())
-		Expect(len(vcs)).Should(Equal(3))
+		Expect(len(vcs)).Should(Equal(4))
 
 		vcs, err = FindVirtualClustersByLabels(ctx, k8sClient, map[string]string{"key": "value"})
 		Expect(err).Should(Succeed())
 		Expect(len(vcs)).Should(Equal(2))
+
+		By("Test virtual cluster list for clusterNameMapper")
+		cli := fakeClient{Client: k8sClient}
+		cnm, err := NewClusterNameMapper(ctx, cli)
+		Expect(err).Should(Succeed())
+		Expect(cnm.GetClusterName("example")).Should(Equal("example (example-alias)"))
+		Expect(cnm.GetClusterName("no-alias")).Should(Equal("no-alias"))
+		cli.returnBadRequest = true
+		_, err = NewClusterNameMapper(ctx, cli)
+		Expect(err).Should(Satisfy(errors.IsBadRequest))
+		cli.returnBadRequest = false
+		cli.virtualClusterNotRegistered = true
+		cnm, err = NewClusterNameMapper(ctx, cli)
+		Expect(err).Should(Succeed())
+		Expect(cnm.GetClusterName("example")).Should(Equal("example"))
+		Expect(cnm.GetClusterName("test-cluster")).Should(Equal("test-cluster (test-alias)"))
+		Expect(cnm.GetClusterName("ocm-cluster")).Should(Equal("ocm-cluster (ocm-alias)"))
+		cli.returnBadRequest = true
+		cli.virtualClusterNotRegistered = true
+		_, err = NewClusterNameMapper(ctx, cli)
+		Expect(err).ShouldNot(Succeed())
+	})
+	It("Test Cluster Version Get and Set", func() {
+		ClusterGatewaySecretNamespace = "vela-system2"
+		ctx := context.Background()
+		Expect(k8sClient.Create(ctx, &v1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: ClusterGatewaySecretNamespace}})).Should(Succeed())
+		cv, err := GetVersionInfoFromCluster(ctx, "local", cfg)
+		Expect(err).Should(BeNil())
+		Expect(cv.Minor).Should(Not(BeEquivalentTo("")))
+		Expect(cv.Major).Should(BeEquivalentTo("1"))
 	})
 
 })
+
+type fakeClient struct {
+	client.Client
+	returnBadRequest            bool
+	virtualClusterNotRegistered bool
+}
+
+func (c fakeClient) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	if !c.virtualClusterNotRegistered && c.returnBadRequest {
+		return errors.NewBadRequest("")
+	}
+	if src, ok := list.(*v1alpha1.VirtualClusterList); ok {
+		if c.virtualClusterNotRegistered {
+			return runtime.NewNotRegisteredErrForKind("", schema.GroupVersionKind{})
+		}
+		objs := &v1alpha1.VirtualClusterList{Items: []v1alpha1.VirtualCluster{{
+			ObjectMeta: metav1.ObjectMeta{Name: "example"},
+			Spec:       v1alpha1.VirtualClusterSpec{Alias: "example-alias"},
+		}, {
+			ObjectMeta: metav1.ObjectMeta{Name: "no-alias"},
+		}}}
+		objs.DeepCopyInto(src)
+		return nil
+	}
+	if c.returnBadRequest {
+		return errors.NewBadRequest("")
+	}
+	return c.Client.List(ctx, list, opts...)
+}

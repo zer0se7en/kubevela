@@ -10,9 +10,14 @@
          "parameter": {
             "type": "object",
             "required": [
-               "image"
+               "image",
+               "http"
             ],
             "properties": {
+               "image": {
+                  "description": "+usage=Which image would you like to use for your service\n+short=i",
+                  "type": "string"
+               },
                "cmd": {
                   "description": "+usage=Commands to run in the container",
                   "type": "array",
@@ -20,12 +25,14 @@
                      "type": "string"
                   }
                },
-               "image": {
-                  "description": "+usage=Which image would you like to use for your service\n+short=i",
-                  "type": "string"
-               },
                "cpu": {
                   "type": "string"
+               },
+               "http": {
+                  "type": "object",
+                  "additionalProperties": {
+                     "type": "integer"
+                  }
                }
             }
          }

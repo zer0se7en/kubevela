@@ -22,7 +22,7 @@ import (
 
 type rtConfig struct {
 	useRoot bool
-	skipRT  bool
+	skipGC  bool
 }
 
 // MetaOnlyOption record only meta part in resourcetracker, which disables the configuration-drift-prevention
@@ -31,15 +31,22 @@ type MetaOnlyOption struct{}
 // ApplyToDispatchConfig apply change to dispatch config
 func (option MetaOnlyOption) ApplyToDispatchConfig(cfg *dispatchConfig) { cfg.metaOnly = true }
 
-// SkipRTOption skip the rt recording during dispatch/delete resources, which means the resource will not be controlled
-// by application resourcetracker
-type SkipRTOption struct{}
+// CreatorOption set the creator of the resource
+type CreatorOption struct {
+	Creator string
+}
 
 // ApplyToDispatchConfig apply change to dispatch config
-func (option SkipRTOption) ApplyToDispatchConfig(cfg *dispatchConfig) { cfg.skipRT = true }
+func (option CreatorOption) ApplyToDispatchConfig(cfg *dispatchConfig) { cfg.creator = option.Creator }
+
+// SkipGCOption marks the recorded resource to skip gc
+type SkipGCOption struct{}
+
+// ApplyToDispatchConfig apply change to dispatch config
+func (option SkipGCOption) ApplyToDispatchConfig(cfg *dispatchConfig) { cfg.skipGC = true }
 
 // ApplyToDeleteConfig apply change to delete config
-func (option SkipRTOption) ApplyToDeleteConfig(cfg *deleteConfig) { cfg.skipRT = true }
+func (option SkipGCOption) ApplyToDeleteConfig(cfg *deleteConfig) { cfg.skipGC = true }
 
 // UseRootOption let the recording and management of target resource belongs to the RootRT instead of VersionedRT. This
 // will let the resource be alive as long as the application is still alive.
@@ -57,6 +64,14 @@ type PassiveGCOption struct{}
 
 // ApplyToGCConfig apply change to gc config
 func (option PassiveGCOption) ApplyToGCConfig(cfg *gcConfig) { cfg.passive = true }
+
+// DependencyGCOption recycle the resource in the order of reverse dependency
+type DependencyGCOption struct{}
+
+// ApplyToGCConfig apply change to gc config
+func (option DependencyGCOption) ApplyToGCConfig(cfg *gcConfig) {
+	cfg.order = v1alpha1.OrderDependency
+}
 
 // DisableMarkStageGCOption disable the mark stage in gc process (no rt will be marked to be deleted)
 // this option should be switched on when application workflow is suspending/terminating since workflow is not
@@ -83,19 +98,35 @@ func (option DisableLegacyGCOption) ApplyToGCConfig(cfg *gcConfig) {
 	cfg.disableLegacyGC = true
 }
 
+// DisableApplicationRevisionGCOption disable garbage collect application revision resourcetrackers
+type DisableApplicationRevisionGCOption struct{}
+
+// ApplyToGCConfig apply change to gc config
+func (option DisableApplicationRevisionGCOption) ApplyToGCConfig(cfg *gcConfig) {
+	cfg.disableApplicationRevisionGC = true
+}
+
+// AppRevisionLimitGCOption is the maximum number of application revisions that will be maintained
+type AppRevisionLimitGCOption int
+
+// ApplyToGCConfig apply change to gc config
+func (option AppRevisionLimitGCOption) ApplyToGCConfig(cfg *gcConfig) {
+	cfg.appRevisionLimit = int(option)
+}
+
 // GarbageCollectStrategyOption apply garbage collect strategy to resourcetracker recording
 type GarbageCollectStrategyOption v1alpha1.GarbageCollectStrategy
 
 func (option GarbageCollectStrategyOption) applyToRTConfig(cfg *rtConfig) {
 	switch v1alpha1.GarbageCollectStrategy(option) {
 	case v1alpha1.GarbageCollectStrategyOnAppUpdate:
-		cfg.skipRT = false
+		cfg.skipGC = false
 		cfg.useRoot = false
 	case v1alpha1.GarbageCollectStrategyOnAppDelete:
-		cfg.skipRT = false
+		cfg.skipGC = false
 		cfg.useRoot = true
 	case v1alpha1.GarbageCollectStrategyNever:
-		cfg.skipRT = true
+		cfg.skipGC = true
 	}
 }
 

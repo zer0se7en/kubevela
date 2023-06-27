@@ -62,7 +62,7 @@ status: {
       // if phase == "Pending" or "Unknown": podIP, hostIP, nodeName will be empty
       podIP:    string
       hostIP:   string
-      nodeName: strin
+      nodeName: string
     }
   }]
 }
@@ -83,7 +83,7 @@ component-pod-view{appName=demo,appNs=default,cluster=prod,clusterNs=default,nam
 
 #### describe
 
-Query the pods detail infomation
+Query the pods detail information
 
 #### parameter
 

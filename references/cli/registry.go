@@ -30,24 +30,26 @@ import (
 	"strings"
 
 	"github.com/google/go-github/v32/github"
+	"github.com/pkg/errors"
+	"github.com/spf13/cobra"
 	"golang.org/x/oauth2"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/yaml"
 
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/oam/discoverymapper"
-	"github.com/oam-dev/kubevela/pkg/oam/util"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
-	"github.com/oam-dev/kubevela/references/apis"
-	"github.com/oam-dev/kubevela/references/plugins"
-
-	"github.com/pkg/errors"
-	"github.com/spf13/cobra"
-
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
+	"github.com/oam-dev/kubevela/references/docgen"
 )
+
+// RegistryConfig is used to store registry config in file
+type RegistryConfig struct {
+	Name  string `json:"name"`
+	URL   string `json:"url"`
+	Token string `json:"token"`
+}
 
 // NewRegistryCommand Manage Capability Center
 func NewRegistryCommand(ioStream cmdutil.IOStreams, order string) *cobra.Command {
@@ -57,7 +59,7 @@ func NewRegistryCommand(ioStream cmdutil.IOStreams, order string) *cobra.Command
 		Long:  "Manage Registry of X-Definitions for extension.",
 		Annotations: map[string]string{
 			types.TagCommandOrder: order,
-			types.TagCommandType:  types.TypeExtension,
+			types.TagCommandType:  types.TypeLegacy,
 		},
 	}
 	cmd.AddCommand(
@@ -72,6 +74,7 @@ func NewRegistryCommand(ioStream cmdutil.IOStreams, order string) *cobra.Command
 func NewRegistryListCommand(ioStreams cmdutil.IOStreams) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "ls",
+		Aliases: []string{"list"},
 		Short:   "List all registry",
 		Long:    "List all configured registry",
 		Example: `vela registry ls`,
@@ -153,7 +156,7 @@ func listCapRegistrys(ioStreams cmdutil.IOStreams) error {
 
 // addRegistry will add a registry
 func addRegistry(regName, regURL, regToken string) error {
-	regConfig := apis.RegistryConfig{
+	regConfig := RegistryConfig{
 		Name: regName, URL: regURL, Token: regToken,
 	}
 	repos, err := ListRegistryConfig()
@@ -225,7 +228,7 @@ type GithubRegistry struct {
 }
 
 // NewRegistryFromConfig return Registry interface to get capabilities
-func NewRegistryFromConfig(config apis.RegistryConfig) (Registry, error) {
+func NewRegistryFromConfig(config RegistryConfig) (Registry, error) {
 	return NewRegistry(context.TODO(), config.Token, config.Name, config.URL)
 }
 
@@ -276,9 +279,8 @@ func NewRegistry(ctx context.Context, token, registryName string, regURL string)
 
 // ListRegistryConfig will get all registry config stored in local
 // this will return at least one config, which is DefaultRegistry
-func ListRegistryConfig() ([]apis.RegistryConfig, error) {
-
-	defaultRegistryConfig := apis.RegistryConfig{Name: DefaultRegistry, URL: "oss://registry.kubevela.net/"}
+func ListRegistryConfig() ([]RegistryConfig, error) {
+	defaultRegistryConfig := RegistryConfig{Name: DefaultRegistry, URL: "oss://registry.kubevela.net/"}
 	config, err := system.GetRepoConfig()
 	if err != nil {
 		return nil, err
@@ -286,7 +288,7 @@ func ListRegistryConfig() ([]apis.RegistryConfig, error) {
 	data, err := os.ReadFile(filepath.Clean(config))
 	if err != nil {
 		if os.IsNotExist(err) {
-			err := StoreRepos([]apis.RegistryConfig{defaultRegistryConfig})
+			err := StoreRepos([]RegistryConfig{defaultRegistryConfig})
 			if err != nil {
 				return nil, errors.Wrap(err, "error initialize default registry")
 			}
@@ -294,7 +296,7 @@ func ListRegistryConfig() ([]apis.RegistryConfig, error) {
 		}
 		return nil, err
 	}
-	var regConfigs []apis.RegistryConfig
+	var regConfigs []RegistryConfig
 	if err = yaml.Unmarshal(data, &regConfigs); err != nil {
 		return nil, err
 	}
@@ -543,7 +545,7 @@ func (l LocalRegistry) GetURL() string {
 func (l LocalRegistry) GetCap(addonName string) (types.Capability, []byte, error) {
 	fileName := addonName + ".yaml"
 	filePath := fmt.Sprintf("%s/%s", l.AbsPath, fileName)
-	data, err := os.ReadFile(filePath)
+	data, err := os.ReadFile(filePath) // nolint
 	if err != nil {
 		return types.Capability{}, []byte{}, err
 	}
@@ -585,11 +587,11 @@ func (l LocalRegistry) ListCaps() ([]types.Capability, error) {
 }
 
 func (item RegistryFile) toCapability() (types.Capability, error) {
-	dm, err := (&common.Args{}).GetDiscoveryMapper()
+	cli, err := (&common.Args{}).GetClient()
 	if err != nil {
 		return types.Capability{}, err
 	}
-	capability, err := ParseCapability(dm, item.data)
+	capability, err := ParseCapability(cli.RESTMapper(), item.data)
 	if err != nil {
 		return types.Capability{}, err
 	}
@@ -725,7 +727,7 @@ func Parse(addr string) (string, *Content, error) {
 }
 
 // StoreRepos will store registry repo locally
-func StoreRepos(registries []apis.RegistryConfig) error {
+func StoreRepos(registries []RegistryConfig) error {
 	config, err := system.GetRepoConfig()
 	if err != nil {
 		return err
@@ -739,39 +741,11 @@ func StoreRepos(registries []apis.RegistryConfig) error {
 }
 
 // ParseCapability will convert config from remote center to capability
-func ParseCapability(mapper discoverymapper.DiscoveryMapper, data []byte) (types.Capability, error) {
+func ParseCapability(mapper meta.RESTMapper, data []byte) (types.Capability, error) {
 	var obj = unstructured.Unstructured{Object: make(map[string]interface{})}
 	err := yaml.Unmarshal(data, &obj.Object)
 	if err != nil {
 		return types.Capability{}, err
 	}
-	switch obj.GetKind() {
-	case "ComponentDefinition":
-		var cd v1beta1.ComponentDefinition
-		err = yaml.Unmarshal(data, &cd)
-		if err != nil {
-			return types.Capability{}, err
-		}
-		var workloadDefinitionRef string
-		if cd.Spec.Workload.Type != "" {
-			workloadDefinitionRef = cd.Spec.Workload.Type
-		} else {
-			ref, err := util.ConvertWorkloadGVK2Definition(mapper, cd.Spec.Workload.Definition)
-			if err != nil {
-				return types.Capability{}, err
-			}
-			workloadDefinitionRef = ref.Name
-		}
-		return plugins.HandleDefinition(cd.Name, workloadDefinitionRef, cd.Annotations, cd.Labels, cd.Spec.Extension, types.TypeComponentDefinition, nil, cd.Spec.Schematic, nil)
-	case "TraitDefinition":
-		var td v1beta1.TraitDefinition
-		err = yaml.Unmarshal(data, &td)
-		if err != nil {
-			return types.Capability{}, err
-		}
-		return plugins.HandleDefinition(td.Name, td.Spec.Reference.Name, td.Annotations, td.Labels, td.Spec.Extension, types.TypeTrait, td.Spec.AppliesToWorkloads, td.Spec.Schematic, nil)
-	case "ScopeDefinition":
-		// TODO(wonderflow): support scope definition here.
-	}
-	return types.Capability{}, fmt.Errorf("unknown definition Type %s", obj.GetKind())
+	return docgen.ParseCapabilityFromUnstructured(mapper, nil, obj)
 }

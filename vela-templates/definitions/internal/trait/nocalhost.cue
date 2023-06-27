@@ -11,7 +11,7 @@ nocalhost: {
 	description: "nocalhost develop configuration."
 	attributes: {
 		podDisruptive: true
-		appliesToWorkloads: ["*"]
+		appliesToWorkloads: ["deployments.apps", "statefulsets.apps", "daemonsets.apps", "jobs.batch"]
 	}
 }
 
@@ -105,7 +105,7 @@ template: {
 								"portForward": parameter.portForward
 							}
 							if parameter.portForward == _|_ {
-								"portForward": ["\(parameter.port)" + ":" + "\(parameter.port)"]
+								"portForward": ["\(parameter.port):\(parameter.port)"]
 							}
 						}
 					},

@@ -17,6 +17,7 @@ limitations under the License.
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -28,15 +29,19 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/yaml"
 
 	common3 "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	pkgdef "github.com/oam-dev/kubevela/pkg/definition"
+	addonutil "github.com/oam-dev/kubevela/pkg/utils/addon"
 	common2 "github.com/oam-dev/kubevela/pkg/utils/common"
+	"github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
 const (
@@ -59,12 +64,16 @@ func initCommand(cmd *cobra.Command) {
 }
 
 func createTrait(c common2.Args, t *testing.T) string {
+	return createTraitWithOwnerAddon(c, "", t)
+}
+
+func createTraitWithOwnerAddon(c common2.Args, addonName string, t *testing.T) string {
 	traitName := fmt.Sprintf("my-trait-%d", time.Now().UnixNano())
-	createNamespacedTrait(c, traitName, VelaTestNamespace, t)
+	createNamespacedTrait(c, traitName, VelaTestNamespace, addonName, t)
 	return traitName
 }
 
-func createNamespacedTrait(c common2.Args, name string, ns string, t *testing.T) {
+func createNamespacedTrait(c common2.Args, name string, ns string, ownerAddon string, t *testing.T) {
 	traitName := fmt.Sprintf("my-trait-%d", time.Now().UnixNano())
 	client, err := c.GetClient()
 	if err != nil {
@@ -77,6 +86,9 @@ func createNamespacedTrait(c common2.Args, name string, ns string, t *testing.T)
 			Annotations: map[string]string{
 				pkgdef.DescriptionKey: "My test-trait " + traitName,
 			},
+			OwnerReferences: []v1.OwnerReference{{
+				Name: addonutil.Addon2AppName(ownerAddon),
+			}},
 		},
 		Spec: v1beta1.TraitDefinitionSpec{
 			Schematic: &common3.Schematic{CUE: &common3.CUE{Template: "parameter: {}"}},
@@ -169,7 +181,7 @@ func removeDir(dirname string, t *testing.T) {
 }
 
 func TestNewDefinitionCommandGroup(t *testing.T) {
-	cmd := DefinitionCommandGroup(common2.Args{}, "")
+	cmd := DefinitionCommandGroup(common2.Args{}, "", util.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
 	initCommand(cmd)
 	cmd.SetArgs([]string{"-h"})
 	if err := cmd.Execute(); err != nil {
@@ -300,7 +312,7 @@ spec:
         namespace: default
   workload:
     definition:
-      apiVersion: terraform.core.oam.dev/v1beta1
+      apiVersion: terraform.core.oam.dev/v1beta2
       kind: Configuration
 status: {}
 `,
@@ -327,7 +339,7 @@ spec:
       type: remote
   workload:
     definition:
-      apiVersion: terraform.core.oam.dev/v1beta1
+      apiVersion: terraform.core.oam.dev/v1beta2
       kind: Configuration
 status: {}`,
 		},
@@ -386,14 +398,14 @@ func TestNewDefinitionGetCommand(t *testing.T) {
 	cmd := NewDefinitionGetCommand(c)
 	initCommand(cmd)
 	traitName := createTrait(c, t)
-	cmd.SetArgs([]string{traitName})
+	cmd.SetArgs([]string{traitName, "-n" + VelaTestNamespace})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpeced error when executing get command: %v", err)
 	}
 	// test multi trait
 	cmd = NewDefinitionGetCommand(c)
 	initCommand(cmd)
-	createNamespacedTrait(c, traitName, "default", t)
+	createNamespacedTrait(c, traitName, "default", "", t)
 	cmd.SetArgs([]string{traitName})
 	if err := cmd.Execute(); err == nil {
 		t.Fatalf("expect found multiple traits error, but not found")
@@ -405,11 +417,51 @@ func TestNewDefinitionGetCommand(t *testing.T) {
 	if err := cmd.Execute(); err == nil {
 		t.Fatalf("expect found no trait error, but not found")
 	}
+
+	// Load test DefinitionRevisions files into client
+	dir := filepath.Join("..", "..", "pkg", "definition", "testdata")
+	testFiles, err := os.ReadDir(dir)
+	assert.NoError(t, err, "read testdata failed")
+	for _, file := range testFiles {
+		if !strings.HasSuffix(file.Name(), ".yaml") {
+			continue
+		}
+		content, err := os.ReadFile(filepath.Join(dir, file.Name()))
+		assert.NoError(t, err)
+		def := &v1beta1.DefinitionRevision{}
+		err = yaml.Unmarshal(content, def)
+		assert.NoError(t, err)
+		client, err := c.GetClient()
+		assert.NoError(t, err)
+		err = client.Create(context.TODO(), def)
+		assert.NoError(t, err, "cannot create "+file.Name())
+	}
+
+	// test get revision list
+	cmd = NewDefinitionGetCommand(c)
+	initCommand(cmd)
+	cmd.SetArgs([]string{"webservice", "--revisions", "--namespace=rev-test-ns"})
+	err = cmd.Execute()
+	assert.NoError(t, err)
+
+	// test get a non-existent revision
+	cmd = NewDefinitionGetCommand(c)
+	initCommand(cmd)
+	cmd.SetArgs([]string{"webservice", "--revision=3"})
+	err = cmd.Execute()
+	assert.NotNil(t, err, "should have not found error")
+
+	// test get a revision
+	cmd = NewDefinitionGetCommand(c)
+	initCommand(cmd)
+	cmd.SetArgs([]string{"webservice", "--revision=1", "--namespace=rev-test-ns"})
+	err = cmd.Execute()
+	assert.NoError(t, err)
 }
 
-func TestNewDefinitionGenDocCommand(t *testing.T) {
+func TestNewDefinitionDocGenCommand(t *testing.T) {
 	c := initArgs()
-	cmd := NewDefinitionGenDocCommand(c)
+	cmd := NewDefinitionDocGenCommand(c, util.IOStreams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
 	assert.NotNil(t, cmd.Execute())
 
 	cmd.SetArgs([]string{"alibaba-xxxxxxx"})
@@ -433,6 +485,13 @@ func TestNewDefinitionListCommand(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("no trait found should not return error, err: %v", err)
 	}
+	// with addon filter
+	cmd = NewDefinitionListCommand(c)
+	initCommand(cmd)
+	cmd.SetArgs([]string{"--from", "non-existent-addon"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("applying addon filter should not return error, err: %v", err)
+	}
 }
 
 func TestNewDefinitionEditCommand(t *testing.T) {
@@ -444,14 +503,14 @@ func TestNewDefinitionEditCommand(t *testing.T) {
 	if err := os.Setenv("EDITOR", "sed -i -e 's/test-trait/TestTrait/g'"); err != nil {
 		t.Fatalf("failed to set editor env: %v", err)
 	}
-	cmd.SetArgs([]string{traitName})
+	cmd.SetArgs([]string{traitName, "-n", VelaTestNamespace})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpeced error when executing edit command: %v", err)
 	}
 	// test no change
 	cmd = NewDefinitionEditCommand(c)
 	initCommand(cmd)
-	createNamespacedTrait(c, traitName, "default", t)
+	createNamespacedTrait(c, traitName, "default", "", t)
 	if err := os.Setenv("EDITOR", "sed -i -e 's/test-trait-test/TestTrait/g'"); err != nil {
 		t.Fatalf("failed to set editor env: %v", err)
 	}
@@ -501,8 +560,9 @@ func TestNewDefinitionRenderCommand(t *testing.T) {
 
 func TestNewDefinitionApplyCommand(t *testing.T) {
 	c := initArgs()
+	ioStreams := util.IOStreams{In: os.Stdin, Out: bytes.NewBuffer(nil), ErrOut: bytes.NewBuffer(nil)}
 	// dry-run test
-	cmd := NewDefinitionApplyCommand(c)
+	cmd := NewDefinitionApplyCommand(c, ioStreams)
 	initCommand(cmd)
 	_, traitFilename := createLocalTrait(t)
 	defer removeFile(traitFilename, t)
@@ -511,7 +571,7 @@ func TestNewDefinitionApplyCommand(t *testing.T) {
 		t.Fatalf("unexpeced error when executing apply command: %v", err)
 	}
 	// normal test and reapply
-	cmd = NewDefinitionApplyCommand(c)
+	cmd = NewDefinitionApplyCommand(c, ioStreams)
 	initCommand(cmd)
 	cmd.SetArgs([]string{traitFilename})
 	for i := 0; i < 2; i++ {
@@ -528,7 +588,7 @@ func TestNewDefinitionDelCommand(t *testing.T) {
 	traitName := createTrait(c, t)
 	reader := strings.NewReader("yes\n")
 	cmd.SetIn(reader)
-	cmd.SetArgs([]string{traitName})
+	cmd.SetArgs([]string{traitName, "-n", VelaTestNamespace})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpeced error when executing del command: %v", err)
 	}
@@ -553,8 +613,14 @@ func TestNewDefinitionVetCommand(t *testing.T) {
 	cmd := NewDefinitionValidateCommand(c)
 	initCommand(cmd)
 	_, traitFilename := createLocalTrait(t)
+	_, traitFilename2 := createLocalTrait(t)
+	_, traitFilename3 := createLocalTrait(t)
 	defer removeFile(traitFilename, t)
 	cmd.SetArgs([]string{traitFilename})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpeced error when executing vet command: %v", err)
+	}
+	cmd.SetArgs([]string{traitFilename, traitFilename2, traitFilename3})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("unexpeced error when executing vet command: %v", err)
 	}
@@ -569,4 +635,67 @@ func TestNewDefinitionVetCommand(t *testing.T) {
 	if err = cmd.Execute(); err == nil {
 		t.Fatalf("expect validation failed but error not found")
 	}
+	cmd.SetArgs([]string{traitFilename, traitFilename2, traitFilename3})
+	if err = cmd.Execute(); err == nil {
+		t.Fatalf("expect validation failed but error not found")
+	}
+	cmd.SetArgs([]string{"./test-data/defvet"})
+	if err = cmd.Execute(); err != nil {
+		t.Fatalf("unexpeced error when executing vet command: %v", err)
+	}
+}
+
+func TestNewDefinitionGenAPICommand(t *testing.T) {
+	c := initArgs()
+	cmd := NewDefinitionGenAPICommand(c)
+	initCommand(cmd)
+	internalDefPath := "../../vela-templates/definitions/internal/"
+
+	cmd.SetArgs([]string{"-f", internalDefPath, "-o", "../vela-sdk-gen", "--init", "--verbose"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("unexpeced error when executing genapi command: %v", err)
+	}
+}
+
+// re-use the provider testdata
+const providerTestDataPath = "../cuegen/generators/provider/testdata"
+
+func TestNewDefinitionGenCUECommand(t *testing.T) {
+	c := initArgs()
+	got := bytes.NewBuffer(nil)
+	cmd := NewDefinitionGenCUECommand(c, util.IOStreams{Out: got})
+	initCommand(cmd)
+
+	cmd.SetArgs([]string{
+		"-t", genTypeProvider,
+		"--types", "*k8s.io/apimachinery/pkg/apis/meta/v1/unstructured.Unstructured=ellipsis",
+		"--types", "*k8s.io/apimachinery/pkg/apis/meta/v1/unstructured.UnstructuredList=ellipsis",
+		filepath.Join(providerTestDataPath, "valid.go"),
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	expected, err := os.ReadFile(filepath.Join(providerTestDataPath, "valid.cue"))
+	require.NoError(t, err)
+
+	assert.Equal(t, string(expected), got.String())
+}
+
+func TestNewDefinitionGenDocCommand(t *testing.T) {
+	c := initArgs()
+	got := bytes.NewBuffer(nil)
+	cmd := NewDefinitionGenDocCommand(c, util.IOStreams{Out: got})
+	initCommand(cmd)
+
+	cmd.SetArgs([]string{
+		"-t", genTypeProvider,
+		filepath.Join(providerTestDataPath, "valid.cue"),
+	})
+
+	require.NoError(t, cmd.Execute())
+
+	expected, err := os.ReadFile(filepath.Join(providerTestDataPath, "valid.md"))
+	require.NoError(t, err)
+
+	assert.Equal(t, string(expected), got.String())
 }

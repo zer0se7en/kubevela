@@ -11,7 +11,10 @@ metadata:
   namespace: {{ include "systemDefinitionNamespace" . }}
 spec:
   appliesToWorkloads:
-    - '*'
+    - deployments.apps
+    - statefulsets.apps
+    - daemonsets.apps
+    - jobs.batch
   schematic:
     cue:
       template: |
@@ -36,6 +39,7 @@ spec:
         		]
         	}]
         }
+
         parameter: {
         	// +usage=The mapping of environment variables to secret
         	envMappings: [string]: #KeySecret

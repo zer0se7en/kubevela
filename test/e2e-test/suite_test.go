@@ -18,16 +18,13 @@ package controllers_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"math/rand"
 	"strconv"
 	"testing"
 	"time"
 
-	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
-
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	kruise "github.com/openkruise/kruise-api/apps/v1alpha1"
@@ -40,38 +37,29 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
-	"sigs.k8s.io/controller-runtime/pkg/envtest/printer"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	controllerscheme "sigs.k8s.io/controller-runtime/pkg/scheme"
 
 	core "github.com/oam-dev/kubevela/apis/core.oam.dev"
 	commontypes "github.com/oam-dev/kubevela/apis/core.oam.dev/common"
-	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
+	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
 	// +kubebuilder:scaffold:imports
 )
 
 var k8sClient client.Client
 var scheme = runtime.NewScheme()
-var manualscalertrait v1alpha2.TraitDefinition
 var roleName = "oam-example-com"
 var roleBindingName = "oam-role-binding"
-
-// A DefinitionExtension is an Object type for xxxDefinitin.spec.extension
-type DefinitionExtension struct {
-	Alias string `json:"alias,omitempty"`
-}
 
 func TestAPIs(t *testing.T) {
 	RegisterFailHandler(Fail)
 
-	RunSpecsWithDefaultAndCustomReporters(t,
-		"OAM Core Resource Controller Suite",
-		[]Reporter{printer.NewlineReporter{}})
+	RunSpecs(t, "OAM Core Resource Controller Suite")
 }
 
-var _ = BeforeSuite(func(done Done) {
+var _ = BeforeSuite(func() {
 	By("Bootstrapping test environment")
 	rand.Seed(time.Now().UnixNano())
 	logf.SetLogger(zap.New(zap.UseDevMode(true), zap.WriteTo(GinkgoWriter)))
@@ -94,8 +82,6 @@ var _ = BeforeSuite(func(done Done) {
 	depSchemeBuilder.Register(depExample.DeepCopyObject())
 	err = depSchemeBuilder.AddToScheme(scheme)
 	Expect(err).Should(BeNil())
-	err = v1alpha1.AddToScheme(scheme)
-	Expect(err).Should(BeNil())
 	By("Setting up kubernetes client")
 	k8sClient, err = client.New(config.GetConfigOrDie(), client.Options{Scheme: scheme})
 	if err != nil {
@@ -104,39 +90,13 @@ var _ = BeforeSuite(func(done Done) {
 	}
 	By("Finished setting up test environment")
 
-	// Create manual scaler trait definition
-	manualscalertrait = v1alpha2.TraitDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "manualscalertraits.core.oam.dev",
-			Namespace: "vela-system",
-			Labels:    map[string]string{"trait": "manualscalertrait"},
-		},
-		Spec: v1alpha2.TraitDefinitionSpec{
-			WorkloadRefPath: "spec.workloadRef",
-			Reference: commontypes.DefinitionReference{
-				Name: "manualscalertraits.core.oam.dev",
-			},
-		},
-	}
-	// For some reason, traitDefinition is created as a Cluster scope object
-	Expect(k8sClient.Create(context.Background(), manualscalertrait.DeepCopy())).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
-	Expect(k8sClient.Create(context.Background(), &manualscalertrait)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
-	// Create manual scaler trait definition with spec.extension field
-	definitionExtension := DefinitionExtension{
-		Alias: "ManualScaler",
-	}
-	in := new(runtime.RawExtension)
-	in.Raw, _ = json.Marshal(definitionExtension)
-
-	By("Created extended manualscalertraits.core.oam.dev")
-
 	// create workload definition for 'deployments'
-	wdDeploy := v1alpha2.WorkloadDefinition{
+	wdDeploy := v1beta1.WorkloadDefinition{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "deployments.apps",
 			Namespace: "vela-system",
 		},
-		Spec: v1alpha2.WorkloadDefinitionSpec{
+		Spec: v1beta1.WorkloadDefinitionSpec{
 			Reference: commontypes.DefinitionReference{
 				Name: "deployments.apps",
 			},
@@ -181,9 +141,7 @@ var _ = BeforeSuite(func(done Done) {
 	}
 	Expect(k8sClient.Create(context.Background(), &adminRoleBinding)).Should(SatisfyAny(BeNil(), &util.AlreadyExistMatcher{}))
 	By("Created cluster role binding for the test service account")
-
-	close(done)
-}, 300)
+})
 
 var _ = AfterSuite(func() {
 	By("Tearing down the test environment")

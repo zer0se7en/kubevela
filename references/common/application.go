@@ -21,41 +21,28 @@ import (
 	"context"
 	j "encoding/json"
 	"fmt"
-	"io/ioutil"
-	"os"
-	"path/filepath"
-	"time"
 
-	"github.com/crossplane/crossplane-runtime/pkg/meta"
 	"github.com/fatih/color"
-	"github.com/gosuri/uilive"
-	"github.com/pkg/errors"
+	terraformapi "github.com/oam-dev/terraform-controller/api/v1beta2"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	apitypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	corev1alpha2 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1alpha2"
 	corev1beta1 "github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/apis/types"
 	"github.com/oam-dev/kubevela/pkg/oam"
-	"github.com/oam-dev/kubevela/pkg/resourcekeeper"
 	"github.com/oam-dev/kubevela/pkg/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/apply"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
+	"github.com/oam-dev/kubevela/pkg/velaql/providers/query"
+	querytypes "github.com/oam-dev/kubevela/pkg/velaql/providers/query/types"
 	"github.com/oam-dev/kubevela/references/appfile"
 	"github.com/oam-dev/kubevela/references/appfile/api"
 	"github.com/oam-dev/kubevela/references/appfile/template"
-)
-
-const (
-	resourceTrackerFinalizer = "app.oam.dev/resource-tracker-finalizer"
-	// legacyOnlyRevisionFinalizer is to delete all resource trackers of app revisions which may be used
-	// out of the domain of app controller, e.g., AppRollout controller.
-	legacyOnlyRevisionFinalizer = "app.oam.dev/only-revision-finalizer"
 )
 
 // AppfileOptions is some configuration that modify options for an Appfile
@@ -63,6 +50,7 @@ type AppfileOptions struct {
 	Kubecli   client.Client
 	IO        cmdutil.IOStreams
 	Namespace string
+	Name      string
 }
 
 // BuildResult is the export struct from AppFile yaml or AppFile object
@@ -72,205 +60,50 @@ type BuildResult struct {
 	scopes      []oam.Object
 }
 
-// Option is option work with dashboard api server
-type Option struct {
-	// Optional filter, if specified, only components in such app will be listed
-	AppName string
-
-	Namespace string
-}
-
-// DeleteOptions is options for delete
-type DeleteOptions struct {
-	Namespace string
-	AppName   string
-	CompName  string
-	Client    client.Client
-	C         common.Args
-
-	Wait        bool
-	ForceDelete bool
-}
-
-// DeleteApp will delete app including server side
-func (o *DeleteOptions) DeleteApp(io cmdutil.IOStreams) error {
-	if o.ForceDelete {
-		return o.ForceDeleteApp(io)
-	}
-	if o.Wait {
-		return o.WaitUntilDeleteApp(io)
-	}
-	return o.DeleteAppWithoutDoubleCheck(io)
-}
-
-// ForceDeleteApp force delete the application
-func (o *DeleteOptions) ForceDeleteApp(io cmdutil.IOStreams) error {
-	ctx := context.Background()
-	err := o.DeleteAppWithoutDoubleCheck(io)
-	if err != nil {
-		return err
-	}
-	app := new(corev1beta1.Application)
-	err = o.Client.Get(ctx, client.ObjectKey{Name: o.AppName, Namespace: o.Namespace}, app)
-	if err != nil {
-		return client.IgnoreNotFound(err)
-	}
-	io.Info("force deleted the resources created by application")
-	err = wait.PollImmediate(1*time.Second, 1*time.Minute, func() (done bool, err error) {
-		err = o.Client.Get(ctx, client.ObjectKeyFromObject(app), app)
-		if apierrors.IsNotFound(err) {
-			return true, nil
-		}
-		rk, err := resourcekeeper.NewResourceKeeper(ctx, o.Client, app)
-		if err != nil {
-			return false, errors.Wrapf(err, "failed to create resource keeper to run garbage collection")
-		}
-		if done, _, err = rk.GarbageCollect(ctx); err != nil && !apierrors.IsConflict(err) {
-			return false, errors.Wrapf(err, "failed to run garbage collect")
-		}
-		if done {
-			meta.RemoveFinalizer(app, resourceTrackerFinalizer)
-			meta.RemoveFinalizer(app, legacyOnlyRevisionFinalizer)
-			if err = o.Client.Update(ctx, app); err != nil && !apierrors.IsConflict(err) && !apierrors.IsNotFound(err) {
-				return false, errors.Wrapf(err, "failed to update app finalizer")
-			}
-		}
-		return false, nil
-	})
-	if err != nil {
-		io.Info("successfully cleanup the resources created by application, but fail to delete the application")
-		return err
-	}
-	return nil
-}
-
-// WaitUntilDeleteApp will wait until the application is completely deleted
-func (o *DeleteOptions) WaitUntilDeleteApp(io cmdutil.IOStreams) error {
-	tryCnt, startTime := 0, time.Now()
-	writer := uilive.New()
-	writer.Start()
-	defer writer.Stop()
-
-	io.Infof(color.New(color.FgYellow).Sprintf("waiting for delete the application \"%s\"...\n", o.AppName))
-	err := wait.PollImmediate(2*time.Second, 5*time.Minute, func() (done bool, err error) {
-		tryCnt++
-		fmt.Fprintf(writer, "try to delete the application for the %d time, wait a total of %f s\n", tryCnt, time.Since(startTime).Seconds())
-		err = o.DeleteAppWithoutDoubleCheck(io)
-		if err != nil {
-			fmt.Printf("Failed delete Application \"%s\": %s\n", o.AppName, err.Error())
-			return false, nil
-		}
-		app := new(corev1beta1.Application)
-		err = o.Client.Get(context.Background(), client.ObjectKey{Name: o.AppName, Namespace: o.Namespace}, app)
-		if apierrors.IsNotFound(err) {
-			return true, nil
-		}
-		return false, nil
-	})
-	if err != nil {
-		io.Info("waiting for the application to be deleted timed out, please try again")
-		return err
-	}
-	return nil
-}
-
-// DeleteAppWithoutDoubleCheck delete application without double check
-func (o *DeleteOptions) DeleteAppWithoutDoubleCheck(io cmdutil.IOStreams) error {
-	ctx := context.Background()
-	var app = new(corev1beta1.Application)
-	err := o.Client.Get(ctx, client.ObjectKey{Name: o.AppName, Namespace: o.Namespace}, app)
+// PrepareToForceDeleteTerraformComponents sets Terraform typed Component to force-delete mode
+func PrepareToForceDeleteTerraformComponents(ctx context.Context, k8sClient client.Client, namespace, name string) error {
+	var (
+		app         = new(corev1beta1.Application)
+		forceDelete = true
+	)
+	err := k8sClient.Get(ctx, client.ObjectKey{Name: name, Namespace: namespace}, app)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
-			return fmt.Errorf("app %s already deleted or not exist", o.AppName)
+			return fmt.Errorf("app %s already deleted or not exist", name)
 		}
 		return fmt.Errorf("delete application err: %w", err)
 	}
-
-	err = o.Client.Delete(ctx, app)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete application err: %w", err)
-	}
-
-	for _, cmp := range app.Spec.Components {
-		healthScopeName, ok := cmp.Scopes[api.DefaultHealthScopeKey]
-		if ok {
-			var healthScope corev1alpha2.HealthScope
-			if err := o.Client.Get(ctx, client.ObjectKey{Namespace: o.Namespace, Name: healthScopeName}, &healthScope); err != nil {
-				if apierrors.IsNotFound(err) {
-					continue
-				}
-				return fmt.Errorf("delete health scope %s err: %w", healthScopeName, err)
+	for _, c := range app.Spec.Components {
+		var def corev1beta1.ComponentDefinition
+		if err := k8sClient.Get(ctx, client.ObjectKey{Name: c.Type, Namespace: types.DefaultKubeVelaNS}, &def); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return err
 			}
-			if err = o.Client.Delete(ctx, &healthScope); err != nil {
-				return fmt.Errorf("delete health scope %s err: %w", healthScopeName, err)
+			if err := k8sClient.Get(ctx, client.ObjectKey{Name: c.Type, Namespace: namespace}, &def); err != nil {
+				return err
+			}
+		}
+		if def.Spec.Schematic != nil && def.Spec.Schematic.Terraform != nil {
+			var conf terraformapi.Configuration
+			if err := k8sClient.Get(ctx, client.ObjectKey{Name: c.Name, Namespace: namespace}, &conf); err != nil {
+				return err
+			}
+			conf.Spec.ForceDelete = &forceDelete
+			if err := k8sClient.Update(ctx, &conf); err != nil {
+				return err
 			}
 		}
 	}
-	return nil
-}
-
-// DeleteComponent will delete one component including server side.
-func (o *DeleteOptions) DeleteComponent(io cmdutil.IOStreams) error {
-	var err error
-	if o.AppName == "" {
-		return errors.New("app name is required")
-	}
-	app, err := appfile.LoadApplication(o.Namespace, o.AppName, o.C)
-	if err != nil {
-		return err
-	}
-
-	if len(appfile.GetComponents(app)) <= 1 {
-		return o.DeleteApp(io)
-	}
-
-	// Remove component from local appfile
-	if err := appfile.RemoveComponent(app, o.CompName); err != nil {
-		return err
-	}
-
-	// Remove component from appConfig in k8s cluster
-	ctx := context.Background()
-
-	if err := o.Client.Update(ctx, app); err != nil {
-		return err
-	}
-
-	// It's the server responsibility to GC component
 	return nil
 }
 
 // LoadAppFile will load vela appfile from remote URL or local file system.
 func LoadAppFile(pathOrURL string) (*api.AppFile, error) {
-	body, err := ReadRemoteOrLocalPath(pathOrURL)
+	body, err := utils.ReadRemoteOrLocalPath(pathOrURL, false)
 	if err != nil {
 		return nil, err
 	}
 	return api.LoadFromBytes(body)
-}
-
-// ReadRemoteOrLocalPath will read a path remote or locally
-func ReadRemoteOrLocalPath(pathOrURL string) ([]byte, error) {
-	if pathOrURL == "-" {
-		return ioutil.ReadAll(os.Stdin)
-	}
-	var body []byte
-	var err error
-	if utils.IsValidURL(pathOrURL) {
-		body, err = common.HTTPGet(context.Background(), pathOrURL)
-		if err != nil {
-			return nil, err
-		}
-		if err = localSave(pathOrURL, body); err != nil {
-			return nil, err
-		}
-	} else {
-		body, err = os.ReadFile(filepath.Clean(pathOrURL))
-		if err != nil {
-			return nil, err
-		}
-	}
-	return body, nil
 }
 
 // IsAppfile check if a file is Appfile format or application format, return true if it's appfile, false means application object
@@ -289,25 +122,6 @@ func IsAppfile(body []byte) bool {
 		return false
 	}
 	return true
-}
-
-func localSave(url string, body []byte) error {
-	var name string
-	ext := filepath.Ext(url)
-	switch ext {
-	case ".json":
-		name = "vela.json"
-	case ".yaml", ".yml":
-		name = "vela.yaml"
-	default:
-		if j.Valid(body) {
-			name = "vela.json"
-		} else {
-			name = "vela.yaml"
-		}
-	}
-	//nolint:gosec
-	return os.WriteFile(name, body, 0644)
 }
 
 // ExportFromAppFile exports Application from appfile object
@@ -381,16 +195,16 @@ func (o *AppfileOptions) BaseAppFileRun(result *BuildResult, args common.Args) e
 		return err
 	}
 	result.application.Spec.Components = kubernetesComponent
-
+	o.Name = result.application.Name
 	o.IO.Infof("\nApplying application ...\n")
 	return o.ApplyApp(result.application, result.scopes)
 }
 
 // ApplyApp applys config resources for the app.
 // It differs by create and update:
-// - for create, it displays app status along with information of url, metrics, ssh, logging.
-// - for update, it rolls out a canary deployment and prints its information. User can verify the canary deployment.
-//   This will wait for user approval. If approved, it continues upgrading the whole; otherwise, it would rollback.
+//   - for create, it displays app status along with information of url, metrics, ssh, logging.
+//   - for update, it rolls out a canary deployment and prints its information. User can verify the canary deployment.
+//     This will wait for user approval. If approved, it continues upgrading the whole; otherwise, it would rollback.
 func (o *AppfileOptions) ApplyApp(app *corev1beta1.Application, scopes []oam.Object) error {
 	key := apitypes.NamespacedName{
 		Namespace: app.Namespace,
@@ -423,15 +237,17 @@ func (o *AppfileOptions) apply(app *corev1beta1.Application, scopes []oam.Object
 
 // Info shows the status of each service in the Appfile
 func Info(app *corev1beta1.Application) string {
+	yellow := color.New(color.FgYellow)
 	appName := app.Name
-	var appUpMessage = "✅ App has been deployed 🚀🚀🚀\n" +
-		fmt.Sprintf("    Port forward: vela port-forward %s\n", appName) +
-		fmt.Sprintf("             SSH: vela exec %s\n", appName) +
-		fmt.Sprintf("         Logging: vela logs %s\n", appName) +
-		fmt.Sprintf("      App status: vela status %s\n", appName)
-	for _, comp := range app.Spec.Components {
-		appUpMessage += fmt.Sprintf("  Service status: vela status %s --svc %s\n", appName, comp.Name)
+	if app.Namespace != "" && app.Namespace != "default" {
+		appName += " -n " + app.Namespace
 	}
+	var appUpMessage = "✅ App has been deployed 🚀🚀🚀\n" +
+		"    Port forward: " + yellow.Sprintf("vela port-forward %s\n", appName) +
+		"             SSH: " + yellow.Sprintf("vela exec %s\n", appName) +
+		"         Logging: " + yellow.Sprintf("vela logs %s\n", appName) +
+		"      App status: " + yellow.Sprintf("vela status %s\n", appName) +
+		"        Endpoint: " + yellow.Sprintf("vela status %s --endpoint\n", appName)
 	return appUpMessage
 }
 
@@ -451,4 +267,46 @@ func ApplyApplication(app corev1beta1.Application, ioStream cmdutil.IOStreams, c
 	}
 	ioStream.Infof(Info(&app))
 	return nil
+}
+
+// CollectApplicationResource collects all resources of an application
+func CollectApplicationResource(ctx context.Context, c client.Client, opt query.Option) ([]unstructured.Unstructured, error) {
+	app := new(corev1beta1.Application)
+	appKey := client.ObjectKey{Name: opt.Name, Namespace: opt.Namespace}
+	if err := c.Get(context.Background(), appKey, app); err != nil {
+		return nil, err
+	}
+	collector := query.NewAppCollector(c, opt)
+	appResList, err := collector.ListApplicationResources(context.Background(), app)
+	if err != nil {
+		return nil, err
+	}
+	var resources = make([]unstructured.Unstructured, 0)
+	for _, res := range appResList {
+		if res.ResourceTree != nil {
+			resources = append(resources, sonLeafResource(*res, res.ResourceTree, opt.Filter.Kind, opt.Filter.APIVersion)...)
+		}
+		if (opt.Filter.Kind == "" && opt.Filter.APIVersion == "") || (res.Kind == opt.Filter.Kind && res.APIVersion == opt.Filter.APIVersion) {
+			var object unstructured.Unstructured
+			object.SetAPIVersion(opt.Filter.APIVersion)
+			object.SetKind(opt.Filter.Kind)
+			if err := c.Get(ctx, apitypes.NamespacedName{Namespace: res.Namespace, Name: res.Name}, &object); err == nil {
+				resources = append(resources, object)
+			}
+		}
+	}
+	return resources, nil
+}
+
+func sonLeafResource(res querytypes.AppliedResource, node *querytypes.ResourceTreeNode, kind string, apiVersion string) []unstructured.Unstructured {
+	objects := make([]unstructured.Unstructured, 0)
+	if node.LeafNodes != nil {
+		for i := 0; i < len(node.LeafNodes); i++ {
+			objects = append(objects, sonLeafResource(res, node.LeafNodes[i], kind, apiVersion)...)
+		}
+	}
+	if (kind == "" && apiVersion == "") || (node.Kind == kind && node.APIVersion == apiVersion) {
+		objects = append(objects, node.Object)
+	}
+	return objects
 }

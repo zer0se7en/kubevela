@@ -20,27 +20,17 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/oam-dev/terraform-controller/api/v1beta1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-
+	types "github.com/oam-dev/terraform-controller/api/types/crossplane-runtime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
-	"github.com/oam-dev/kubevela/apis/standard.oam.dev/v1alpha1"
 	"github.com/oam-dev/kubevela/pkg/oam"
 )
-
-// Kube defines the encapsulation in raw Kubernetes resource format
-type Kube struct {
-	// Template defines the raw Kubernetes resource
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Template runtime.RawExtension `json:"template"`
-
-	// Parameters defines configurable parameters
-	Parameters []KubeParameter `json:"parameters,omitempty"`
-}
 
 // ParameterValueType refers to a data type of parameter
 type ParameterValueType string
@@ -52,31 +42,6 @@ const (
 	BooleanType ParameterValueType = "boolean"
 )
 
-// A KubeParameter defines a configurable parameter of a component.
-type KubeParameter struct {
-	// Name of this parameter
-	Name string `json:"name"`
-
-	// +kubebuilder:validation:Enum:=string;number;boolean
-	// ValueType indicates the type of the parameter value, and
-	// only supports basic data types: string, number, boolean.
-	ValueType ParameterValueType `json:"type"`
-
-	// FieldPaths specifies an array of fields within this workload that will be
-	// overwritten by the value of this parameter. 	All fields must be of the
-	// same type. Fields are specified as JSON field paths without a leading
-	// dot, for example 'spec.replicas'.
-	FieldPaths []string `json:"fieldPaths"`
-
-	// +kubebuilder:default:=false
-	// Required specifies whether or not a value for this parameter must be
-	// supplied when authoring an Application.
-	Required *bool `json:"required,omitempty"`
-
-	// Description of this parameter.
-	Description *string `json:"description,omitempty"`
-}
-
 // CUE defines the encapsulation in CUE format
 type CUE struct {
 	// Template defines the abstraction template data of the capability, it will replace the old CUE template in extension field.
@@ -87,24 +52,9 @@ type CUE struct {
 // Schematic defines the encapsulation of this capability(workload/trait/scope),
 // the encapsulation can be defined in different ways, e.g. CUE/HCL(terraform)/KUBE(K8s Object)/HELM, etc...
 type Schematic struct {
-	KUBE *Kube `json:"kube,omitempty"`
-
 	CUE *CUE `json:"cue,omitempty"`
 
-	HELM *Helm `json:"helm,omitempty"`
-
 	Terraform *Terraform `json:"terraform,omitempty"`
-}
-
-// A Helm represents resources used by a Helm module
-type Helm struct {
-	// Release records a Helm release used by a Helm module workload.
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Release runtime.RawExtension `json:"release"`
-
-	// HelmRelease records a Helm repository used by a Helm module workload.
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Repository runtime.RawExtension `json:"repository"`
 }
 
 // Terraform is the struct to describe cloud resources managed by Hashicorp Terraform
@@ -120,7 +70,25 @@ type Terraform struct {
 	// Path is the sub-directory of remote git repository. It's valid when remote is set
 	Path string `json:"path,omitempty"`
 
-	v1beta1.BaseConfigurationSpec `json:",inline"`
+	// WriteConnectionSecretToReference specifies the namespace and name of a
+	// Secret to which any connection details for this managed resource should
+	// be written. Connection details frequently include the endpoint, username,
+	// and password required to connect to the managed resource.
+	// +optional
+	WriteConnectionSecretToReference *types.SecretReference `json:"writeConnectionSecretToRef,omitempty"`
+
+	// ProviderReference specifies the reference to Provider
+	ProviderReference *types.Reference `json:"providerRef,omitempty"`
+
+	// DeleteResource will determine whether provisioned cloud resources will be deleted when CR is deleted
+	// +kubebuilder:default:=true
+	DeleteResource bool `json:"deleteResource,omitempty"`
+
+	// Region is cloud provider's region. It will override the region in the region field of ProviderReference
+	Region string `json:"customRegion,omitempty"`
+
+	// GitCredentialsSecretReference specifies the reference to the secret containing the git credentials
+	GitCredentialsSecretReference *corev1.SecretReference `json:"gitCredentialsSecretReference,omitempty"`
 }
 
 // A WorkloadTypeDescriptor refer to a Workload Type
@@ -173,8 +141,6 @@ type Status struct {
 type ApplicationPhase string
 
 const (
-	// ApplicationRollingOut means the app is in the middle of rolling out
-	ApplicationRollingOut ApplicationPhase = "rollingOut"
 	// ApplicationStarting means the app is preparing for reconcile
 	ApplicationStarting ApplicationPhase = "starting"
 	// ApplicationRendering means the app is rendering
@@ -187,8 +153,8 @@ const (
 	ApplicationWorkflowSuspending ApplicationPhase = "workflowSuspending"
 	// ApplicationWorkflowTerminated means the app's workflow is terminated
 	ApplicationWorkflowTerminated ApplicationPhase = "workflowTerminated"
-	// ApplicationWorkflowFinished means the app's workflow is finished
-	ApplicationWorkflowFinished ApplicationPhase = "workflowFinished"
+	// ApplicationWorkflowFailed means the app's workflow is failed
+	ApplicationWorkflowFailed ApplicationPhase = "workflowFailed"
 	// ApplicationRunning means the app finished rendering and applied result to the cluster
 	ApplicationRunning ApplicationPhase = "running"
 	// ApplicationUnhealthy means the app finished rendering and applied result to the cluster, but still unhealthy
@@ -197,36 +163,24 @@ const (
 	ApplicationDeleting ApplicationPhase = "deleting"
 )
 
-// WorkflowState is a string that mark the workflow state
-type WorkflowState string
-
-const (
-	// WorkflowStateInitializing means the workflow is in initial state
-	WorkflowStateInitializing WorkflowState = "initializing"
-	// WorkflowStateTerminated means workflow is terminated manually, and it won't be started unless the spec changed.
-	WorkflowStateTerminated WorkflowState = "terminated"
-	// WorkflowStateSuspended means workflow is suspended manually, and it can be resumed.
-	WorkflowStateSuspended WorkflowState = "suspended"
-	// WorkflowStateSucceeded means workflow is running successfully, all steps finished.
-	WorkflowStateSucceeded WorkflowState = "Succeeded"
-	// WorkflowStateFinished means workflow is end.
-	WorkflowStateFinished WorkflowState = "finished"
-	// WorkflowStateExecuting means workflow is still running or waiting some steps.
-	WorkflowStateExecuting WorkflowState = "executing"
-	// WorkflowStateSkipping means it will skip this reconcile and let next reconcile to handle it.
-	WorkflowStateSkipping WorkflowState = "skipping"
-)
-
 // ApplicationComponentStatus record the health status of App component
 type ApplicationComponentStatus struct {
-	Name string `json:"name"`
-	Env  string `json:"env,omitempty"`
+	Name      string `json:"name"`
+	Namespace string `json:"namespace,omitempty"`
+	Cluster   string `json:"cluster,omitempty"`
+	Env       string `json:"env,omitempty"`
 	// WorkloadDefinition is the definition of a WorkloadDefinition, such as deployments/apps.v1
 	WorkloadDefinition WorkloadGVK              `json:"workloadDefinition,omitempty"`
 	Healthy            bool                     `json:"healthy"`
 	Message            string                   `json:"message,omitempty"`
 	Traits             []ApplicationTraitStatus `json:"traits,omitempty"`
 	Scopes             []corev1.ObjectReference `json:"scopes,omitempty"`
+}
+
+// Equal check if two ApplicationComponentStatus are equal
+func (in ApplicationComponentStatus) Equal(r ApplicationComponentStatus) bool {
+	return in.Name == r.Name && in.Namespace == r.Namespace &&
+		in.Cluster == r.Cluster && in.Env == r.Env
 }
 
 // ApplicationTraitStatus records the trait health status
@@ -243,42 +197,6 @@ type Revision struct {
 
 	// RevisionHash record the hash value of the spec of ApplicationRevision object.
 	RevisionHash string `json:"revisionHash,omitempty"`
-}
-
-// RawComponent record raw component
-type RawComponent struct {
-	// +kubebuilder:validation:EmbeddedResource
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Raw runtime.RawExtension `json:"raw"`
-}
-
-// WorkflowStepStatus record the status of a workflow step
-type WorkflowStepStatus struct {
-	ID    string            `json:"id"`
-	Name  string            `json:"name,omitempty"`
-	Type  string            `json:"type,omitempty"`
-	Phase WorkflowStepPhase `json:"phase,omitempty"`
-	// A human readable message indicating details about why the workflowStep is in this state.
-	Message string `json:"message,omitempty"`
-	// A brief CamelCase message indicating details about why the workflowStep is in this state.
-	Reason   string          `json:"reason,omitempty"`
-	SubSteps *SubStepsStatus `json:"subSteps,omitempty"`
-	// FirstExecuteTime is the first time this step execution.
-	FirstExecuteTime metav1.Time `json:"firstExecuteTime,omitempty"`
-	// LastExecuteTime is the last time this step execution.
-	LastExecuteTime metav1.Time `json:"lastExecuteTime,omitempty"`
-}
-
-// WorkflowSubStepStatus record the status of a workflow step
-type WorkflowSubStepStatus struct {
-	ID    string            `json:"id"`
-	Name  string            `json:"name,omitempty"`
-	Type  string            `json:"type,omitempty"`
-	Phase WorkflowStepPhase `json:"phase,omitempty"`
-	// A human readable message indicating details about why the workflowStep is in this state.
-	Message string `json:"message,omitempty"`
-	// A brief CamelCase message indicating details about why the workflowStep is in this state.
-	Reason string `json:"reason,omitempty"`
 }
 
 // AppStatus defines the observed state of Application
@@ -299,10 +217,6 @@ type AppStatus struct {
 	// Services record the status of the application services
 	Services []ApplicationComponentStatus `json:"services,omitempty"`
 
-	// Deprecated
-	// ResourceTracker record the status of the ResourceTracker
-	ResourceTracker *corev1.ObjectReference `json:"resourceTracker,omitempty"`
-
 	// Workflow record the status of workflow
 	Workflow *WorkflowStatus `json:"workflow,omitempty"`
 
@@ -314,10 +228,12 @@ type AppStatus struct {
 	AppliedResources []ClusterObjectReference `json:"appliedResources,omitempty"`
 
 	// PolicyStatus records the status of policy
+	// Deprecated This field is only used by EnvBinding Policy which is deprecated.
 	PolicyStatus []PolicyStatus `json:"policy,omitempty"`
 }
 
 // PolicyStatus records the status of policy
+// Deprecated
 type PolicyStatus struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
@@ -327,40 +243,24 @@ type PolicyStatus struct {
 
 // WorkflowStatus record the status of workflow
 type WorkflowStatus struct {
-	AppRevision string       `json:"appRevision,omitempty"`
-	Mode        WorkflowMode `json:"mode"`
-	Message     string       `json:"message,omitempty"`
+	AppRevision string                            `json:"appRevision,omitempty"`
+	Mode        string                            `json:"mode"`
+	Phase       workflowv1alpha1.WorkflowRunPhase `json:"status,omitempty"`
+	Message     string                            `json:"message,omitempty"`
 
-	Suspend    bool `json:"suspend"`
+	Suspend      bool   `json:"suspend"`
+	SuspendState string `json:"suspendState,omitempty"`
+
 	Terminated bool `json:"terminated"`
 	Finished   bool `json:"finished"`
 
-	ContextBackend *corev1.ObjectReference `json:"contextBackend,omitempty"`
-	Steps          []WorkflowStepStatus    `json:"steps,omitempty"`
+	ContextBackend *corev1.ObjectReference               `json:"contextBackend,omitempty"`
+	Steps          []workflowv1alpha1.WorkflowStepStatus `json:"steps,omitempty"`
 
 	StartTime metav1.Time `json:"startTime,omitempty"`
+	// +nullable
+	EndTime metav1.Time `json:"endTime,omitempty"`
 }
-
-// SubStepsStatus record the status of workflow steps.
-type SubStepsStatus struct {
-	StepIndex int                     `json:"stepIndex,omitempty"`
-	Mode      WorkflowMode            `json:"mode,omitempty"`
-	Steps     []WorkflowSubStepStatus `json:"steps,omitempty"`
-}
-
-// WorkflowStepPhase describes the phase of a workflow step.
-type WorkflowStepPhase string
-
-const (
-	// WorkflowStepPhaseSucceeded will make the controller run the next step.
-	WorkflowStepPhaseSucceeded WorkflowStepPhase = "succeeded"
-	// WorkflowStepPhaseFailed will report error in `message`.
-	WorkflowStepPhaseFailed WorkflowStepPhase = "failed"
-	// WorkflowStepPhaseStopped will make the controller stop the workflow.
-	WorkflowStepPhaseStopped WorkflowStepPhase = "stopped"
-	// WorkflowStepPhaseRunning will make the controller continue the workflow.
-	WorkflowStepPhaseRunning WorkflowStepPhase = "running"
-)
 
 // DefinitionType describes the type of DefinitionRevision.
 // +kubebuilder:validation:Enum=Component;Trait;Policy;WorkflowStep
@@ -380,29 +280,6 @@ const (
 	WorkflowStepType DefinitionType = "WorkflowStep"
 )
 
-// WorkflowMode describes the mode of workflow
-type WorkflowMode string
-
-const (
-	// WorkflowModeDAG describes the DAG mode of workflow
-	WorkflowModeDAG WorkflowMode = "DAG"
-	// WorkflowModeStep describes the step by step mode of workflow
-	WorkflowModeStep WorkflowMode = "StepByStep"
-)
-
-// AppRolloutStatus defines the observed state of AppRollout
-type AppRolloutStatus struct {
-	v1alpha1.RolloutStatus `json:",inline"`
-
-	// LastUpgradedTargetAppRevision contains the name of the app that we upgraded to
-	// We will restart the rollout if this is not the same as the spec
-	LastUpgradedTargetAppRevision string `json:"lastTargetAppRevision"`
-
-	// LastSourceAppRevision contains the name of the app that we need to upgrade from.
-	// We will restart the rollout if this is not the same as the spec
-	LastSourceAppRevision string `json:"LastSourceAppRevision,omitempty"`
-}
-
 // ApplicationTrait defines the trait of application
 type ApplicationTrait struct {
 	Type string `json:"type"`
@@ -419,9 +296,9 @@ type ApplicationComponent struct {
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Properties *runtime.RawExtension `json:"properties,omitempty"`
 
-	DependsOn []string    `json:"dependsOn,omitempty"`
-	Inputs    StepInputs  `json:"inputs,omitempty"`
-	Outputs   StepOutputs `json:"outputs,omitempty"`
+	DependsOn []string                     `json:"dependsOn,omitempty"`
+	Inputs    workflowv1alpha1.StepInputs  `json:"inputs,omitempty"`
+	Outputs   workflowv1alpha1.StepOutputs `json:"outputs,omitempty"`
 
 	// Traits define the trait of one component, the type must be array to keep the order.
 	Traits []ApplicationTrait `json:"traits,omitempty"`
@@ -430,22 +307,10 @@ type ApplicationComponent struct {
 	// scopes in ApplicationComponent defines the component-level scopes
 	// the format is <scope-type:scope-instance-name> pairs, the key represents type of `ScopeDefinition` while the value represent the name of scope instance.
 	Scopes map[string]string `json:"scopes,omitempty"`
-}
 
-// StepOutputs defines output variable of WorkflowStep
-type StepOutputs []outputItem
-
-// StepInputs defines variable input of WorkflowStep
-type StepInputs []inputItem
-
-type inputItem struct {
-	ParameterKey string `json:"parameterKey"`
-	From         string `json:"from"`
-}
-
-type outputItem struct {
-	ValueFrom string `json:"valueFrom"`
-	Name      string `json:"name"`
+	// ReplicaKey is not empty means the component is replicated. This field is designed so that it can't be specified in application directly.
+	// So we set the json tag as "-". Instead, this will be filled when using replication policy.
+	ReplicaKey string `json:"-"`
 }
 
 // ClusterSelector defines the rules to select a Cluster resource.
@@ -458,42 +323,22 @@ type ClusterSelector struct {
 	Labels map[string]string `json:"labels,omitempty"`
 }
 
-// Distribution defines the replica distribution of an AppRevision to a cluster.
-type Distribution struct {
-	// Replicas is the replica number.
-	Replicas int `json:"replicas,omitempty"`
-}
-
-// ClusterPlacement defines the cluster placement rules for an app revision.
-type ClusterPlacement struct {
-	// ClusterSelector selects the cluster to  deploy apps to.
-	// If not specified, it indicates the host cluster per se.
-	ClusterSelector *ClusterSelector `json:"clusterSelector,omitempty"`
-
-	// Distribution defines the replica distribution of an AppRevision to a cluster.
-	Distribution Distribution `json:"distribution,omitempty"`
-}
-
-// ResourceCreatorRole defines the resource creator.
-type ResourceCreatorRole string
-
 const (
 	// PolicyResourceCreator create the policy resource.
-	PolicyResourceCreator ResourceCreatorRole = "policy"
+	PolicyResourceCreator string = "policy"
 	// WorkflowResourceCreator create the resource in workflow.
-	WorkflowResourceCreator ResourceCreatorRole = "workflow"
+	WorkflowResourceCreator string = "workflow"
 )
 
 // OAMObjectReference defines the object reference for an oam resource
 type OAMObjectReference struct {
 	Component string `json:"component,omitempty"`
 	Trait     string `json:"trait,omitempty"`
-	Env       string `json:"env,omitempty"`
 }
 
 // Equal check if two references are equal
 func (in OAMObjectReference) Equal(r OAMObjectReference) bool {
-	return in.Component == r.Component && in.Trait == r.Trait && in.Env == r.Env
+	return in.Component == r.Component && in.Trait == r.Trait
 }
 
 // AddLabelsToObject add labels to object if properties are not empty
@@ -508,9 +353,6 @@ func (in OAMObjectReference) AddLabelsToObject(obj client.Object) {
 	if in.Trait != "" {
 		labels[oam.TraitTypeLabel] = in.Trait
 	}
-	if in.Env != "" {
-		labels[oam.LabelAppEnv] = in.Env
-	}
 	obj.SetLabels(labels)
 }
 
@@ -520,7 +362,6 @@ func NewOAMObjectReferenceFromObject(obj client.Object) OAMObjectReference {
 		return OAMObjectReference{
 			Component: labels[oam.LabelAppComponent],
 			Trait:     labels[oam.TraitTypeLabel],
-			Env:       labels[oam.LabelAppEnv],
 		}
 	}
 	return OAMObjectReference{}
@@ -528,8 +369,8 @@ func NewOAMObjectReferenceFromObject(obj client.Object) OAMObjectReference {
 
 // ClusterObjectReference defines the object reference with cluster.
 type ClusterObjectReference struct {
-	Cluster                string              `json:"cluster,omitempty"`
-	Creator                ResourceCreatorRole `json:"creator,omitempty"`
+	Cluster                string `json:"cluster,omitempty"`
+	Creator                string `json:"creator,omitempty"`
 	corev1.ObjectReference `json:",inline"`
 }
 
@@ -578,8 +419,6 @@ const (
 	RenderCondition
 	// WorkflowCondition indicates whether workflow processing is successful.
 	WorkflowCondition
-	// RolloutCondition indicates whether rollout processing is successful.
-	RolloutCondition
 	// ReadyCondition indicates whether whole application processing is successful.
 	ReadyCondition
 )
@@ -590,7 +429,6 @@ var conditions = map[ApplicationConditionType]string{
 	PolicyCondition:   "Policy",
 	RenderCondition:   "Render",
 	WorkflowCondition: "Workflow",
-	RolloutCondition:  "Rollout",
 	ReadyCondition:    "Ready",
 }
 
@@ -607,4 +445,44 @@ func ParseApplicationConditionType(s string) (ApplicationConditionType, error) {
 		}
 	}
 	return -1, errors.New("unknown condition type")
+}
+
+// ReferredObject the referred Kubernetes object
+type ReferredObject struct {
+	// +kubebuilder:validation:EmbeddedResource
+	// +kubebuilder:pruning:PreserveUnknownFields
+	runtime.RawExtension `json:",inline"`
+}
+
+// ReferredObjectList a list of referred Kubernetes objects
+type ReferredObjectList struct {
+	// Objects a list of Kubernetes objects.
+	// +optional
+	Objects []ReferredObject `json:"objects,omitempty"`
+}
+
+// ContainerState defines the state of a container
+type ContainerState string
+
+const (
+	// ContainerRunning indicates the container is running
+	ContainerRunning ContainerState = "Running"
+	// ContainerWaiting indicates the container is waiting
+	ContainerWaiting ContainerState = "Waiting"
+	// ContainerTerminated indicates the container is terminated
+	ContainerTerminated ContainerState = "Terminated"
+)
+
+// ContainerStateToString convert the container state to string
+func ContainerStateToString(state corev1.ContainerState) string {
+	switch {
+	case state.Running != nil:
+		return "Running"
+	case state.Waiting != nil:
+		return "Waiting"
+	case state.Terminated != nil:
+		return "Terminated"
+	default:
+		return "Unknown"
+	}
 }

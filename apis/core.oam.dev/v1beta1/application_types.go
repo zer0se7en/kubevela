@@ -23,52 +23,28 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	workflowv1alpha1 "github.com/kubevela/workflow/api/v1alpha1"
+
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/condition"
-)
-
-const (
-	// TypeHealthy application are believed to be determined as healthy by a health scope.
-	TypeHealthy condition.ConditionType = "Healthy"
-)
-
-// Reasons an application is or is not healthy
-const (
-	ReasonHealthy        condition.ConditionReason = "AllComponentsHealthy"
-	ReasonUnhealthy      condition.ConditionReason = "UnhealthyOrUnknownComponents"
-	ReasonHealthCheckErr condition.ConditionReason = "HealthCheckeError"
 )
 
 // AppPolicy defines a global policy for all components in the app.
 type AppPolicy struct {
 	// Name is the unique name of the policy.
-	Name string `json:"name"`
-
+	// +optional
+	Name string `json:"name,omitempty"`
+	// Type is the type of the policy
 	Type string `json:"type"`
 	// +kubebuilder:pruning:PreserveUnknownFields
 	Properties *runtime.RawExtension `json:"properties,omitempty"`
-}
-
-// WorkflowStep defines how to execute a workflow step.
-type WorkflowStep struct {
-	// Name is the unique name of the workflow step.
-	Name string `json:"name"`
-
-	Type string `json:"type"`
-
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Properties *runtime.RawExtension `json:"properties,omitempty"`
-
-	DependsOn []string `json:"dependsOn,omitempty"`
-
-	Inputs common.StepInputs `json:"inputs,omitempty"`
-
-	Outputs common.StepOutputs `json:"outputs,omitempty"`
 }
 
 // Workflow defines workflow steps and other attributes
 type Workflow struct {
-	Steps []WorkflowStep `json:"steps,omitempty"`
+	Ref   string                                `json:"ref,omitempty"`
+	Mode  *workflowv1alpha1.WorkflowExecuteMode `json:"mode,omitempty"`
+	Steps []workflowv1alpha1.WorkflowStep       `json:"steps,omitempty"`
 }
 
 // ApplicationSpec is the spec of Application
@@ -86,8 +62,6 @@ type ApplicationSpec struct {
 	// - will have a context in annotation.
 	// - should mark "finish" phase in status.conditions.
 	Workflow *Workflow `json:"workflow,omitempty"`
-
-	// TODO(wonderflow): we should have application level scopes supported here
 }
 
 // +kubebuilder:object:root=true
@@ -95,7 +69,7 @@ type ApplicationSpec struct {
 // Application is the Schema for the applications API
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
-// +kubebuilder:resource:categories={oam},shortName=app
+// +kubebuilder:resource:categories={oam},shortName={app,velaapp}
 // +kubebuilder:printcolumn:name="COMPONENT",type=string,JSONPath=`.spec.components[*].name`
 // +kubebuilder:printcolumn:name="TYPE",type=string,JSONPath=`.spec.components[*].type`
 // +kubebuilder:printcolumn:name="PHASE",type=string,JSONPath=`.status.status`

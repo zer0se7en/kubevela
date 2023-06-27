@@ -19,26 +19,26 @@ package utils
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
-	. "github.com/agiledragon/gomonkey/v2"
 	"github.com/crossplane/crossplane-runtime/pkg/test"
-	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/google/go-cmp/cmp"
-	git "gopkg.in/src-d/go-git.v4"
-	"gotest.tools/assert"
+	"github.com/stretchr/testify/assert"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/common"
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
 	"github.com/oam-dev/kubevela/pkg/appfile"
-	"github.com/oam-dev/kubevela/pkg/cue/model"
 	"github.com/oam-dev/kubevela/pkg/oam/util"
+
+	gitssh "github.com/go-git/go-git/v5/plumbing/transport/ssh"
+	"golang.org/x/crypto/ssh/testdata"
+	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const TestDir = "testdata/definition"
@@ -80,7 +80,7 @@ annotations: {
 
 parameter: [string]: string
 `,
-			want: want{data: "{\"additionalProperties\":{\"type\":\"string\"},\"type\":\"object\"}", err: nil},
+			want: want{data: `{"additionalProperties":{"type":"string"},"type":"object"}`, err: nil},
 		},
 		"parameter in cue is a string type,": {
 			reason: "Prepare a normal parameter cue file",
@@ -175,7 +175,7 @@ patch: {
 
 parameter: [string]: string
 `,
-			want: want{data: "{\"additionalProperties\":{\"type\":\"string\"},\"type\":\"object\"}", err: nil},
+			want: want{data: `{"additionalProperties":{"type":"string"},"type":"object"}`, err: nil},
 		},
 	}
 
@@ -187,44 +187,13 @@ parameter: [string]: string
 				},
 			}
 			capability, _ := appfile.ConvertTemplateJSON2Object(tc.name, nil, schematic)
-			schema, err := getOpenAPISchema(capability, pd)
+			schema, err := getOpenAPISchema(capability)
 			if diff := cmp.Diff(tc.want.err, err, test.EquateErrors()); diff != "" {
 				t.Errorf("\n%s\ngetOpenAPISchema(...): -want error, +got error:\n%s", tc.reason, diff)
 			}
 			if tc.want.err == nil {
 				assert.Equal(t, string(schema), tc.want.data)
 			}
-		})
-	}
-}
-
-func TestFixOpenAPISchema(t *testing.T) {
-	cases := map[string]struct {
-		inputFile string
-		fixedFile string
-	}{
-		"StandardWorkload": {
-			inputFile: "webservice.json",
-			fixedFile: "webserviceFixed.json",
-		},
-		"ShortTagJson": {
-			inputFile: "shortTagSchema.json",
-			fixedFile: "shortTagSchemaFixed.json",
-		},
-		"EmptyArrayJson": {
-			inputFile: "arrayWithoutItemsSchema.json",
-			fixedFile: "arrayWithoutItemsSchemaFixed.json",
-		},
-	}
-
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			swagger, _ := openapi3.NewSwaggerLoader().LoadSwaggerFromFile(filepath.Join(TestDir, tc.inputFile))
-			schema := swagger.Components.Schemas[model.ParameterFieldName].Value
-			FixOpenAPISchema("", schema)
-			fixedSchema, _ := schema.MarshalJSON()
-			expectedSchema, _ := os.ReadFile(filepath.Join(TestDir, tc.fixedFile))
-			assert.Equal(t, string(fixedSchema), string(expectedSchema))
 		})
 	}
 }
@@ -427,133 +396,141 @@ variable "bbb" {
 	}
 }
 
-func TestGetTerraformConfigurationFromRemote(t *testing.T) {
-	// If you hit a panic on macOS as below, please fix it by referencing https://github.com/eisenxp/macos-golink-wrapper.
-	// panic: permission denied [recovered]
-	//    panic: permission denied
-	type want struct {
-		config string
-		errMsg string
+func TestGetGitSSHPublicKey(t *testing.T) {
+	sshAuth := make(map[string][]byte)
+	sshAuth[corev1.SSHAuthPrivateKey] = testdata.PEMBytes["rsa"]
+	sshAuth[GitCredsKnownHosts] = []byte(`github.com ssh-rsa AAAAB3NzaC1yc2EAAAABIwAAAQEAq2A7hRGmdnm9tUDbO9IDSwBK6TbQa
+	+PXYPCPy6rbTrTtw7PHkccKrpp0yVhp5HdEIcKr6pLlVDBfOLX9QUsyCOV0wzfjIJNlGEYsdlLJizHhbn2mUjvSAHQqZETYP81eFzLQNnPHt4EVVUh7
+	VfDESU84KezmD5QlWpXLmvU31/yMf+Se8xhHTvKSCZIFImWwoG6mbUoWf9nzpIoaSjB+weqqUUmpaaasXVal72J+UX2B+2RPW3RcT0eOzQgqlJL3RKr
+	TJvdsjE3JEAvGq3lGHSZXy28G3skua2SmVi/w4yCE6gbODqnTWlg7+wC604ydGXA8VJiS5ap43JXiUFFAaQ==`)
+
+	pubKey, err := gitssh.NewPublicKeys("git", sshAuth[corev1.SSHAuthPrivateKey], "")
+	assert.NoError(t, err)
+
+	k8sClient := fake.NewClientBuilder().Build()
+	ctx := context.Background()
+
+	secret := corev1.Secret{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "git-ssh-auth",
+			Namespace: "default",
+		},
+		Data: sshAuth,
+		Type: corev1.SecretTypeSSHAuth,
 	}
+	err = k8sClient.Create(ctx, &secret)
+	assert.NoError(t, err)
+
+	secret = corev1.Secret{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "git-ssh-auth-no-ssh-privatekey",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			GitCredsKnownHosts: sshAuth[GitCredsKnownHosts],
+		},
+	}
+	err = k8sClient.Create(ctx, &secret)
+	assert.NoError(t, err)
+
+	secret = corev1.Secret{
+		ObjectMeta: v1.ObjectMeta{
+			Name:      "git-ssh-auth-no-known_hosts",
+			Namespace: "default",
+		},
+		Data: map[string][]byte{
+			corev1.SSHAuthPrivateKey: sshAuth[corev1.SSHAuthPrivateKey],
+		},
+		Type: corev1.SecretTypeSSHAuth,
+	}
+	err = k8sClient.Create(ctx, &secret)
+	assert.NoError(t, err)
 
 	type args struct {
-		name         string
-		url          string
-		path         string
-		data         []byte
-		variableFile string
-		// mockWorkingPath will create `/tmp/terraform`
-		mockWorkingPath bool
+		k8sClient                     client.Client
+		GitCredentialsSecretReference *corev1.SecretReference
 	}
-	cases := map[string]struct {
+	type want struct {
+		publicKey *gitssh.PublicKeys
+		err       string
+	}
+	cases := []struct {
+		name string
 		args args
 		want want
 	}{
-		"valid": {
+		{
+			name: "git credentials secret does not exist",
 			args: args{
-				name: "valid",
-				url:  "https://github.com/kubevela-contrib/terraform-modules.git",
-				path: "",
-				data: []byte(`
-variable "aaa" {
-	type = list(object({
-		type = string
-		sourceArn = string
-		config = string
-	}))
-	default = []
-}`),
-				variableFile: "main.tf",
+				k8sClient: k8sClient,
+				GitCredentialsSecretReference: &corev1.SecretReference{
+					Name:      "git-ssh-auth-secret-not-exist",
+					Namespace: "default",
+				},
 			},
 			want: want{
-				config: `
-variable "aaa" {
-	type = list(object({
-		type = string
-		sourceArn = string
-		config = string
-	}))
-	default = []
-}`,
+				publicKey: nil,
+				err:       "failed to  get git credentials secret: secrets \"git-ssh-auth-secret-not-exist\" not found",
 			},
 		},
-		"configuration is remote with path": {
+		{
+			name: "ssh-privatekey not in git credentials secret",
 			args: args{
-				name: "aws-subnet",
-				url:  "https://github.com/kubevela-contrib/terraform-modules.git",
-				path: "aws/subnet",
-				data: []byte(`
-variable "aaa" {
-	type = list(object({
-		type = string
-		sourceArn = string
-		config = string
-	}))
-	default = []
-}`),
-				variableFile: "variables.tf",
+				k8sClient: k8sClient,
+				GitCredentialsSecretReference: &corev1.SecretReference{
+					Name:      "git-ssh-auth-no-ssh-privatekey",
+					Namespace: "default",
+				},
 			},
 			want: want{
-				config: `
-variable "aaa" {
-	type = list(object({
-		type = string
-		sourceArn = string
-		config = string
-	}))
-	default = []
-}`,
+				publicKey: nil,
+				err:       fmt.Sprintf("'%s' not in git credentials secret", corev1.SSHAuthPrivateKey),
 			},
 		},
-		"working path exists": {
+		{
+			name: "known_hosts not in git credentials secret",
 			args: args{
-				variableFile:    "main.tf",
-				mockWorkingPath: true,
+				k8sClient: k8sClient,
+				GitCredentialsSecretReference: &corev1.SecretReference{
+					Name:      "git-ssh-auth-no-known_hosts",
+					Namespace: "default",
+				},
 			},
 			want: want{
-				errMsg: "failed to remove the directory",
+				publicKey: nil,
+				err:       fmt.Sprintf("'%s' not in git credentials secret", GitCredsKnownHosts),
+			},
+		},
+		{
+			name: "valid git credentials secret found",
+			args: args{
+				k8sClient: k8sClient,
+				GitCredentialsSecretReference: &corev1.SecretReference{
+					Name:      "git-ssh-auth",
+					Namespace: "default",
+				},
+			},
+			want: want{
+				publicKey: pubKey,
 			},
 		},
 	}
 
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			if tc.args.mockWorkingPath {
-				err := os.MkdirAll("./tmp/terraform", 0755)
-				assert.NilError(t, err)
-				defer os.RemoveAll("./tmp/terraform")
-				patch1 := ApplyFunc(os.Remove, func(_ string) error {
-					return errors.New("failed")
-				})
-				defer patch1.Reset()
-				patch2 := ApplyFunc(os.Open, func(_ string) (*os.File, error) {
-					return nil, errors.New("failed")
-				})
-				defer patch2.Reset()
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			publicKey, err := GetGitSSHPublicKey(ctx, tc.args.k8sClient, tc.args.GitCredentialsSecretReference)
+
+			if len(tc.want.err) > 0 {
+				assert.Error(t, err, tc.want.err)
 			}
 
-			patch := ApplyFunc(git.PlainCloneContext, func(ctx context.Context, path string, isBare bool, o *git.CloneOptions) (*git.Repository, error) {
-				var tmpPath string
-				if tc.args.path != "" {
-					tmpPath = filepath.Join("./tmp/terraform", tc.args.name, tc.args.path)
-				} else {
-					tmpPath = filepath.Join("./tmp/terraform", tc.args.name)
-				}
-				err := os.MkdirAll(tmpPath, os.ModePerm)
-				assert.NilError(t, err)
-				err = ioutil.WriteFile(filepath.Clean(filepath.Join(tmpPath, tc.args.variableFile)), tc.args.data, 0644)
-				assert.NilError(t, err)
-				return nil, nil
-			})
-			defer patch.Reset()
-
-			conf, err := GetTerraformConfigurationFromRemote(tc.args.name, tc.args.url, tc.args.path)
-			if tc.want.errMsg != "" {
-				if err != nil && !strings.Contains(err.Error(), tc.want.errMsg) {
-					t.Errorf("\n%s\nGetTerraformConfigurationFromRemote(...): -want error %v, +got error:%s", name, err, tc.want.errMsg)
-				}
-			} else {
-				assert.Equal(t, tc.want.config, conf)
+			if tc.want.publicKey != nil {
+				assert.Equal(t, publicKey.Signer.PublicKey().Marshal(), tc.want.publicKey.Signer.PublicKey().Marshal())
+				assert.Equal(t, publicKey.User, tc.want.publicKey.User)
+				known_hosts_filepath := os.Getenv("SSH_KNOWN_HOSTS")
+				known_hosts, err := os.ReadFile(known_hosts_filepath)
+				assert.NoError(t, err)
+				assert.Equal(t, known_hosts, sshAuth[GitCredsKnownHosts])
 			}
 		})
 	}

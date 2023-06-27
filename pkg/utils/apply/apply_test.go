@@ -23,8 +23,11 @@ import (
 	"github.com/crossplane/crossplane-runtime/pkg/test"
 	"github.com/google/go-cmp/cmp"
 	"github.com/pkg/errors"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -141,7 +144,7 @@ func TestAPIApplicator(t *testing.T) {
 					return tc.args.existing, tc.args.creatorErr
 				}),
 				patcher: patcherFn(func(c, m client.Object, a *applyAction) (client.Patch, error) {
-					return nil, tc.args.patcherErr
+					return client.RawPatch(types.MergePatchType, []byte(`err`)), tc.args.patcherErr
 				}),
 				c: tc.c,
 			}
@@ -377,20 +380,22 @@ func TestMustBeControlledByApp(t *testing.T) {
 			hasError: false,
 		},
 		"old app has no label": {
-			existing: &appsv1.Deployment{},
-			hasError: false,
+			existing: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{ResourceVersion: "-"}},
+			hasError: true,
 		},
 		"old app has no app label": {
 			existing: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
-				Labels: map[string]string{},
+				Labels:          map[string]string{},
+				ResourceVersion: "-",
 			}},
-			hasError: false,
+			hasError: true,
 		},
 		"old app has no app ns label": {
 			existing: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
-				Labels: map[string]string{oam.LabelAppName: "app"},
+				Labels:          map[string]string{oam.LabelAppName: "app"},
+				ResourceVersion: "-",
 			}},
-			hasError: false,
+			hasError: true,
 		},
 		"old app has correct label": {
 			existing: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
@@ -410,6 +415,18 @@ func TestMustBeControlledByApp(t *testing.T) {
 			}},
 			hasError: true,
 		},
+		"old app has no resource version but with bad app key": {
+			existing: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{oam.LabelAppName: "app", oam.LabelAppNamespace: "ns"},
+			}},
+			hasError: true,
+		},
+		"old app has no resource version": {
+			existing: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+				Labels: map[string]string{},
+			}},
+			hasError: false,
+		},
 	}
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
@@ -422,4 +439,150 @@ func TestMustBeControlledByApp(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSharedByApp(t *testing.T) {
+	app := &v1beta1.Application{ObjectMeta: metav1.ObjectMeta{Name: "app"}}
+	ao := SharedByApp(app)
+	testCases := map[string]struct {
+		existing client.Object
+		desired  client.Object
+		output   client.Object
+		hasError bool
+	}{
+		"create new resource": {
+			existing: nil,
+			desired: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+			}},
+			output: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+				"metadata": map[string]interface{}{
+					"annotations": map[string]interface{}{oam.AnnotationAppSharedBy: "default/app"},
+				},
+			}},
+		},
+		"add sharer to existing resource": {
+			existing: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+			}},
+			desired: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+			}},
+			output: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+				"metadata": map[string]interface{}{
+					"annotations": map[string]interface{}{oam.AnnotationAppSharedBy: "default/app"},
+				},
+			}},
+		},
+		"add sharer to existing sharing resource": {
+			existing: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+				"metadata": map[string]interface{}{
+					"labels": map[string]interface{}{
+						oam.LabelAppName:      "example",
+						oam.LabelAppNamespace: "default",
+					},
+					"annotations": map[string]interface{}{oam.AnnotationAppSharedBy: "x/y"},
+				},
+				"data": "x",
+			}},
+			desired: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+				"data": "y",
+			}},
+			output: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+				"metadata": map[string]interface{}{
+					"labels": map[string]interface{}{
+						oam.LabelAppName:      "example",
+						oam.LabelAppNamespace: "default",
+					},
+					"annotations": map[string]interface{}{oam.AnnotationAppSharedBy: "x/y,default/app"},
+				},
+				"data": "x",
+			}},
+		},
+		"add sharer to existing sharing resource owned by self": {
+			existing: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+				"metadata": map[string]interface{}{
+					"labels": map[string]interface{}{
+						oam.LabelAppName:      "app",
+						oam.LabelAppNamespace: "default",
+					},
+					"annotations": map[string]interface{}{oam.AnnotationAppSharedBy: "default/app,x/y"},
+				},
+				"data": "x",
+			}},
+			desired: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+				"metadata": map[string]interface{}{
+					"labels": map[string]interface{}{
+						oam.LabelAppName:      "app",
+						oam.LabelAppNamespace: "default",
+					},
+					"annotations": map[string]interface{}{oam.AnnotationAppSharedBy: "default/app"},
+				},
+				"data": "y",
+			}},
+			output: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+				"metadata": map[string]interface{}{
+					"labels": map[string]interface{}{
+						oam.LabelAppName:      "app",
+						oam.LabelAppNamespace: "default",
+					},
+					"annotations": map[string]interface{}{oam.AnnotationAppSharedBy: "default/app,x/y"},
+				},
+				"data": "y",
+			}},
+		},
+		"add sharer to existing non-sharing resource": {
+			existing: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+				"metadata": map[string]interface{}{
+					"labels": map[string]interface{}{
+						oam.LabelAppName:      "example",
+						oam.LabelAppNamespace: "default",
+					},
+				},
+			}},
+			desired: &unstructured.Unstructured{Object: map[string]interface{}{
+				"kind": "ConfigMap",
+			}},
+			hasError: true,
+		},
+	}
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			r := require.New(t)
+			err := ao(&applyAction{}, tc.existing, tc.desired)
+			if tc.hasError {
+				r.Error(err)
+			} else {
+				r.NoError(err)
+				r.Equal(tc.output, tc.desired)
+			}
+		})
+	}
+}
+
+func TestFilterSpecialAnn(t *testing.T) {
+	var cm = &corev1.ConfigMap{}
+	var sc = &corev1.Secret{}
+	var dp = &appsv1.Deployment{}
+	var crd = &v1.CustomResourceDefinition{}
+	assert.Equal(t, false, trimLastAppliedConfigurationForSpecialResources(cm))
+	assert.Equal(t, false, trimLastAppliedConfigurationForSpecialResources(sc))
+	assert.Equal(t, false, trimLastAppliedConfigurationForSpecialResources(crd))
+	assert.Equal(t, true, trimLastAppliedConfigurationForSpecialResources(dp))
+
+	dp.Annotations = map[string]string{oam.AnnotationLastAppliedConfig: "-"}
+	assert.Equal(t, false, trimLastAppliedConfigurationForSpecialResources(dp))
+	dp.Annotations = map[string]string{oam.AnnotationLastAppliedConfig: "skip"}
+	assert.Equal(t, false, trimLastAppliedConfigurationForSpecialResources(dp))
+	dp.Annotations = map[string]string{oam.AnnotationLastAppliedConfig: "xxx"}
+	assert.Equal(t, true, trimLastAppliedConfigurationForSpecialResources(dp))
 }

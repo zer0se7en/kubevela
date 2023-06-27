@@ -5,45 +5,63 @@ on:
     branches:
       - master
       - release-*
+    tags:
+      - v*
   workflow_dispatch: {}
   pull_request:
     branches:
       - master
       - release-*
 
+permissions:
+  contents: read
+
 env:
   # Common versions
-  GO_VERSION: '1.17'
-  GOLANGCI_VERSION: 'v1.38'
-  KIND_VERSION: 'v0.7.0'
+  GO_VERSION: '1.19'
 
 jobs:
 
   detect-noop:
-    runs-on: ubuntu-20.04
+    permissions:
+      actions: write
+    runs-on: ubuntu-22.04
     outputs:
       noop: ${{ steps.noop.outputs.should_skip }}
     steps:
       - name: Detect No-op Changes
         id: noop
-        uses: fkirc/skip-duplicate-actions@v3.3.0
+        uses: fkirc/skip-duplicate-actions@12aca0a884f6137d619d6a8a09fcc3406ced5281
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           paths_ignore: '["**.md", "**.mdx", "**.png", "**.jpg"]'
           do_not_skip: '["workflow_dispatch", "schedule", "push"]'
-          concurrent_skipping: false
+        continue-on-error: true
 
   e2e-multi-cluster-tests:
-    runs-on: aliyun
-    needs: detect-noop
+    runs-on: self-hosted
+    needs: [ detect-noop ]
     if: needs.detect-noop.outputs.noop != 'true'
+    strategy:
+      matrix:
+        k8s-version: ["v1.26"]
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-${{ matrix.k8s-version }}
+      cancel-in-progress: true
 
     steps:
       - name: Check out code into the Go module directory
-        uses: actions/checkout@v2
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install make gcc jq ca-certificates curl gnupg -y
+          sudo snap install kubectl --classic
+          sudo snap install helm --classic
 
       - name: Setup Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@fac708d6674e30b6ba41289acaab6d4b75aa0753
         with:
           go-version: ${{ env.GO_VERSION }}
 
@@ -51,38 +69,25 @@ jobs:
         run: |
           go get -v -t -d ./...
 
-      - name: Setup Kind
-        uses: engineerd/setup-kind@v0.5.0
-        with:
-          version: ${{ env.KIND_VERSION }}
-          skipClusterCreation: true
-
-      - name: Setup Kind Cluster (Worker)
+      - name: Setup KinD
         run: |
-          kind delete cluster --name worker
-          kind create cluster --image kindest/node:v1.18.15@sha256:5c1b980c4d0e0e8e7eb9f36f7df525d079a96169c8a8f20d8bd108c0d0889cc4 --name worker
-          kubectl version
-          kubectl cluster-info
-          kind get kubeconfig --name worker --internal > /tmp/worker.kubeconfig
-          kind get kubeconfig --name worker > /tmp/worker.client.kubeconfig
+          go install sigs.k8s.io/kind@v0.19.0
+          kind delete cluster --name worker || true
+          kind create cluster --name worker --image=kindest/node:v1.26.4
+          kind export kubeconfig --internal --name worker --kubeconfig /tmp/worker.kubeconfig
+          kind delete cluster || true
+          kind create cluster --image=kindest/node:v1.26.4
 
-      - name: Setup Kind Cluster (Hub)
+      - name: Load image
         run: |
-          kind delete cluster
-          kind create cluster --image kindest/node:v1.18.15@sha256:5c1b980c4d0e0e8e7eb9f36f7df525d079a96169c8a8f20d8bd108c0d0889cc4
-          kubectl version
-          kubectl cluster-info
-
-      - name: Load Image to kind cluster (Hub)
-        run: make kind-load
+          mkdir -p $HOME/tmp/ 
+          TMPDIR=$HOME/tmp/ make image-load
 
       - name: Cleanup for e2e tests
         run: |
-          make e2e-cleanup
           make vela-cli
-          make e2e-setup-core
-          make
-          make setup-runtime-e2e-cluster
+          make e2e-cleanup
+          make e2e-setup-core-auth
 
       - name: Run e2e multicluster tests
         run: |
@@ -90,13 +95,14 @@ jobs:
           make e2e-multicluster-test
 
       - name: Stop kubevela, get profile
-        run: make end-e2e-core
+        run: |
+          make end-e2e-core-shards
 
       - name: Upload coverage report
-        uses: codecov/codecov-action@v1
+        uses: codecov/codecov-action@eaaf4bedf32dbdc6b720b63067d99c4d77d6047d
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: /tmp/e2e-profile.out
+          files: /tmp/e2e-profile.out,/tmp/e2e_multicluster_test.out
           flags: e2e-multicluster-test
           name: codecov-umbrella
 
@@ -105,4 +111,6 @@ jobs:
 
       - name: Cleanup image
         if: ${{ always() }}
-        run: make image-cleanup
+        run: |
+          make image-cleanup
+          docker image prune -f --filter "until=24h"

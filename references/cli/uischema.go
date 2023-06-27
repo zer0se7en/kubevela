@@ -21,7 +21,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -36,8 +35,8 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/apiserver/rest/utils"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
+	"github.com/oam-dev/kubevela/pkg/utils/schema"
 	"github.com/oam-dev/kubevela/pkg/utils/util"
 )
 
@@ -56,7 +55,7 @@ func NewUISchemaCommand(c common.Args, order string, ioStreams util.IOStreams) *
 	cmd.AddCommand(&cobra.Command{
 		Use:   "apply",
 		Short: "apply <ui schema file/dir path>",
-		Args:  cobra.ExactValidArgs(1),
+		Args:  cobra.ExactArgs(1),
 		Long:  "apply UI schema from a file or dir",
 		Annotations: map[string]string{
 			types.TagCommandType: types.TypeExtension,
@@ -125,12 +124,12 @@ func loadUISchemaFiles(setpath string) ([]string, error) {
 }
 
 func applyUISchemaFile(client client.Client, uischemaFile string) error {
-	cdata, err := ioutil.ReadFile(filepath.Clean(uischemaFile))
+	cdata, err := os.ReadFile(filepath.Clean(uischemaFile))
 	if err != nil {
 		return err
 	}
 	fileBaseName := path.Base(uischemaFile)
-	fileBaseNameWithoutExt := fileBaseName[:strings.Index(fileBaseName, ".")]
+	fileBaseNameWithoutExt := fileBaseName[:strings.Index(fileBaseName, ".")] // nolint
 
 	infos := strings.SplitN(fileBaseNameWithoutExt, "-", func() int {
 		if strings.Contains(fileBaseNameWithoutExt, "uischema") {
@@ -153,7 +152,7 @@ func applyUISchemaFile(client client.Client, uischemaFile string) error {
 }
 
 func addDefinitionUISchema(ctx context.Context, client client.Client, name, defType, configRaw string) error {
-	var uiParameters []*utils.UIParameter
+	var uiParameters []*schema.UIParameter
 	err := yaml.Unmarshal([]byte(configRaw), &uiParameters)
 	if err != nil {
 		return err

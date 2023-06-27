@@ -6,9 +6,11 @@ import (
 
 "webhook": {
 	type: "workflow-step"
-	annotations: {}
+	annotations: {
+		"category": "External Intergration"
+	}
 	labels: {}
-	description: "Send webhook request to the url"
+	description: "Send a POST request to the specified Webhook URL. If no request body is specified, the current Application body will be sent by default."
 }
 template: {
 	data: op.#Steps & {
@@ -51,30 +53,29 @@ template: {
 				}
 			} @step(5)
 
-			decoded:     base64.Decode(null, read.value.data[parameter.url.secretRef.key]) @step(6)
-			stringValue: op.#ConvertString & {bt:                                          decoded} @step(7)
+			stringValue: op.#ConvertString & {bt: base64.Decode(null, read.value.data[parameter.url.secretRef.key])} @step(6)
 			http:        op.#HTTPPost & {
 				url: stringValue.str
 				request: {
 					body: data.value
 					header: "Content-Type": "application/json"
 				}
-			} @step(8)
+			} @step(7)
 		}
 	}
 
 	parameter: {
 		// +usage=Specify the webhook url
-		url: {
+		url: close({
 			value: string
-		} | {
+		}) | close({
 			secretRef: {
 				// +usage=name is the name of the secret
 				name: string
 				// +usage=key is the key in the secret
 				key: string
 			}
-		}
+		})
 		// +usage=Specify the data you want to send
 		data?: {...}
 	}

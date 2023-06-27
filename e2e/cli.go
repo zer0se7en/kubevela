@@ -25,14 +25,14 @@ import (
 
 	"github.com/Netflix/go-expect"
 	"github.com/hinshun/vt10x"
-	"github.com/onsi/ginkgo"
+	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
 )
 
 var rudrPath = GetCliBinary()
 
-//GetCliBinary is to build kubevela binary.
+// GetCliBinary is to build kubevela binary.
 func GetCliBinary() string {
 	cwd, _ := os.Getwd()
 	return path.Join(cwd, "../..", "./bin")

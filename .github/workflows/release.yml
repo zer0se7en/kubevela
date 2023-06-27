@@ -6,141 +6,61 @@ on:
       - "v*"
   workflow_dispatch: { }
 
-env:
-  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
-    name: build
-    strategy:
-      matrix:
-        TARGETS: [ linux/amd64, darwin/amd64, windows/amd64, linux/arm64, darwin/arm64 ]
-    env:
-      VELA_VERSION_KEY: github.com/oam-dev/kubevela/version.VelaVersion
-      VELA_GITVERSION_KEY: github.com/oam-dev/kubevela/version.GitRevision
-      GO_BUILD_ENV: GO111MODULE=on CGO_ENABLED=0
-      DIST_DIRS: find * -type d -exec
+    permissions:
+      contents: write
+      actions: read
+      checks: write
+      issues: read
+      packages: write
+      pull-requests: read
+      repository-projects: read
+      statuses: read
+    runs-on: ubuntu-22.04
+    name: goreleaser
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
+        with:
+          fetch-depth: 0
+      - run: git fetch --force --tags
       - name: Set up Go
-        uses: actions/setup-go@v2
+        uses: actions/setup-go@fac708d6674e30b6ba41289acaab6d4b75aa0753
         with:
-          go-version: 1.17
-      - name: Get release
-        id: get_release
-        uses: bruceadams/get-release@v1.2.2
-      - name: Get version
-        run: echo "VELA_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
-      - name: Get matrix
-        id: get_matrix
-        run: |
-          TARGETS=${{matrix.TARGETS}}
-          echo ::set-output name=OS::${TARGETS%/*}
-          echo ::set-output name=ARCH::${TARGETS#*/}
-      - name: Get ldflags
-        id: get_ldflags
-        run: |
-          LDFLAGS="-s -w -X ${{ env.VELA_VERSION_KEY }}=${{ env.VELA_VERSION }} -X ${{ env.VELA_GITVERSION_KEY }}=git-$(git rev-parse --short HEAD)"
-          echo "LDFLAGS=${LDFLAGS}" >> $GITHUB_ENV
-      - name: Build
-        run: |
-          ${{ env.GO_BUILD_ENV }} GOOS=${{ steps.get_matrix.outputs.OS }} GOARCH=${{ steps.get_matrix.outputs.ARCH }} \
-            go build -ldflags "${{ env.LDFLAGS }}" \
-            -o _bin/vela/${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}/vela -v \
-            ./references/cmd/cli/main.go
-          ${{ env.GO_BUILD_ENV }} GOOS=${{ steps.get_matrix.outputs.OS }} GOARCH=${{ steps.get_matrix.outputs.ARCH }} \
-            go build -ldflags "${{ env.LDFLAGS }}" \
-            -o _bin/kubectl-vela/${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}/kubectl-vela -v \
-            ./cmd/plugin/main.go
-      - name: Compress
-        run: |
-          echo "\n## Release Info\nVERSION: ${{ env.VELA_VERSION }}" >> README.md && \
-          echo "GIT_COMMIT: ${GITHUB_SHA}\n" >> README.md && \
-          cd _bin/vela && \
-          ${{ env.DIST_DIRS }} cp ../../LICENSE {} \; && \
-          ${{ env.DIST_DIRS }} cp ../../README.md {} \; && \
-          ${{ env.DIST_DIRS }} tar -zcf vela-{}.tar.gz {} \; && \
-          ${{ env.DIST_DIRS }} zip -r vela-{}.zip {} \; && \
-          cd ../kubectl-vela && \
-          ${{ env.DIST_DIRS }} cp ../../LICENSE {} \; && \
-          ${{ env.DIST_DIRS }} cp ../../README.md {} \; && \
-          ${{ env.DIST_DIRS }} tar -zcf kubectl-vela-{}.tar.gz {} \; && \
-          ${{ env.DIST_DIRS }} zip -r kubectl-vela-{}.zip {} \; && \
-          cd .. && \
-          sha256sum vela/vela-* kubectl-vela/kubectl-vela-* >> sha256-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.txt \
-      - name: Upload Vela tar.gz
-        uses: actions/upload-release-asset@v1.0.2
+          go-version: 1.19
+          cache: true
+      - uses: goreleaser/goreleaser-action@336e29918d653399e599bfca99fadc1d7ffbc9f7 # v4.3.0
         with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./_bin/vela/vela-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.tar.gz
-          asset_name: vela-${{ env.VELA_VERSION }}-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.tar.gz
-          asset_content_type: binary/octet-stream
-      - name: Upload Vela zip
-        uses: actions/upload-release-asset@v1.0.2
-        with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./_bin/vela/vela-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.zip
-          asset_name: vela-${{ env.VELA_VERSION }}-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.zip
-          asset_content_type: binary/octet-stream
-      - name: Upload Kubectl-Vela tar.gz
-        uses: actions/upload-release-asset@v1.0.2
-        with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./_bin/kubectl-vela/kubectl-vela-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.tar.gz
-          asset_name: kubectl-vela-${{ env.VELA_VERSION }}-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.tar.gz
-          asset_content_type: binary/octet-stream
-      - name: Upload Kubectl-Vela zip
-        uses: actions/upload-release-asset@v1.0.2
-        with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./_bin/kubectl-vela/kubectl-vela-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.zip
-          asset_name: kubectl-vela-${{ env.VELA_VERSION }}-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.zip
-          asset_content_type: binary/octet-stream
-      - name: Post sha256
-        uses: actions/upload-artifact@v2
-        with:
-          name: sha256sums
-          path: ./_bin/sha256-${{ steps.get_matrix.outputs.OS }}-${{ steps.get_matrix.outputs.ARCH }}.txt
-          retention-days: 1
-
+          distribution: goreleaser
+          version: 1.14.1
+          args: release --rm-dist --timeout 60m
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   upload-plugin-homebrew:
+    permissions:
+      contents: write
+      actions: read
+      checks: write
+      issues: read
+      packages: write
+      pull-requests: read
+      repository-projects: read
+      statuses: read
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    if: ${{ !contains(github.ref, 'alpha') && !contains(github.ref, 'beta') && !contains(github.ref, 'rc') }}
     name: upload-sha256sums
     steps:
       - name: Checkout
-        uses: actions/checkout@v2
-      - name: Get release
-        id: get_release
-        uses: bruceadams/get-release@v1.2.2
-      - name: Download sha256sums
-        uses: actions/download-artifact@v2
-        with:
-          name: sha256sums
-          path: cli-artifacts
-      - name: Display structure of downloaded files
-        run: ls -R
-        working-directory: cli-artifacts
-      - shell: bash
-        working-directory: cli-artifacts
-        run: |
-          for file in *
-          do
-            cat ${file} >> sha256sums.txt
-          done
-      - name: Upload Checksums
-        uses: actions/upload-release-asset@v1.0.2
-        with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: cli-artifacts/sha256sums.txt
-          asset_name: sha256sums.txt
-          asset_content_type: text/plain
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
       - name: Update kubectl plugin version in krew-index
-        uses: rajatjindal/krew-release-bot@v0.0.38
+        uses: rajatjindal/krew-release-bot@df3eb197549e3568be8b4767eec31c5e8e8e6ad8 # v0.0.46
       - name: Update Homebrew formula
-        uses: dawidd6/action-homebrew-bump-formula@v3
+        uses: dawidd6/action-homebrew-bump-formula@d3667e5ae14df19579e4414897498e3e88f2f458 # v3.10.0
         with:
           token: ${{ secrets.HOMEBREW_TOKEN }}
           formula: kubevela

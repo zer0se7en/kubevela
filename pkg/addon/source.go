@@ -24,6 +24,7 @@ import (
 
 	"github.com/go-resty/resty/v2"
 	"github.com/pkg/errors"
+	"github.com/xanzy/go-gitlab"
 
 	"github.com/oam-dev/kubevela/pkg/utils"
 )
@@ -35,6 +36,10 @@ const (
 	DirType = "dir"
 	// FileType means a file
 	FileType = "file"
+	// BlobType means a blob
+	BlobType = "blob"
+	// TreeType means a tree
+	TreeType = "tree"
 
 	bucketTmpl        = "%s://%s.%s"
 	singleOSSFileTmpl = "%s/%s"
@@ -54,6 +59,78 @@ type GitAddonSource struct {
 	URL   string `json:"url,omitempty" validate:"required"`
 	Path  string `json:"path,omitempty"`
 	Token string `json:"token,omitempty"`
+}
+
+// GiteeAddonSource defines the information about the Gitee as addon source
+type GiteeAddonSource struct {
+	URL   string `json:"url,omitempty" validate:"required"`
+	Path  string `json:"path,omitempty"`
+	Token string `json:"token,omitempty"`
+}
+
+// GitlabAddonSource defines the information about the Gitlab as addon source
+type GitlabAddonSource struct {
+	URL   string `json:"url,omitempty" validate:"required"`
+	Repo  string `json:"repo,omitempty" validate:"required"`
+	Path  string `json:"path,omitempty"`
+	Token string `json:"token,omitempty"`
+}
+
+// HelmSource  defines the information about the helm repo addon source
+type HelmSource struct {
+	URL             string `json:"url,omitempty" validate:"required"`
+	InsecureSkipTLS bool   `json:"insecureSkipTLS,omitempty"`
+	Username        string `json:"username,omitempty"`
+	Password        string `json:"password,omitempty"`
+}
+
+// SafeCopier is an interface to copy Struct without sensitive fields, such as Token, Username, Password
+type SafeCopier interface {
+	SafeCopy() interface{}
+}
+
+// SafeCopy hides field Token
+func (g *GitAddonSource) SafeCopy() *GitAddonSource {
+	if g == nil {
+		return nil
+	}
+	return &GitAddonSource{
+		URL:  g.URL,
+		Path: g.Path,
+	}
+}
+
+// SafeCopy hides field Token
+func (g *GiteeAddonSource) SafeCopy() *GiteeAddonSource {
+	if g == nil {
+		return nil
+	}
+	return &GiteeAddonSource{
+		URL:  g.URL,
+		Path: g.Path,
+	}
+}
+
+// SafeCopy hides field Token
+func (g *GitlabAddonSource) SafeCopy() *GitlabAddonSource {
+	if g == nil {
+		return nil
+	}
+	return &GitlabAddonSource{
+		URL:  g.URL,
+		Repo: g.Repo,
+		Path: g.Path,
+	}
+}
+
+// SafeCopy hides field Username, Password
+func (h *HelmSource) SafeCopy() *HelmSource {
+	if h == nil {
+		return nil
+	}
+	return &HelmSource{
+		URL: h.URL,
+	}
 }
 
 // Item is a partial interface for github.RepositoryContent
@@ -110,14 +187,16 @@ func pathWithParent(subPath, parent string) string {
 type ReaderType string
 
 const (
-	gitType ReaderType = "git"
-	ossType ReaderType = "oss"
+	gitType    ReaderType = "git"
+	ossType    ReaderType = "oss"
+	giteeType  ReaderType = "gitee"
+	gitlabType ReaderType = "gitlab"
 )
 
 // NewAsyncReader create AsyncReader from
 // 1. GitHub url and directory
 // 2. OSS endpoint and bucket
-func NewAsyncReader(baseURL, bucket, subPath, token string, rdType ReaderType) (AsyncReader, error) {
+func NewAsyncReader(baseURL, bucket, repo, subPath, token string, rdType ReaderType) (AsyncReader, error) {
 
 	switch rdType {
 	case gitType:
@@ -154,19 +233,78 @@ func NewAsyncReader(baseURL, bucket, subPath, token string, rdType ReaderType) (
 			path:           subPath,
 			client:         resty.New(),
 		}, nil
+	case giteeType:
+		baseURL = strings.TrimSuffix(baseURL, ".git")
+		u, err := url.Parse(baseURL)
+		if err != nil {
+			return nil, errors.New("addon registry invalid")
+		}
+		u.Path = path.Join(u.Path, subPath)
+		_, content, err := utils.Parse(u.String())
+		if err != nil {
+			return nil, err
+		}
+		gitee := createGiteeHelper(content, token)
+		return &giteeReader{
+			h: gitee,
+		}, nil
+	case gitlabType:
+		baseURL = strings.TrimSuffix(baseURL, ".git")
+		u, err := url.Parse(baseURL)
+		if err != nil {
+			return nil, errors.New("addon registry invalid")
+		}
+		_, content, err := utils.ParseGitlab(u.String(), repo)
+		content.GitlabContent.Path = subPath
+		if err != nil {
+			return nil, err
+		}
+		gitlabHelper, err := createGitlabHelper(content, token)
+		if err != nil {
+			return nil, errors.New("addon registry connect fail")
+		}
+
+		err = gitlabHelper.getGitlabProject(content)
+		if err != nil {
+			return nil, err
+		}
+
+		return &gitlabReader{
+			h: gitlabHelper,
+		}, nil
 	}
 	return nil, fmt.Errorf("invalid addon registry type '%s'", rdType)
+}
+
+// getGitlabProject get gitlab project , set project id
+func (h *gitlabHelper) getGitlabProject(content *utils.Content) error {
+	projectURL := content.GitlabContent.Owner + "/" + content.GitlabContent.Repo
+	projects, _, err := h.Client.Projects.GetProject(projectURL, &gitlab.GetProjectOptions{})
+	if err != nil {
+		return err
+	}
+	content.GitlabContent.PId = projects.ID
+
+	return nil
 }
 
 // BuildReader will build a AsyncReader from registry, AsyncReader are needed to read addon files
 func (r *Registry) BuildReader() (AsyncReader, error) {
 	if r.OSS != nil {
 		o := r.OSS
-		return NewAsyncReader(o.Endpoint, o.Bucket, o.Path, "", ossType)
+		return NewAsyncReader(o.Endpoint, o.Bucket, "", o.Path, "", ossType)
 	}
 	if r.Git != nil {
 		g := r.Git
-		return NewAsyncReader(g.URL, "", g.Path, g.Token, gitType)
+		return NewAsyncReader(g.URL, "", "", g.Path, g.Token, gitType)
+	}
+	if r.Gitee != nil {
+		g := r.Gitee
+		return NewAsyncReader(g.URL, "", "", g.Path, g.Token, giteeType)
+	}
+	if r.Gitlab != nil {
+		g := r.Gitlab
+		return NewAsyncReader(g.URL, "", g.Repo, g.Path, g.Token, gitlabType)
 	}
 	return nil, errors.New("registry don't have enough info to build a reader")
 }
@@ -181,6 +319,10 @@ func (r *Registry) GetUIData(meta *SourceMeta, opt ListOptions) (*UIData, error)
 	if err != nil {
 		return nil, err
 	}
+	if len(addon.GlobalParameters) != 0 {
+		addon.Parameters = addon.GlobalParameters
+	}
+	addon.RegistryName = r.Name
 	return addon, nil
 }
 
@@ -209,4 +351,59 @@ func (r *Registry) ListAddonMeta() (map[string]SourceMeta, error) {
 		return nil, err
 	}
 	return reader.ListAddonMeta()
+}
+
+// ItemInfo contains summary information about an addon
+type ItemInfo struct {
+	Name              string
+	Description       string
+	AvailableVersions []string
+}
+
+type itemInfoMap map[string]ItemInfo
+
+// ListAddonInfo lists addon info (name, versions, etc.) from a registry
+func (r *Registry) ListAddonInfo() (map[string]ItemInfo, error) {
+	addonInfoMap := make(map[string]ItemInfo)
+
+	// local registry doesn't support listing addons
+	if IsLocalRegistry(*r) {
+		return addonInfoMap, nil
+	}
+
+	if IsVersionRegistry(*r) {
+		versionedRegistry, err := ToVersionedRegistry(*r)
+		if err != nil {
+			return nil, err
+		}
+		addonList, err := versionedRegistry.ListAddon()
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range addonList {
+			addonInfoMap[a.Name] = ItemInfo{
+				Name:              a.Name,
+				Description:       a.Description,
+				AvailableVersions: a.AvailableVersions,
+			}
+		}
+	} else {
+		meta, err := r.ListAddonMeta()
+		if err != nil {
+			return nil, err
+		}
+		addonList, err := r.ListUIData(meta, ListOptions{})
+		if err != nil {
+			return nil, err
+		}
+		for _, a := range addonList {
+			addonInfoMap[a.Name] = ItemInfo{
+				Name:              a.Name,
+				Description:       a.Description,
+				AvailableVersions: a.AvailableVersions,
+			}
+		}
+	}
+
+	return addonInfoMap, nil
 }

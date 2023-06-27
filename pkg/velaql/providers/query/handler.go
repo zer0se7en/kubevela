@@ -18,36 +18,31 @@ package query
 
 import (
 	"bufio"
-	"context"
+	"bytes"
+	"encoding/base64"
 	"fmt"
 	"io"
-	"regexp"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
-	networkv1beta1 "k8s.io/api/networking/v1beta1"
-	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
+	apimachinerytypes "k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/klog"
+	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	monitorContext "github.com/kubevela/pkg/monitor/context"
+	pkgmulticluster "github.com/kubevela/pkg/multicluster"
+	wfContext "github.com/kubevela/workflow/pkg/context"
+	"github.com/kubevela/workflow/pkg/cue/model/value"
+	"github.com/kubevela/workflow/pkg/types"
+
 	"github.com/oam-dev/kubevela/apis/core.oam.dev/v1beta1"
-	apis "github.com/oam-dev/kubevela/apis/types"
-	helmapi "github.com/oam-dev/kubevela/pkg/appfile/helm/flux2apis"
-	"github.com/oam-dev/kubevela/pkg/cue/model/value"
 	"github.com/oam-dev/kubevela/pkg/multicluster"
-	"github.com/oam-dev/kubevela/pkg/utils"
 	querytypes "github.com/oam-dev/kubevela/pkg/velaql/providers/query/types"
-	wfContext "github.com/oam-dev/kubevela/pkg/workflow/context"
-	"github.com/oam-dev/kubevela/pkg/workflow/providers"
-	"github.com/oam-dev/kubevela/pkg/workflow/types"
 )
 
 const (
@@ -59,8 +54,6 @@ const (
 	annoAmbassadorServiceName      = "ambassador.service/name"
 	annoAmbassadorServiceNamespace = "ambassador.service/namespace"
 )
-
-var fluxcdGroupVersion = schema.GroupVersion{Group: "helm.toolkit.fluxcd.io", Version: "v2beta1"}
 
 type provider struct {
 	cli client.Client
@@ -80,6 +73,12 @@ type Option struct {
 	Name      string       `json:"name"`
 	Namespace string       `json:"namespace"`
 	Filter    FilterOption `json:"filter,omitempty"`
+	// WithStatus means query the object from the cluster and get the latest status
+	// This field only suitable for ListResourcesInApp
+	WithStatus bool `json:"withStatus,omitempty"`
+
+	// WithTree means recursively query the resource tree.
+	WithTree bool `json:"withTree,omitempty"`
 }
 
 // FilterOption filter resource created by component
@@ -87,10 +86,13 @@ type FilterOption struct {
 	Cluster          string   `json:"cluster,omitempty"`
 	ClusterNamespace string   `json:"clusterNamespace,omitempty"`
 	Components       []string `json:"components,omitempty"`
+	APIVersion       string   `json:"apiVersion,omitempty"`
+	Kind             string   `json:"kind,omitempty"`
+	QueryNewest      bool     `json:"queryNewest,omitempty"`
 }
 
-// ListResourcesInApp lists CRs created by Application
-func (h *provider) ListResourcesInApp(ctx wfContext.Context, v *value.Value, act types.Action) error {
+// ListResourcesInApp lists CRs created by Application, this provider queries the object data.
+func (h *provider) ListResourcesInApp(ctx monitorContext.Context, wfCtx wfContext.Context, v *value.Value, act types.Action) error {
 	val, err := v.LookupValue("app")
 	if err != nil {
 		return err
@@ -100,14 +102,85 @@ func (h *provider) ListResourcesInApp(ctx wfContext.Context, v *value.Value, act
 		return err
 	}
 	collector := NewAppCollector(h.cli, opt)
-	appResList, err := collector.CollectResourceFromApp()
+	appResList, err := collector.CollectResourceFromApp(ctx)
 	if err != nil {
 		return v.FillObject(err.Error(), "err")
 	}
-	return v.FillObject(appResList, "list")
+	if appResList == nil {
+		appResList = make([]Resource, 0)
+	}
+	return fillQueryResult(v, appResList, "list")
 }
 
-func (h *provider) CollectPods(ctx wfContext.Context, v *value.Value, act types.Action) error {
+// ListAppliedResources list applied resource from tracker, this provider only queries the metadata.
+func (h *provider) ListAppliedResources(ctx monitorContext.Context, wfCtx wfContext.Context, v *value.Value, act types.Action) error {
+	val, err := v.LookupValue("app")
+	if err != nil {
+		return err
+	}
+	opt := Option{}
+	if err = val.UnmarshalTo(&opt); err != nil {
+		return v.FillObject(err.Error(), "err")
+	}
+	collector := NewAppCollector(h.cli, opt)
+	app := new(v1beta1.Application)
+	appKey := client.ObjectKey{Name: opt.Name, Namespace: opt.Namespace}
+	if err = h.cli.Get(ctx, appKey, app); err != nil {
+		return v.FillObject(err.Error(), "err")
+	}
+	appResList, err := collector.ListApplicationResources(ctx, app)
+	if err != nil {
+		return v.FillObject(err.Error(), "err")
+	}
+	if appResList == nil {
+		appResList = make([]*querytypes.AppliedResource, 0)
+	}
+	return fillQueryResult(v, appResList, "list")
+}
+
+func (h *provider) CollectResources(ctx monitorContext.Context, wfCtx wfContext.Context, v *value.Value, act types.Action) error {
+	val, err := v.LookupValue("app")
+	if err != nil {
+		return err
+	}
+	opt := Option{}
+	if err = val.UnmarshalTo(&opt); err != nil {
+		return v.FillObject(err.Error(), "err")
+	}
+	collector := NewAppCollector(h.cli, opt)
+	app := new(v1beta1.Application)
+	appKey := client.ObjectKey{Name: opt.Name, Namespace: opt.Namespace}
+	if err = h.cli.Get(ctx, appKey, app); err != nil {
+		return v.FillObject(err.Error(), "err")
+	}
+	appResList, err := collector.ListApplicationResources(ctx, app)
+	if err != nil {
+		return v.FillObject(err.Error(), "err")
+	}
+	var resources = make([]querytypes.ResourceItem, 0)
+	for _, res := range appResList {
+		if res.ResourceTree != nil {
+			resources = append(resources, buildResourceArray(*res, res.ResourceTree, res.ResourceTree, opt.Filter.Kind, opt.Filter.APIVersion)...)
+		} else if res.Kind == opt.Filter.Kind && res.APIVersion == opt.Filter.APIVersion {
+			var object unstructured.Unstructured
+			object.SetAPIVersion(opt.Filter.APIVersion)
+			object.SetKind(opt.Filter.Kind)
+			if err := h.cli.Get(ctx, apimachinerytypes.NamespacedName{Namespace: res.Namespace, Name: res.Name}, &object); err == nil {
+				resources = append(resources, buildResourceItem(*res, querytypes.Workload{
+					APIVersion: app.APIVersion,
+					Kind:       app.Kind,
+					Name:       app.Name,
+					Namespace:  app.Namespace,
+				}, object))
+			} else {
+				klog.Errorf("failed to get the service:%s", err.Error())
+			}
+		}
+	}
+	return fillQueryResult(v, resources, "list")
+}
+
+func (h *provider) SearchEvents(ctx monitorContext.Context, wfCtx wfContext.Context, v *value.Value, act types.Action) error {
 	val, err := v.LookupValue("value")
 	if err != nil {
 		return err
@@ -121,38 +194,7 @@ func (h *provider) CollectPods(ctx wfContext.Context, v *value.Value, act types.
 		return err
 	}
 
-	var pods []*unstructured.Unstructured
-	var collector PodCollector
-
-	switch obj.GroupVersionKind() {
-	case fluxcdGroupVersion.WithKind(HelmReleaseKind):
-		collector = helmReleasePodCollector
-	default:
-		collector = NewPodCollector(obj.GroupVersionKind())
-	}
-
-	pods, err = collector(h.cli, obj, cluster)
-	if err != nil {
-		return v.FillObject(err.Error(), "err")
-	}
-	return v.FillObject(pods, "list")
-}
-
-func (h *provider) SearchEvents(ctx wfContext.Context, v *value.Value, act types.Action) error {
-	val, err := v.LookupValue("value")
-	if err != nil {
-		return err
-	}
-	cluster, err := v.GetString("cluster")
-	if err != nil {
-		return err
-	}
-	obj := new(unstructured.Unstructured)
-	if err = val.UnmarshalTo(obj); err != nil {
-		return err
-	}
-
-	listCtx := multicluster.ContextWithClusterName(context.Background(), cluster)
+	listCtx := multicluster.ContextWithClusterName(ctx, cluster)
 	fieldSelector := getEventFieldSelector(obj)
 	eventList := corev1.EventList{}
 	listOpts := []client.ListOption{
@@ -164,142 +206,10 @@ func (h *provider) SearchEvents(ctx wfContext.Context, v *value.Value, act types
 	if err := h.cli.List(listCtx, &eventList, listOpts...); err != nil {
 		return v.FillObject(err.Error(), "err")
 	}
-	return v.FillObject(eventList.Items, "list")
+	return fillQueryResult(v, eventList.Items, "list")
 }
 
-// GeneratorServiceEndpoints generator service endpoints is available for common component type,
-// such as webservice or helm
-// it can not support the cloud service component currently
-func (h *provider) GeneratorServiceEndpoints(wfctx wfContext.Context, v *value.Value, act types.Action) error {
-	ctx := context.Background()
-	findResource := func(obj client.Object, name, namespace, cluster string) error {
-		obj.SetNamespace(namespace)
-		obj.SetName(name)
-		gctx, cancel := context.WithTimeout(ctx, time.Second*10)
-		defer cancel()
-		if err := h.cli.Get(multicluster.ContextWithClusterName(gctx, cluster),
-			client.ObjectKeyFromObject(obj), obj); err != nil {
-			if kerrors.IsNotFound(err) {
-				return nil
-			}
-			return err
-		}
-		return nil
-	}
-	val, err := v.LookupValue("app")
-	if err != nil {
-		return err
-	}
-	opt := Option{}
-	if err = val.UnmarshalTo(&opt); err != nil {
-		return err
-	}
-	app := new(v1beta1.Application)
-	err = findResource(app, opt.Name, opt.Namespace, "")
-	if err != nil {
-		return fmt.Errorf("query app failure %w", err)
-	}
-	var serviceEndpoints []querytypes.ServiceEndpoint
-	var clusterGatewayNodeIP = make(map[string]string)
-	for i, resource := range app.Status.AppliedResources {
-		if !isResourceInTargetCluster(opt.Filter, resource) {
-			continue
-		}
-		cluster := app.Status.AppliedResources[i].Cluster
-		selectorNodeIP := func() string {
-			if ip, exist := clusterGatewayNodeIP[cluster]; exist {
-				return ip
-			}
-			ip := selectorNodeIP(ctx, cluster, h.cli)
-			if ip != "" {
-				clusterGatewayNodeIP[cluster] = ip
-			}
-			return ip
-		}
-		switch resource.Kind {
-		case "Ingress":
-			if resource.GroupVersionKind().Group == networkv1beta1.GroupName && (resource.GroupVersionKind().Version == "v1beta1" || resource.GroupVersionKind().Version == "v1") {
-				var ingress networkv1beta1.Ingress
-				ingress.SetGroupVersionKind(resource.GroupVersionKind())
-				if err := findResource(&ingress, resource.Name, resource.Namespace, resource.Cluster); err != nil {
-					klog.Error(err, fmt.Sprintf("find v1 Ingress %s/%s from cluster %s failure", resource.Name, resource.Namespace, resource.Cluster))
-					continue
-				}
-				serviceEndpoints = append(serviceEndpoints, generatorFromIngress(ingress, cluster)...)
-			} else {
-				klog.Warning("not support ingress version", "version", resource.GroupVersionKind())
-			}
-		case "Service":
-			var service corev1.Service
-			service.SetGroupVersionKind(resource.GroupVersionKind())
-			if err := findResource(&service, resource.Name, resource.Namespace, resource.Cluster); err != nil {
-				klog.Error(err, fmt.Sprintf("find v1 Service %s/%s from cluster %s failure", resource.Name, resource.Namespace, resource.Cluster))
-				continue
-			}
-			serviceEndpoints = append(serviceEndpoints, generatorFromService(service, selectorNodeIP, cluster, "")...)
-		case helmapi.HelmReleaseGVK.Kind:
-			obj := new(unstructured.Unstructured)
-			obj.SetNamespace(resource.Namespace)
-			obj.SetName(resource.Name)
-			hc := NewHelmReleaseCollector(h.cli, obj)
-			services, err := hc.CollectServices(ctx, resource.Cluster)
-			if err != nil {
-				klog.Error(err, "collect service by helm release failure", "helmRelease", resource.Name, "namespace", resource.Namespace, "cluster", resource.Cluster)
-			}
-			for _, service := range services {
-				serviceEndpoints = append(serviceEndpoints, generatorFromService(service, selectorNodeIP, cluster, "")...)
-			}
-
-			// only support network/v1beta1
-			ingress, err := hc.CollectIngress(ctx, resource.Cluster)
-			if err != nil {
-				klog.Error(err, "collect ingres by helm release failure", "helmRelease", resource.Name, "namespace", resource.Namespace, "cluster", resource.Cluster)
-			}
-			for _, ing := range ingress {
-				serviceEndpoints = append(serviceEndpoints, generatorFromIngress(ing, cluster)...)
-			}
-		case "SeldonDeployment":
-			obj := new(unstructured.Unstructured)
-			obj.SetGroupVersionKind(schema.GroupVersionKind{
-				Group:   "machinelearning.seldon.io",
-				Version: "v1",
-				Kind:    "SeldonDeployment",
-			})
-			if err := findResource(obj, resource.Name, resource.Namespace, resource.Cluster); err != nil {
-				klog.Error(err, fmt.Sprintf("find v1 Seldon Deployment %s/%s from cluster %s failure", resource.Name, resource.Namespace, resource.Cluster))
-				continue
-			}
-			anno := obj.GetAnnotations()
-			serviceName := "ambassador"
-			serviceNS := "vela-system"
-			if anno != nil {
-				if anno[annoAmbassadorServiceName] != "" {
-					serviceName = anno[annoAmbassadorServiceName]
-				}
-				if anno[annoAmbassadorServiceNamespace] != "" {
-					serviceNS = anno[annoAmbassadorServiceNamespace]
-				}
-			}
-			var service corev1.Service
-			if err := findResource(&service, serviceName, serviceNS, resource.Cluster); err != nil {
-				klog.Error(err, fmt.Sprintf("find v1 Service %s/%s from cluster %s failure", serviceName, serviceNS, resource.Cluster))
-				continue
-			}
-			serviceEndpoints = append(serviceEndpoints, generatorFromService(service, selectorNodeIP, cluster, fmt.Sprintf("/seldon/%s/%s", resource.Namespace, resource.Name))...)
-		}
-	}
-	return v.FillObject(serviceEndpoints, "list")
-}
-
-var (
-	terminatedContainerNotFoundRegex = regexp.MustCompile("previous terminated container .+ in pod .+ not found")
-)
-
-func isTerminatedContainerNotFound(err error) bool {
-	return err != nil && terminatedContainerNotFoundRegex.MatchString(err.Error())
-}
-
-func (h *provider) CollectLogsInPod(ctx wfContext.Context, v *value.Value, act types.Action) error {
+func (h *provider) CollectLogsInPod(ctx monitorContext.Context, wfCtx wfContext.Context, v *value.Value, act types.Action) error {
 	cluster, err := v.GetString("cluster")
 	if err != nil {
 		return errors.Wrapf(err, "invalid cluster")
@@ -320,30 +230,33 @@ func (h *provider) CollectLogsInPod(ctx wfContext.Context, v *value.Value, act t
 	if err = val.UnmarshalTo(opts); err != nil {
 		return errors.Wrapf(err, "invalid log options content")
 	}
-	cliCtx := multicluster.ContextWithClusterName(context.Background(), cluster)
+	cliCtx := multicluster.ContextWithClusterName(ctx, cluster)
+	h.cfg.Wrap(pkgmulticluster.NewTransportWrapper())
 	clientSet, err := kubernetes.NewForConfig(h.cfg)
 	if err != nil {
-		return errors.Wrapf(err, "failed to create kubernetes clientset")
+		return errors.Wrapf(err, "failed to create kubernetes client")
 	}
+	var defaultOutputs = make(map[string]interface{})
+	var errMsg string
 	podInst, err := clientSet.CoreV1().Pods(namespace).Get(cliCtx, pod, v1.GetOptions{})
 	if err != nil {
-		return errors.Wrapf(err, "failed to get pod")
+		errMsg += fmt.Sprintf("failed to get pod: %s; ", err.Error())
 	}
 	req := clientSet.CoreV1().Pods(namespace).GetLogs(pod, opts)
 	readCloser, err := req.Stream(cliCtx)
-	if err != nil && !isTerminatedContainerNotFound(err) {
-		return errors.Wrapf(err, "failed to get stream logs")
+	if err != nil {
+		errMsg += fmt.Sprintf("failed to get stream logs %s; ", err.Error())
 	}
-	r := bufio.NewReader(readCloser)
-	var b strings.Builder
-	var readErr error
-	if err == nil {
+	if readCloser != nil && podInst != nil {
+		r := bufio.NewReader(readCloser)
+		buffer := bytes.NewBuffer(nil)
+		var readErr error
 		defer func() {
 			_ = readCloser.Close()
 		}()
 		for {
 			s, err := r.ReadString('\n')
-			b.WriteString(s)
+			buffer.WriteString(s)
 			if err != nil {
 				if !errors.Is(err, io.EOF) {
 					readErr = err
@@ -351,234 +264,49 @@ func (h *provider) CollectLogsInPod(ctx wfContext.Context, v *value.Value, act t
 				break
 			}
 		}
-	} else {
-		readErr = err
+		toDate := v1.Now()
+		var fromDate v1.Time
+		// nolint
+		if opts.SinceTime != nil {
+			fromDate = *opts.SinceTime
+		} else if opts.SinceSeconds != nil {
+			fromDate = v1.NewTime(toDate.Add(time.Duration(-(*opts.SinceSeconds) * int64(time.Second))))
+		} else {
+			fromDate = podInst.CreationTimestamp
+		}
+		// the cue string can not support the special characters
+		logs := base64.StdEncoding.EncodeToString(buffer.Bytes())
+		defaultOutputs = map[string]interface{}{
+			"logs": logs,
+			"info": map[string]interface{}{
+				"fromDate": fromDate,
+				"toDate":   toDate,
+			},
+		}
+		if readErr != nil {
+			errMsg += readErr.Error()
+		}
 	}
-	toDate := v1.Now()
-	var fromDate v1.Time
-	// nolint
-	if opts.SinceTime != nil {
-		fromDate = *opts.SinceTime
-	} else if opts.SinceSeconds != nil {
-		fromDate = v1.NewTime(toDate.Add(time.Duration(-(*opts.SinceSeconds) * int64(time.Second))))
-	} else {
-		fromDate = podInst.CreationTimestamp
+	if errMsg != "" {
+		klog.Warningf(errMsg)
+		defaultOutputs["err"] = errMsg
 	}
-	o := map[string]interface{}{
-		"logs": b.String(),
-		"info": map[string]interface{}{
-			"fromDate": fromDate,
-			"toDate":   toDate,
-		},
-	}
-	if readErr != nil {
-		o["err"] = readErr.Error()
-	}
-	return v.FillObject(o, "outputs")
+	return v.FillObject(defaultOutputs, "outputs")
 }
 
 // Install register handlers to provider discover.
-func Install(p providers.Providers, cli client.Client, cfg *rest.Config) {
+func Install(p types.Providers, cli client.Client, cfg *rest.Config) {
 	prd := &provider{
 		cli: cli,
 		cfg: cfg,
 	}
 
-	p.Register(ProviderName, map[string]providers.Handler{
+	p.Register(ProviderName, map[string]types.Handler{
 		"listResourcesInApp":      prd.ListResourcesInApp,
-		"collectPods":             prd.CollectPods,
+		"listAppliedResources":    prd.ListAppliedResources,
+		"collectResources":        prd.CollectResources,
 		"searchEvents":            prd.SearchEvents,
 		"collectLogsInPod":        prd.CollectLogsInPod,
-		"collectServiceEndpoints": prd.GeneratorServiceEndpoints,
+		"collectServiceEndpoints": prd.CollectServiceEndpoints,
 	})
-}
-
-func generatorFromService(service corev1.Service, selectorNodeIP func() string, cluster, path string) []querytypes.ServiceEndpoint {
-	var serviceEndpoints []querytypes.ServiceEndpoint
-	switch service.Spec.Type {
-	case corev1.ServiceTypeLoadBalancer:
-		for _, port := range service.Spec.Ports {
-			judgeAppProtocol := judgeAppProtocol(port.Port)
-			for _, ingress := range service.Status.LoadBalancer.Ingress {
-				if ingress.Hostname != "" {
-					serviceEndpoints = append(serviceEndpoints, querytypes.ServiceEndpoint{
-						Endpoint: querytypes.Endpoint{
-							Protocol:    port.Protocol,
-							AppProtocol: &judgeAppProtocol,
-							Host:        ingress.Hostname,
-							Port:        int(port.Port),
-							Path:        path,
-						},
-						Ref: corev1.ObjectReference{
-							Kind:            "Service",
-							Namespace:       service.ObjectMeta.Namespace,
-							Name:            service.ObjectMeta.Name,
-							UID:             service.UID,
-							APIVersion:      service.APIVersion,
-							ResourceVersion: service.ResourceVersion,
-						},
-						Cluster: cluster,
-					})
-				}
-				if ingress.IP != "" {
-					serviceEndpoints = append(serviceEndpoints, querytypes.ServiceEndpoint{
-						Endpoint: querytypes.Endpoint{
-							Protocol:    port.Protocol,
-							AppProtocol: &judgeAppProtocol,
-							Host:        ingress.IP,
-							Port:        int(port.Port),
-							Path:        path,
-						},
-						Ref: corev1.ObjectReference{
-							Kind:            "Service",
-							Namespace:       service.ObjectMeta.Namespace,
-							Name:            service.ObjectMeta.Name,
-							UID:             service.UID,
-							APIVersion:      service.APIVersion,
-							ResourceVersion: service.ResourceVersion,
-						},
-						Cluster: cluster,
-					})
-				}
-			}
-		}
-	case corev1.ServiceTypeNodePort:
-		for _, port := range service.Spec.Ports {
-			judgeAppProtocol := judgeAppProtocol(port.Port)
-			serviceEndpoints = append(serviceEndpoints, querytypes.ServiceEndpoint{
-				Endpoint: querytypes.Endpoint{
-					Protocol:    port.Protocol,
-					Port:        int(port.NodePort),
-					AppProtocol: &judgeAppProtocol,
-					Host:        selectorNodeIP(),
-					Path:        path,
-				},
-				Ref: corev1.ObjectReference{
-					Kind:            "Service",
-					Namespace:       service.ObjectMeta.Namespace,
-					Name:            service.ObjectMeta.Name,
-					UID:             service.UID,
-					APIVersion:      service.APIVersion,
-					ResourceVersion: service.ResourceVersion,
-				},
-				Cluster: cluster,
-			})
-		}
-	case corev1.ServiceTypeClusterIP, corev1.ServiceTypeExternalName:
-	}
-	return serviceEndpoints
-}
-
-func generatorFromIngress(ingress networkv1beta1.Ingress, cluster string) (serviceEndpoints []querytypes.ServiceEndpoint) {
-	getAppProtocol := func(host string) string {
-		if len(ingress.Spec.TLS) > 0 {
-			for _, tls := range ingress.Spec.TLS {
-				if len(tls.Hosts) > 0 && utils.StringsContain(tls.Hosts, host) {
-					return querytypes.HTTPS
-				}
-				if len(tls.Hosts) == 0 {
-					return querytypes.HTTPS
-				}
-			}
-		}
-		return "http"
-	}
-	// It depends on the Ingress Controller
-	getEndpointPort := func(appProtocol string) int {
-		if appProtocol == querytypes.HTTPS {
-			if port, err := strconv.Atoi(ingress.Annotations[apis.AnnoIngressControllerHTTPSPort]); port > 0 && err == nil {
-				return port
-			}
-			return 443
-		}
-		if port, err := strconv.Atoi(ingress.Annotations[apis.AnnoIngressControllerHTTPPort]); port > 0 && err == nil {
-			return port
-		}
-		return 80
-	}
-	for _, rule := range ingress.Spec.Rules {
-		var appProtocol = getAppProtocol(rule.Host)
-		var appPort = getEndpointPort(appProtocol)
-		if rule.HTTP != nil {
-			for _, path := range rule.HTTP.Paths {
-				serviceEndpoints = append(serviceEndpoints, querytypes.ServiceEndpoint{
-					Endpoint: querytypes.Endpoint{
-						Protocol:    corev1.ProtocolTCP,
-						AppProtocol: &appProtocol,
-						Host:        rule.Host,
-						Path:        path.Path,
-						Port:        appPort,
-					},
-					Ref: corev1.ObjectReference{
-						Kind:            "Ingress",
-						Namespace:       ingress.ObjectMeta.Namespace,
-						Name:            ingress.ObjectMeta.Name,
-						UID:             ingress.UID,
-						APIVersion:      ingress.APIVersion,
-						ResourceVersion: ingress.ResourceVersion,
-					},
-					Cluster: cluster,
-				})
-			}
-		}
-	}
-	return serviceEndpoints
-}
-
-func selectorNodeIP(ctx context.Context, clusterName string, client client.Client) string {
-	ctx, cancel := context.WithTimeout(ctx, time.Second*10)
-	defer cancel()
-	var nodes corev1.NodeList
-	if err := client.List(multicluster.ContextWithClusterName(ctx, clusterName), &nodes); err != nil {
-		return ""
-	}
-	if len(nodes.Items) == 0 {
-		return ""
-	}
-	var gatewayNode *corev1.Node
-	var workerNodes []corev1.Node
-	for i, node := range nodes.Items {
-		if _, exist := node.Labels[apis.LabelNodeRoleGateway]; exist {
-			gatewayNode = &nodes.Items[i]
-			break
-		} else if _, exist := node.Labels[apis.LabelNodeRoleWorker]; exist {
-			workerNodes = append(workerNodes, nodes.Items[i])
-		}
-	}
-	if gatewayNode == nil && len(workerNodes) > 0 {
-		gatewayNode = &workerNodes[0]
-	}
-	if gatewayNode == nil {
-		gatewayNode = &nodes.Items[0]
-	}
-	if gatewayNode != nil {
-		var addressMap = make(map[corev1.NodeAddressType]string)
-		for _, address := range gatewayNode.Status.Addresses {
-			addressMap[address.Type] = address.Address
-		}
-		// first get external ip
-		if ip, exist := addressMap[corev1.NodeExternalIP]; exist {
-			return ip
-		}
-		if ip, exist := addressMap[corev1.NodeInternalIP]; exist {
-			return ip
-		}
-	}
-	return ""
-}
-
-// judgeAppProtocol  RFC-6335 and http://www.iana.org/assignments/service-names).
-func judgeAppProtocol(port int32) string {
-	switch port {
-	case 80, 8080:
-		return querytypes.HTTP
-	case 443:
-		return querytypes.HTTPS
-	case 3306:
-		return querytypes.Mysql
-	case 6379:
-		return querytypes.Redis
-	default:
-		return ""
-	}
 }

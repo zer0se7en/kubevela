@@ -42,13 +42,13 @@ func TestResourceKeeperDispatchAndDelete(t *testing.T) {
 	rk := _rk.(*resourceKeeper)
 	rk.garbageCollectPolicy = &v1alpha1.GarbageCollectPolicySpec{
 		Rules: []v1alpha1.GarbageCollectPolicyRule{{
-			Selector: v1alpha1.GarbageCollectPolicyRuleSelector{TraitTypes: []string{"versioned"}},
+			Selector: v1alpha1.ResourcePolicyRuleSelector{TraitTypes: []string{"versioned"}},
 			Strategy: v1alpha1.GarbageCollectStrategyOnAppUpdate,
 		}, {
-			Selector: v1alpha1.GarbageCollectPolicyRuleSelector{TraitTypes: []string{"life-long"}},
+			Selector: v1alpha1.ResourcePolicyRuleSelector{TraitTypes: []string{"life-long"}},
 			Strategy: v1alpha1.GarbageCollectStrategyOnAppDelete,
 		}, {
-			Selector: v1alpha1.GarbageCollectPolicyRuleSelector{TraitTypes: []string{"eternal"}},
+			Selector: v1alpha1.ResourcePolicyRuleSelector{TraitTypes: []string{"eternal"}},
 			Strategy: v1alpha1.GarbageCollectStrategyNever,
 		},
 		}}
@@ -66,12 +66,40 @@ func TestResourceKeeperDispatchAndDelete(t *testing.T) {
 	cm3.SetName("cm3")
 	cm3.SetLabels(map[string]string{oam.TraitTypeLabel: "eternal"})
 
-	r.NoError(rk.Dispatch(context.Background(), []*unstructured.Unstructured{cm1, cm2, cm3}))
+	r.NoError(rk.Dispatch(context.Background(), []*unstructured.Unstructured{cm1, cm2, cm3}, nil))
 	r.NotNil(rk._rootRT)
 	r.NotNil(rk._currentRT)
-	r.Equal(1, len(rk._rootRT.Spec.ManagedResources))
+	r.Equal(2, len(rk._rootRT.Spec.ManagedResources))
 	r.Equal(1, len(rk._currentRT.Spec.ManagedResources))
 	r.NoError(rk.Delete(context.Background(), []*unstructured.Unstructured{cm1, cm2, cm3}))
-	r.Equal(1, len(rk._rootRT.Spec.ManagedResources))
+	r.Equal(2, len(rk._rootRT.Spec.ManagedResources))
 	r.Equal(1, len(rk._currentRT.Spec.ManagedResources))
+}
+
+func TestResourceKeeperAdmissionDispatchAndDelete(t *testing.T) {
+	r := require.New(t)
+	cli := fake.NewClientBuilder().WithScheme(common.Scheme).Build()
+	_rk, err := NewResourceKeeper(context.Background(), cli, &v1beta1.Application{
+		ObjectMeta: v12.ObjectMeta{Name: "app", Namespace: "default", Generation: 1},
+	})
+	r.NoError(err)
+	rk := _rk.(*resourceKeeper)
+	AllowCrossNamespaceResource = false
+	defer func() {
+		AllowCrossNamespaceResource = true
+	}()
+	objs := []*unstructured.Unstructured{{
+		Object: map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"name":      "demo",
+				"namespace": "demo",
+			},
+		},
+	}}
+	err = rk.Dispatch(context.Background(), objs, nil)
+	r.NotNil(err)
+	r.Contains(err.Error(), "forbidden")
+	err = rk.Delete(context.Background(), objs)
+	r.NotNil(err)
+	r.Contains(err.Error(), "forbidden")
 }

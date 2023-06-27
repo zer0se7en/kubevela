@@ -120,7 +120,7 @@ type TraitDefinitionSpec struct {
 	PodDisruptive bool `json:"podDisruptive,omitempty"`
 
 	// AppliesToWorkloads specifies the list of workload kinds this trait
-	// applies to. Workload kinds are specified in kind.group/version format,
+	// applies to. Workload kinds are specified in resource.group/version format,
 	// e.g. server.core.oam.dev/v1alpha2. Traits that omit this field apply to
 	// all workload kinds.
 	// +optional
@@ -138,7 +138,8 @@ type TraitDefinitionSpec struct {
 	// +optional
 	ConflictsWith []string `json:"conflictsWith,omitempty"`
 
-	// Schematic defines the data format and template of the encapsulation of the trait
+	// Schematic defines the data format and template of the encapsulation of the trait.
+	// Only CUE and Kube schematic are supported for now.
 	// +optional
 	Schematic *common.Schematic `json:"schematic,omitempty"`
 
@@ -154,10 +155,31 @@ type TraitDefinitionSpec struct {
 	// ManageWorkload defines the trait would be responsible for creating the workload
 	// +optional
 	ManageWorkload bool `json:"manageWorkload,omitempty"`
-	// SkipRevisionAffect defines the update this trait will not generate a new application Revision
+	// ControlPlaneOnly defines which cluster is dispatched to
 	// +optional
-	SkipRevisionAffect bool `json:"skipRevisionAffect,omitempty"`
+	ControlPlaneOnly bool `json:"controlPlaneOnly,omitempty"`
+
+	// Stage defines the stage information to which this trait resource processing belongs.
+	// Currently, PreDispatch and PostDispatch are provided, which are used to control resource
+	// pre-process and post-process respectively.
+	// +optional
+	Stage StageType `json:"stage,omitempty"`
 }
+
+// StageType describes how the manifests should be dispatched.
+// Only one of the following stage types may be specified.
+// If none of the following types is specified, the default one
+// is DefaultDispatch.
+type StageType string
+
+const (
+	// PreDispatch means that pre dispatch for manifests
+	PreDispatch StageType = "PreDispatch"
+	// DefaultDispatch means that default dispatch for manifests
+	DefaultDispatch StageType = "DefaultDispatch"
+	// PostDispatch means that post dispatch for manifests
+	PostDispatch StageType = "PostDispatch"
+)
 
 // TraitDefinitionStatus is the status of TraitDefinition
 type TraitDefinitionStatus struct {
@@ -209,50 +231,4 @@ type TraitDefinitionList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []TraitDefinition `json:"items"`
-}
-
-// A ScopeDefinitionSpec defines the desired state of a ScopeDefinition.
-type ScopeDefinitionSpec struct {
-	// Reference to the CustomResourceDefinition that defines this scope kind.
-	Reference common.DefinitionReference `json:"definitionRef"`
-
-	// WorkloadRefsPath indicates if/where a scope accepts workloadRef objects
-	WorkloadRefsPath string `json:"workloadRefsPath,omitempty"`
-
-	// AllowComponentOverlap specifies whether an OAM component may exist in
-	// multiple instances of this kind of scope.
-	AllowComponentOverlap bool `json:"allowComponentOverlap"`
-
-	// Extension is used for extension needs by OAM platform builders
-	// +optional
-	// +kubebuilder:pruning:PreserveUnknownFields
-	Extension *runtime.RawExtension `json:"extension,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-
-// A ScopeDefinition registers a kind of Kubernetes custom resource as a valid
-// OAM scope kind by referencing its CustomResourceDefinition. The CRD is used
-// to validate the schema of the scope when it is embedded in an OAM
-// ApplicationConfiguration.
-// +kubebuilder:printcolumn:JSONPath=".spec.definitionRef.name",name=DEFINITION-NAME,type=string
-// +kubebuilder:resource:scope=Namespaced,categories={oam},shortName=scope
-// +kubebuilder:storageversion
-// +genclient
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-type ScopeDefinition struct {
-	metav1.TypeMeta   `json:",inline"`
-	metav1.ObjectMeta `json:"metadata,omitempty"`
-
-	Spec ScopeDefinitionSpec `json:"spec,omitempty"`
-}
-
-// +kubebuilder:object:root=true
-// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
-
-// ScopeDefinitionList contains a list of ScopeDefinition.
-type ScopeDefinitionList struct {
-	metav1.TypeMeta `json:",inline"`
-	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ScopeDefinition `json:"items"`
 }

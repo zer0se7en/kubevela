@@ -24,58 +24,102 @@ then
   chmod 600 ~/.ssh/id_rsa
 fi
 
-echo "git clone"
 cd ..
+
 git config --global user.email "kubevela.bot@aliyun.com"
 git config --global user.name "kubevela-bot"
-git clone --single-branch --depth 1 git@github.com:oam-dev/kubevela-core-api.git kubevela-core-api
 
-echo "clear kubevela-core-api api/"
-rm -r kubevela-core-api/apis/*
+clearRepo() {
+    echo "git clone"
 
-echo "clear kubevela-core-api pkg/oam"
-rm -r kubevela-core-api/pkg/oam/*
+    if [[ -n "$SSH_DEPLOY_KEY" ]]
+    then
+        git clone --single-branch --depth 1 git@github.com:oam-dev/kubevela-core-api.git kubevela-core-api
+    else
+        git clone --single-branch --depth 1 https://github.com/kubevela/kubevela-core-api.git kubevela-core-api
+    fi
 
-echo "clear kubevela-core-api pkg/utils/errors"
-rm -rf kubevela-core-api/pkg/utils/errors/*
+    echo "clear kubevela-core-api apis/"
+    rm -r kubevela-core-api/apis
 
-echo "clear kubevela-core-api pkg/generated/client"
-if [[ -d "kubevela-core-api/pkg/generated/client/" ]]
-then
-  rm -r kubevela-core-api/pkg/generated/client/*
-else
-  mkdir -p kubevela-core-api/pkg/generated/client/
-fi
+    echo "clear kubevela-core-api pkg/oam"
+    rm -r kubevela-core-api/pkg/oam/*
 
-echo "update kubevela-core-api api/"
-cp -R kubevela/apis/* kubevela-core-api/apis/
+    echo "clear kubevela-core-api pkg/utils/errors"
+    rm -rf kubevela-core-api/pkg/utils/errors/*
 
-echo "update kubevela-core-api pkg/oam"
-cp -R kubevela/pkg/oam/* kubevela-core-api/pkg/oam/
+    echo "clear kubevela-core-api pkg/generated/client"
+    if [[ -d "kubevela-core-api/pkg/generated/client/" ]]
+    then
+      rm -r kubevela-core-api/pkg/generated/client/*
+    else
+      mkdir -p kubevela-core-api/pkg/generated/client/
+    fi
+}
 
-echo "update kubevela-core-api pkg/utils/errors"
-mkdir -p kubevela-core-api/pkg/utils/errors
-cp -R kubevela/pkg/utils/errors/* kubevela-core-api/pkg/utils/errors/
+updateRepo() {
+    echo "update kubevela-core-api apis/"
+    cp -R kubevela/apis kubevela-core-api/apis
 
-echo "update kubevela-core-api pkg/generated/client"
-cp -R kubevela/pkg/generated/client/* kubevela-core-api/pkg/generated/client/
+    echo "update kubevela-core-api pkg/oam"
+    cp -R kubevela/pkg/oam/* kubevela-core-api/pkg/oam/
 
-echo "change import path"
-find ./kubevela-core-api -type f -name "*.go" -print0 | xargs -0 sed -i 's|github.com/oam-dev/kubevela/|github.com/oam-dev/kubevela-core-api/|g'
+    echo "update kubevela-core-api pkg/utils/errors"
+    mkdir -p kubevela-core-api/pkg/utils/errors
+    cp -R kubevela/pkg/utils/errors/* kubevela-core-api/pkg/utils/errors/
 
-echo "test api"
-cd kubevela-core-api
-go mod tidy
-go build test/main.go
+    echo "update kubevela-core-api pkg/generated/client"
+    cp -R kubevela/pkg/generated/client/* kubevela-core-api/pkg/generated/client/
 
-echo "push to kubevela-core-api"
-if git diff --quiet
-then
-  echo "nothing need to push, finished!"
-else
-  git add .
-  git commit -m "align with kubevela-$VERSION from commit $COMMIT_ID"
-  git tag $VERSION
-  git push origin main
-  git push origin $VERSION
-fi
+    echo "change import path"
+    find ./kubevela-core-api -type f -name "*.go" -print0 | xargs -0 sed -i 's|github.com/oam-dev/kubevela/|github.com/oam-dev/kubevela-core-api/|g'
+}
+
+testApi() {
+    cd kubevela-core-api
+    echo "test api"
+    go mod tidy
+    go build test/main.go
+}
+
+syncRepo() {
+    testApi
+    echo "push to kubevela-core-api"
+    if git diff --quiet
+    then
+      echo "no changes, skip pushing commit"
+    else
+      git add .
+      git commit -m "align with kubevela-$VERSION from commit $COMMIT_ID"
+      git push origin main
+    fi
+
+    # push new tag anyway
+    # Only tags if VERSION starts with refs/tags/, remove the prefix and push it
+    if [[ "$VERSION" == refs/tags/* ]]; then
+        VERSION=${VERSION#refs/tags/}
+    else
+      echo "VERSION $VERSION is not a tag, skip pushing tag"
+      return
+    fi
+
+    echo "push tag $VERSION"
+    git tag "$VERSION"
+    git push origin "$VERSION"
+}
+
+main() {
+    clearRepo
+    updateRepo
+
+    if [[ "$1" == "sync" ]]
+    then
+        syncRepo
+    fi
+    if [[ "$1" == "test" ]]
+    then
+        testApi
+    fi
+}
+
+main $1

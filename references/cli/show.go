@@ -18,7 +18,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -26,17 +25,21 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 
+	"github.com/kubevela/workflow/pkg/cue/packages"
+
 	"github.com/oam-dev/kubevela/apis/types"
-	"github.com/oam-dev/kubevela/pkg/cue/packages"
 	"github.com/oam-dev/kubevela/pkg/utils/common"
 	"github.com/oam-dev/kubevela/pkg/utils/system"
 	cmdutil "github.com/oam-dev/kubevela/pkg/utils/util"
-	"github.com/oam-dev/kubevela/references/plugins"
+	"github.com/oam-dev/kubevela/references/docgen"
 )
 
 const (
@@ -58,100 +61,84 @@ const (
 )
 
 var webSite bool
+var generateDocOnly bool
+var showFormat string
 
 // NewCapabilityShowCommand shows the reference doc for a component type or trait
-func NewCapabilityShowCommand(c common.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewCapabilityShowCommand(c common.Args, order string, ioStreams cmdutil.IOStreams) *cobra.Command {
+	var revision, path, location, i18nPath string
 	cmd := &cobra.Command{
-		Use:     "show",
-		Short:   "Show the reference doc for a component, trait or workflow.",
-		Long:    "Show the reference doc for component, trait or workflow types.",
-		Example: `show webservice`,
+		Use:   "show",
+		Short: "Show the reference doc for a component, trait, policy or workflow.",
+		Long:  "Show the reference doc for component, trait, policy or workflow types. 'vela show' equals with 'vela def show'. ",
+		Example: `0. Run 'vela show' directly to start a web server for all reference docs.  
+1. Generate documentation for ComponentDefinition webservice:
+> vela show webservice -n vela-system
+2. Generate documentation for local CUE Definition file webservice.cue:
+> vela show webservice.cue
+3. Generate documentation for local Cloud Resource Definition YAML alibaba-vpc.yaml:
+> vela show alibaba-vpc.yaml
+4. Specify output format, markdown supported:
+> vela show webservice --format markdown
+5. Specify a language for output, by default, it's english. You can also load your own translation script:
+> vela show webservice --location zh
+> vela show webservice --location zh --i18n https://kubevela.io/reference-i18n.json
+6. Show doc for a specified revision, it must exist in control plane cluster:
+> vela show webservice --revision v1
+7. Generate docs for all capabilities into folder $HOME/.vela/reference/docs/
+> vela show
+8. Generate all docs and start a doc server
+> vela show --web
+`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return fmt.Errorf("please specify a component type or trait")
-			}
 			ctx := context.Background()
-			capabilityName := args[0]
+			var capabilityName string
+			if len(args) > 0 {
+				capabilityName = args[0]
+			} else if !webSite {
+				cmd.Println("generating all capability docs into folder '~/.vela/reference/docs/', use '--web' to start a server for browser.")
+				generateDocOnly = true
+			}
 			namespace, err := GetFlagNamespaceOrEnv(cmd, c)
 			if err != nil {
 				return err
 			}
-			if webSite {
+			var ver int
+			if revision != "" {
+				// v1, 1, both need to work
+				version := strings.TrimPrefix(revision, "v")
+				ver, err = strconv.Atoi(version)
+				if err != nil {
+					return fmt.Errorf("invalid revision: %w", err)
+				}
+			}
+			if webSite || generateDocOnly {
 				return startReferenceDocsSite(ctx, namespace, c, ioStreams, capabilityName)
 			}
-			return ShowReferenceConsole(ctx, c, ioStreams, capabilityName, namespace)
+			if path != "" || showFormat == "md" || showFormat == "markdown" {
+				return ShowReferenceMarkdown(ctx, c, ioStreams, capabilityName, path, location, i18nPath, namespace, int64(ver))
+			}
+			return ShowReferenceConsole(ctx, c, ioStreams, capabilityName, namespace, location, i18nPath, int64(ver))
 		},
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeStart,
+			types.TagCommandType:  types.TypeStart,
+			types.TagCommandOrder: order,
 		},
 	}
 
-	cmd.Flags().BoolVarP(&webSite, "web", "", false, " start web doc site")
+	cmd.Flags().BoolVarP(&webSite, "web", "", false, "start web doc site")
+	cmd.Flags().StringVarP(&showFormat, "format", "", "", "specify format of output data, by default it's a pretty human readable format, you can specify markdown(md)")
+	cmd.Flags().StringVarP(&revision, "revision", "r", "", "Get the specified revision of a definition. Use def get to list revisions.")
+	cmd.Flags().StringVarP(&path, "path", "p", "", "Specify the path for of the doc generated from definition.")
+	cmd.Flags().StringVarP(&location, "location", "l", "", "specify the location for of the doc generated from definition, now supported options 'zh', 'en'. ")
+	cmd.Flags().StringVarP(&i18nPath, "i18n", "", "https://kubevela.io/reference-i18n.json", "specify the location for of the doc generated from definition, now supported options 'zh', 'en'. ")
 
 	addNamespaceAndEnvArg(cmd)
 	cmd.SetOut(ioStreams.Out)
 	return cmd
 }
 
-func startReferenceDocsSite(ctx context.Context, ns string, c common.Args, ioStreams cmdutil.IOStreams, capabilityName string) error {
-	home, err := system.GetVelaHomeDir()
-	if err != nil {
-		return err
-	}
-	referenceHome := filepath.Join(home, "reference")
-
-	definitionPath := filepath.Join(referenceHome, "capabilities")
-	if _, err := os.Stat(definitionPath); err != nil && os.IsNotExist(err) {
-		if err := os.MkdirAll(definitionPath, 0750); err != nil {
-			return err
-		}
-	}
-	docsPath := filepath.Join(referenceHome, "docs")
-	if _, err := os.Stat(docsPath); err != nil && os.IsNotExist(err) {
-		if err := os.MkdirAll(docsPath, 0750); err != nil {
-			return err
-		}
-	}
-	capabilities, err := plugins.GetNamespacedCapabilitiesFromCluster(ctx, ns, c, nil)
-	if err != nil {
-		return err
-	}
-	// check whether input capability is valid
-	var capabilityIsValid bool
-	var capabilityType types.CapType
-	for _, c := range capabilities {
-		if c.Name == capabilityName {
-			capabilityIsValid = true
-			capabilityType = c.Type
-			break
-		}
-	}
-	if !capabilityIsValid {
-		return fmt.Errorf("%s is not a valid component, trait or workflow", capabilityName)
-	}
-
-	cli, err := c.GetClient()
-	if err != nil {
-		return err
-	}
-	ref := &plugins.MarkdownReference{
-		ParseReference: plugins.ParseReference{
-			Client: cli,
-		},
-	}
-
-	config, err := c.GetConfig()
-	if err != nil {
-		return err
-	}
-	pd, err := packages.NewPackageDiscover(config)
-	if err != nil {
-		return err
-	}
-	if err := ref.CreateMarkdown(ctx, capabilities, docsPath, plugins.ReferenceSourcePath, pd); err != nil {
-		return err
-	}
-
+func generateWebsiteDocs(capabilities []types.Capability, docsPath string) error {
 	if err := generateSideBar(capabilities, docsPath); err != nil {
 		return err
 	}
@@ -170,23 +157,84 @@ func startReferenceDocsSite(ctx context.Context, ns string, c common.Args, ioStr
 	if err := generateREADME(capabilities, docsPath); err != nil {
 		return err
 	}
+	return nil
+}
 
-	var capabilityPath string
-	switch capabilityType {
-	case types.TypeWorkload:
-		capabilityPath = plugins.WorkloadTypePath
-	case types.TypeTrait:
-		capabilityPath = plugins.TraitPath
-	case types.TypeScope:
-	case types.TypeComponentDefinition:
-		capabilityPath = plugins.ComponentDefinitionTypePath
-	case types.TypeWorkflowStep:
-		capabilityPath = plugins.WorkflowStepPath
-	default:
-		return fmt.Errorf("unsupported type: %v", capabilityType)
+func startReferenceDocsSite(ctx context.Context, ns string, c common.Args, ioStreams cmdutil.IOStreams, capabilityName string) error {
+	home, err := system.GetVelaHomeDir()
+	if err != nil {
+		return err
+	}
+	referenceHome := filepath.Join(home, "reference")
+
+	docsPath := filepath.Join(referenceHome, "docs")
+	if _, err := os.Stat(docsPath); err != nil && os.IsNotExist(err) {
+		if err := os.MkdirAll(docsPath, 0750); err != nil {
+			return err
+		}
+	}
+	capabilities, err := docgen.GetNamespacedCapabilitiesFromCluster(ctx, ns, c, nil)
+	if err != nil {
+		return err
+	}
+	// check whether input capability is valid
+	var capabilityIsValid bool
+	var capabilityType types.CapType
+	for _, c := range capabilities {
+		if capabilityName == "" {
+			capabilityIsValid = true
+			break
+		}
+		if c.Name == capabilityName {
+			capabilityIsValid = true
+			capabilityType = c.Type
+			break
+		}
+	}
+	if !capabilityIsValid {
+		return fmt.Errorf("%s is not a valid component, trait, policy or workflow", capabilityName)
 	}
 
-	url := fmt.Sprintf("http://127.0.0.1%s/#/%s/%s", Port, capabilityPath, capabilityName)
+	cli, err := c.GetClient()
+	if err != nil {
+		return err
+	}
+	config, err := c.GetConfig()
+	if err != nil {
+		return err
+	}
+	pd, err := packages.NewPackageDiscover(config)
+	if err != nil {
+		return err
+	}
+	ref := &docgen.MarkdownReference{
+		ParseReference: docgen.ParseReference{
+			Client: cli,
+			I18N:   &docgen.En,
+		},
+	}
+
+	if err := ref.CreateMarkdown(ctx, capabilities, docsPath, true, pd); err != nil {
+		return err
+	}
+
+	if err = generateWebsiteDocs(capabilities, docsPath); err != nil {
+		return err
+	}
+
+	if generateDocOnly {
+		return nil
+	}
+
+	if capabilityType != types.TypeWorkload && capabilityType != types.TypeTrait &&
+		capabilityType != types.TypeComponentDefinition && capabilityType != types.TypeWorkflowStep && capabilityType != "" {
+		return fmt.Errorf("unsupported type: %v", capabilityType)
+	}
+	var suffix = capabilityName
+	if suffix != "" {
+		suffix = "/" + suffix
+	}
+	url := fmt.Sprintf("http://127.0.0.1%s/#/%s%s", Port, capabilityType, suffix)
 	server := &http.Server{
 		Addr:         Port,
 		Handler:      http.FileServer(http.Dir(docsPath)),
@@ -227,16 +275,17 @@ func launch(server *http.Server, errChan chan<- error) {
 
 func generateSideBar(capabilities []types.Capability, docsPath string) error {
 	sideBar := filepath.Join(docsPath, SideBar)
-	components, traits, workflowsteps := getDefinitions(capabilities)
-	f, err := os.Create(sideBar)
+	components, traits, workflowSteps, policies := getDefinitions(capabilities)
+	f, err := os.Create(sideBar) // nolint
 	if err != nil {
 		return err
 	}
 	if _, err := f.WriteString("- Components Types\n"); err != nil {
 		return err
 	}
+
 	for _, c := range components {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", c, plugins.ComponentDefinitionTypePath, c)); err != nil {
+		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", c, types.TypeComponentDefinition, c)); err != nil {
 			return err
 		}
 	}
@@ -244,15 +293,24 @@ func generateSideBar(capabilities []types.Capability, docsPath string) error {
 		return err
 	}
 	for _, t := range traits {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, plugins.TraitPath, t)); err != nil {
+		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypeTrait, t)); err != nil {
 			return err
 		}
 	}
 	if _, err := f.WriteString("- Workflow Steps\n"); err != nil {
 		return err
 	}
-	for _, t := range workflowsteps {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, plugins.WorkflowStepPath, t)); err != nil {
+	for _, t := range workflowSteps {
+		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypeWorkflowStep, t)); err != nil {
+			return err
+		}
+	}
+
+	if _, err := f.WriteString("- Policies\n"); err != nil {
+		return err
+	}
+	for _, t := range policies {
+		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypePolicy, t)); err != nil {
 			return err
 		}
 	}
@@ -261,7 +319,7 @@ func generateSideBar(capabilities []types.Capability, docsPath string) error {
 
 func generateNavBar(docsPath string) error {
 	sideBar := filepath.Join(docsPath, NavBar)
-	_, err := os.Create(sideBar)
+	_, err := os.Create(sideBar) // nolint
 	if err != nil {
 		return err
 	}
@@ -286,7 +344,7 @@ func generateIndexHTML(docsPath string) error {
   <div id="app"></div>
   <script>
     window.$docsify = {
-      name: 'KubeVela Reference Docs',
+      name: 'KubeVela Customized Reference Docs',
       loadSidebar: true,
       loadNavbar: true,
       subMaxLevel: 1,
@@ -300,7 +358,7 @@ func generateIndexHTML(docsPath string) error {
   <!-- Docsify v4 -->
   <script src="//cdn.jsdelivr.net/npm/docsify@4"></script>
   <script src="//cdn.jsdelivr.net/npm/docsify/lib/docsify.min.js"></script>
-  <!-- plugins -->
+  <!-- docgen -->
   <script src="//cdn.jsdelivr.net/npm/docsify-sidebar-collapse/dist/docsify-sidebar-collapse.min.js"></script>
 </body>
 </html>
@@ -318,7 +376,7 @@ body {
 
 func generateREADME(capabilities []types.Capability, docsPath string) error {
 	readmeMD := filepath.Join(docsPath, README)
-	f, err := os.Create(readmeMD)
+	f, err := os.Create(readmeMD) // nolint
 	if err != nil {
 		return err
 	}
@@ -327,14 +385,14 @@ func generateREADME(capabilities []types.Capability, docsPath string) error {
 		return err
 	}
 
-	workloads, traits, workflowsteps := getDefinitions(capabilities)
+	workloads, traits, workflowSteps, policies := getDefinitions(capabilities)
 
 	if _, err := f.WriteString("## Component Types\n"); err != nil {
 		return err
 	}
 
 	for _, w := range workloads {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", w, plugins.ComponentDefinitionTypePath, w)); err != nil {
+		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", w, types.TypeComponentDefinition, w)); err != nil {
 			return err
 		}
 	}
@@ -343,7 +401,7 @@ func generateREADME(capabilities []types.Capability, docsPath string) error {
 	}
 
 	for _, t := range traits {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, plugins.TraitPath, t)); err != nil {
+		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypeTrait, t)); err != nil {
 			return err
 		}
 	}
@@ -351,16 +409,26 @@ func generateREADME(capabilities []types.Capability, docsPath string) error {
 	if _, err := f.WriteString("## Workflow Steps\n"); err != nil {
 		return err
 	}
-	for _, t := range workflowsteps {
-		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, plugins.WorkflowStepPath, t)); err != nil {
+	for _, t := range workflowSteps {
+		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypeWorkflowStep, t)); err != nil {
 			return err
 		}
 	}
+
+	if _, err := f.WriteString("## Policies\n"); err != nil {
+		return err
+	}
+	for _, t := range policies {
+		if _, err := f.WriteString(fmt.Sprintf("  - [%s](%s/%s.md)\n", t, types.TypePolicy, t)); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
-func getDefinitions(capabilities []types.Capability) ([]string, []string, []string) {
-	var components, traits, workflowSteps []string
+func getDefinitions(capabilities []types.Capability) ([]string, []string, []string, []string) {
+	var components, traits, workflowSteps, policies []string
 	for _, c := range capabilities {
 		switch c.Type {
 		case types.TypeComponentDefinition:
@@ -369,70 +437,72 @@ func getDefinitions(capabilities []types.Capability) ([]string, []string, []stri
 			traits = append(traits, c.Name)
 		case types.TypeWorkflowStep:
 			workflowSteps = append(workflowSteps, c.Name)
-		case types.TypeScope:
+		case types.TypePolicy:
+			policies = append(policies, c.Name)
 		case types.TypeWorkload:
 		default:
 		}
 	}
-	return components, traits, workflowSteps
+	return components, traits, workflowSteps, policies
 }
 
 // ShowReferenceConsole will show capability reference in console
-func ShowReferenceConsole(ctx context.Context, c common.Args, ioStreams cmdutil.IOStreams, capabilityName string, ns string) error {
-	config, err := c.GetConfig()
-	if err != nil {
-		return err
-	}
-	pd, err := packages.NewPackageDiscover(config)
-	if err != nil {
-		return err
-	}
-	capability, err := plugins.GetCapabilityByName(ctx, c, capabilityName, ns, pd)
-	if err != nil {
-		return err
-	}
-
+func ShowReferenceConsole(ctx context.Context, c common.Args, ioStreams cmdutil.IOStreams, capabilityName string, ns, location, i18nPath string, rev int64) error {
 	cli, err := c.GetClient()
 	if err != nil {
 		return err
 	}
-	ref := &plugins.ConsoleReference{
-		ParseReference: plugins.ParseReference{
-			Client: cli,
-		},
+	ref := &docgen.ConsoleReference{}
+	paserRef, err := genRefParser(capabilityName, ns, location, i18nPath, rev)
+	if err != nil {
+		return err
 	}
+	paserRef.Client = cli
+	ref.ParseReference = paserRef
+	return ref.Show(ctx, c, ioStreams, capabilityName, ns, rev)
+}
 
-	var propertyConsole []plugins.ConsoleReference
-	switch capability.Category {
-	case types.HelmCategory:
-		_, propertyConsole, err = ref.GenerateHelmAndKubeProperties(ctx, capability)
-		if err != nil {
-			return err
-		}
-	case types.KubeCategory:
-		_, propertyConsole, err = ref.GenerateHelmAndKubeProperties(ctx, capability)
-		if err != nil {
-			return err
-		}
-	case types.CUECategory:
-		propertyConsole, err = ref.GenerateCUETemplateProperties(capability, pd)
-		if err != nil {
-			return err
-		}
-	case types.TerraformCategory:
-		propertyConsole, err = ref.GenerateTerraformCapabilityProperties(*capability)
-		if err != nil {
-			return err
-		}
-	default:
-		return fmt.Errorf("unsupport capability category %s", capability.Category)
+// ShowReferenceMarkdown will show capability in "markdown" format
+func ShowReferenceMarkdown(ctx context.Context, c common.Args, ioStreams cmdutil.IOStreams, capabilityNameOrPath, outputPath, location, i18nPath, ns string, rev int64) error {
+	ref := &docgen.MarkdownReference{}
+	paserRef, err := genRefParser(capabilityNameOrPath, ns, location, i18nPath, rev)
+	if err != nil {
+		return err
 	}
-	for _, p := range propertyConsole {
-		ioStreams.Info(p.TableName)
-		p.TableObject.Render()
-		ioStreams.Info("\n")
+	ref.ParseReference = paserRef
+	if err := ref.GenerateReferenceDocs(ctx, c, outputPath); err != nil {
+		return errors.Wrap(err, "failed to generate reference docs")
+	}
+	if outputPath != "" {
+		ioStreams.Infof("Generated docs in %s for %s in %s/%s.md\n", ref.I18N, capabilityNameOrPath, outputPath, ref.DefinitionName)
 	}
 	return nil
+}
+
+func genRefParser(capabilityNameOrPath, ns, location, i18nPath string, rev int64) (docgen.ParseReference, error) {
+	ref := docgen.ParseReference{}
+	if location != "" {
+		docgen.LoadI18nData(i18nPath)
+	}
+	if strings.HasSuffix(capabilityNameOrPath, ".yaml") || strings.HasSuffix(capabilityNameOrPath, ".cue") {
+		// read from local file
+		localFilePath := capabilityNameOrPath
+		fileName := filepath.Base(localFilePath)
+		ref.DefinitionName = strings.TrimSuffix(strings.TrimSuffix(fileName, ".yaml"), ".cue")
+		ref.Local = &docgen.FromLocal{Paths: []string{localFilePath}}
+	} else {
+		ref.DefinitionName = capabilityNameOrPath
+		ref.Remote = &docgen.FromCluster{Namespace: ns, Rev: rev}
+	}
+	switch strings.ToLower(location) {
+	case "zh", "cn", "chinese":
+		ref.I18N = &docgen.Zh
+	case "", "en", "english":
+		ref.I18N = &docgen.En
+	default:
+		return ref, fmt.Errorf("unknown location %s for i18n translation", location)
+	}
+	return ref, nil
 }
 
 // OpenBrowser will open browser by url in different OS system

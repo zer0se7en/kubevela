@@ -15,3 +15,87 @@ limitations under the License.
 */
 
 package env
+
+import (
+	"testing"
+	"time"
+
+	"path/filepath"
+
+	"github.com/google/go-cmp/cmp"
+	"github.com/kubevela/pkg/util/singleton"
+	"github.com/stretchr/testify/assert"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/envtest"
+
+	"github.com/oam-dev/kubevela/apis/types"
+)
+
+var testEnv *envtest.Environment
+var cfg *rest.Config
+var rawClient client.Client
+var testScheme = runtime.NewScheme()
+
+func TestCreateEnv(t *testing.T) {
+
+	testEnv = &envtest.Environment{
+		ControlPlaneStartTimeout: time.Minute,
+		ControlPlaneStopTimeout:  time.Minute,
+		CRDDirectoryPaths: []string{
+			filepath.Join("../../..", "charts/vela-core/crds"), // this has all the required CRDs,
+		},
+	}
+	var err error
+	cfg, err = testEnv.Start()
+	assert.NoError(t, err)
+	defer func() {
+		assert.NoError(t, testEnv.Stop())
+	}()
+	assert.NoError(t, clientgoscheme.AddToScheme(testScheme))
+
+	rawClient, err = client.New(cfg, client.Options{Scheme: testScheme})
+	assert.NoError(t, err)
+
+	type want struct {
+		data string
+	}
+	testcases := []struct {
+		name    string
+		envMeta *types.EnvMeta
+		want    want
+	}{
+		{
+			name: "env-application",
+			envMeta: &types.EnvMeta{
+				Name:      "env-application",
+				Namespace: "default",
+			},
+			want: want{
+				data: "",
+			},
+		},
+		{
+			name: "default",
+			envMeta: &types.EnvMeta{
+				Name:      "default",
+				Namespace: "default",
+			},
+			want: want{
+				data: "the namespace default was already assigned to env env-application",
+			},
+		},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			singleton.KubeClient.Set(rawClient)
+			err = CreateEnv(tc.envMeta)
+			if err != nil && cmp.Diff(tc.want.data, err.Error()) != "" {
+				t.Errorf("CreateEnv(...): \n -want: \n%s,\n +got:\n%s", tc.want.data, err.Error())
+			}
+		})
+	}
+
+}

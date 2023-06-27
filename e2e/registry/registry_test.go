@@ -18,17 +18,16 @@ package e2e
 
 import (
 	"fmt"
-	"os/exec"
 
 	"github.com/oam-dev/kubevela/e2e"
-	"github.com/oam-dev/kubevela/references/apis"
+	"github.com/oam-dev/kubevela/references/cli"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
 var (
-	registryConfigs = []apis.RegistryConfig{
+	registryConfigs = []cli.RegistryConfig{
 		{
 			Name:  "e2e-oss-registry",
 			URL:   "oss://registry.e2e.net",
@@ -41,8 +40,6 @@ var (
 		},
 	}
 )
-
-var testTrait = "crd-manual-scaler"
 
 // TODO: change this into a mock UT to avoid remote call.
 
@@ -102,28 +99,11 @@ var _ = Describe("test registry and trait/comp command", func() {
 			Expect(output).To(ContainSubstring("[deployments.apps]"))
 		})
 
-		It("install traits to cluster", func() {
-			cli := fmt.Sprintf("vela trait get %s", testTrait)
-			output, err := e2e.Exec(cli)
-			Expect(err).NotTo(HaveOccurred())
-			expectedSubStr1 := fmt.Sprintf("Installing trait %s", testTrait)
-			expectedSubStr2 := fmt.Sprintf("Successfully install trait: %s", testTrait)
-			Expect(output).To(ContainSubstring(expectedSubStr1))
-			Expect(output).To(ContainSubstring(expectedSubStr2))
-		})
-
-		It("Clean the test trait", func() {
-			cmd := exec.Command("kubectl", "delete", "traitDefinition", testTrait, "-n", "vela-system")
-			output, err := cmd.Output()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(output).Should(ContainSubstring("traitdefinition.core.oam.dev \"" + testTrait + "\" deleted"))
-		})
-
 		It("test list trait in raw url", func() {
 			cli := "vela trait --discover --url=oss://registry.kubevela.net"
 			output, err := e2e.Exec(cli)
 			Expect(err).NotTo(HaveOccurred())
-			Expect(output).To(ContainSubstring("Showing trait definition from url"), ContainSubstring("oss://registry.kubevela.net"))
+			Expect(output).To(SatisfyAll(ContainSubstring("Showing trait definition from url"), ContainSubstring("oss://registry.kubevela.net")))
 		})
 
 	})

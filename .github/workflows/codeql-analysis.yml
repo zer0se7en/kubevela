@@ -4,34 +4,17 @@ on:
   push:
     branches: [ master, release-* ]
 
+permissions:
+  contents: read
+
 jobs:
-  images:
-    name: Image Scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v2
-
-      - name: Build Vela Core image from Dockerfile
-        run: |
-          docker build --build-arg GOPROXY=https://proxy.golang.org -t docker.io/oamdev/vela-core:${{ github.sha }} .
-
-      - name: Run Trivy vulnerability scanner for vela core
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: 'docker.io/oamdev/vela-core:${{ github.sha }}'
-          format: 'sarif'
-          output: 'trivy-results.sarif'
-
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v1
-        if: always()
-        with:
-          sarif_file: 'trivy-results.sarif'
-
   analyze:
     name: Analyze
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+
+    permissions:
+      actions: read  # for github/codeql-action/init to get workflow details
+      security-events: write  # for github/codeql-action/autobuild to send a status report
 
     strategy:
       fail-fast: false
@@ -39,16 +22,16 @@ jobs:
         language: [ 'go' ]
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v2
+      - name: Checkout repository
+        uses: actions/checkout@c85c95e3d7251135ab7dc9ce3241c5835cc595a9
 
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v1
-      with:
-        languages: ${{ matrix.language }}
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@959cbb7472c4d4ad70cdfe6f4976053fe48ab394 # v2.1.37
+        with:
+          languages: ${{ matrix.language }}
 
-    - name: Autobuild
-      uses: github/codeql-action/autobuild@v1
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@959cbb7472c4d4ad70cdfe6f4976053fe48ab394 # v2.1.37
 
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v1
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@959cbb7472c4d4ad70cdfe6f4976053fe48ab394 # v2.1.37

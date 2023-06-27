@@ -19,7 +19,7 @@ spec:
         patch: {
         	// +patchKey=name
         	spec: template: spec: volumes: [
-        		for v in parameter.volumes {
+        		if parameter.volumes != _|_ for v in parameter.volumes {
         			{
         				name: v.name
         				if v.type == "pvc" {
@@ -50,12 +50,13 @@ spec:
         		},
         	]
         }
+
         parameter: {
         	// +usage=Declare volumes and volumeMounts
         	volumes?: [...{
         		name: string
-        		// +usage=Specify volume type, options: "pvc","configMap","secret","emptyDir"
-        		type: "pvc" | "configMap" | "secret" | "emptyDir"
+        		// +usage=Specify volume type, options: "pvc","configMap","secret","emptyDir", default to emptyDir
+        		type: *"emptyDir" | "pvc" | "configMap" | "secret"
         		if type == "pvc" {
         			claimName: string
         		}

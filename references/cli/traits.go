@@ -45,7 +45,7 @@ var (
 )
 
 // NewTraitCommand creates `traits` command
-func NewTraitCommand(c common2.Args, ioStreams cmdutil.IOStreams) *cobra.Command {
+func NewTraitCommand(c common2.Args, order string, ioStreams cmdutil.IOStreams) *cobra.Command {
 	var isDiscover bool
 	cmd := &cobra.Command{
 		Use:     "trait",
@@ -85,7 +85,8 @@ func NewTraitCommand(c common2.Args, ioStreams cmdutil.IOStreams) *cobra.Command
 			return PrintInstalledTraitDef(c, ioStreams, filter)
 		},
 		Annotations: map[string]string{
-			types.TagCommandType: types.TypeExtension,
+			types.TagCommandType:  types.TypeExtension,
+			types.TagCommandOrder: order,
 		},
 	}
 	cmd.SetOut(ioStreams.Out)
@@ -197,12 +198,8 @@ func InstallTraitByNameFromRegistry(args common2.Args, ioStream cmdutil.IOStream
 	if err != nil {
 		return err
 	}
-	mapper, err := args.GetDiscoveryMapper()
-	if err != nil {
-		return err
-	}
 
-	err = common.InstallTraitDefinition(k8sClient, mapper, data, ioStream, &capObj)
+	err = common.InstallTraitDefinition(k8sClient, data, ioStream, &capObj)
 	if err != nil {
 		return err
 	}
@@ -221,13 +218,10 @@ func PrintInstalledTraitDef(c common2.Args, io cmdutil.IOStreams, filter filterF
 	if err != nil {
 		return errors.Wrap(err, "get trait definition list error")
 	}
-	dm, err := (&common2.Args{}).GetDiscoveryMapper()
-	if err != nil {
-		return errors.Wrap(err, "get discovery mapper error")
-	}
 
 	table := newUITable()
 	table.AddRow("NAME", "APPLIES-TO")
+	table.AddRow("NAME", "APPLIES-TO", "DESCRIPTION")
 
 	for _, td := range list.Items {
 		data, err := json.Marshal(td)
@@ -235,15 +229,15 @@ func PrintInstalledTraitDef(c common2.Args, io cmdutil.IOStreams, filter filterF
 			io.Infof("error encoding definition: %s\n", td.Name)
 			continue
 		}
-		capa, err := ParseCapability(dm, data)
+		capa, err := ParseCapability(clt.RESTMapper(), data)
 		if err != nil {
-			io.Errorf("error parsing capability: %s\n", td.Name)
+			io.Errorf("error parsing capability: %s (message: %s)\n", td.Name, err.Error())
 			continue
 		}
 		if filter != nil && !filter(capa) {
 			continue
 		}
-		table.AddRow(capa.Name, capa.AppliesTo)
+		table.AddRow(capa.Name, capa.AppliesTo, capa.Description)
 	}
 	io.Info(table.String())
 	return nil
